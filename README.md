@@ -19,9 +19,24 @@ The repository installs:
 
 ### Fresh Debian/Ubuntu VPS
 
-Transfer or clone this repository to a path readable by `operator` (for
-example `/opt/AGK-TUI`), inspect the plan, then run the full multi-user
-bootstrap:
+Run the complete installation with one command:
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/agentik-os/AGK-TUI/main/install | sudo bash
+```
+
+To inspect the complete plan without changing the host:
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/agentik-os/AGK-TUI/main/install | bash -s -- --dry-run
+```
+
+Add `--core-only` after `bash -s --` to skip the optional Claude Code, Codex
+and OpenCode binaries. Pin a release, tag or commit with `--ref REF`.
+
+The equivalent installation from a local clone remains available:
 
 ```bash
 sudo ./bootstrap-vps.sh --dry-run
