@@ -38,6 +38,34 @@ hermes config set platforms.telegram.gateway_restart_notification false >/dev/nu
 # Keep Discord's stable surface small; evolving actions (including session
 # resume) live inside registry-driven Views and therefore need no slash resync.
 hermes config set platforms.discord.extra.command_ui_mode ui_only >/dev/null
+# Cross-session discovery is intentionally stricter than ordinary bot access:
+# Hermes requires an explicit slash administrator. Promote only numeric IDs
+# already authorized by the profile's own DISCORD_ALLOWED_USERS setting; never
+# copy an identity across Linux/profile boundaries and never print it.
+discord_admin_json=$(python3 - "$hermes_home/.env" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+value = ""
+try:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("DISCORD_ALLOWED_USERS="):
+            value = stripped.split("=", 1)[1].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                value = value[1:-1]
+            break
+except OSError:
+    pass
+print(json.dumps([item.strip() for item in value.split(",") if item.strip().isdigit()]))
+PY
+)
+if [ "$discord_admin_json" != "[]" ]; then
+  hermes config set platforms.discord.extra.allow_admin_from "$discord_admin_json" >/dev/null
+  hermes config set platforms.discord.extra.group_allow_admin_from "$discord_admin_json" >/dev/null
+fi
 for plugin_path in agentik_os platforms/discord; do
   plugin_target=$hermes_home/plugins/$plugin_path
   mkdir -p "$(dirname "$plugin_target")"

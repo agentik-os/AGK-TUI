@@ -32,6 +32,10 @@ If the terminal is no longer available, open the bot's `/panel`, choose
 the Discord caller is an authorized profile administrator before it exposes
 cross-platform sessions. The selector uses the protected Hermes
 `/resume --all` path and never displays tool, cron, hidden or archived runs.
+During profile synchronization, AGK promotes only the numeric identities
+already present in that profile's `DISCORD_ALLOWED_USERS` to explicit DM and
+group slash administrators. This satisfies Hermes' cross-origin protection
+without sharing an identity list with another profile.
 
 ## Continue a Discord conversation in AGK
 
