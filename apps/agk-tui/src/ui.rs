@@ -3,7 +3,9 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect, Size},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
+    },
 };
 use ratatui_rmux::{PaneState, PaneWidget};
 
@@ -205,6 +207,7 @@ fn draw_body(
     size: Density,
     colors: Palette,
 ) {
+    let area = board_area(area);
     match app.view {
         View::Sessions => draw_sessions(frame, app, preview, area, size, colors),
         View::Projects => draw_projects(frame, app, area, size, colors),
@@ -231,9 +234,24 @@ fn panes(app: &App, area: Rect, size: Density) -> (Rect, Rect) {
         return (area, hidden);
     }
     let list_width = area.width.saturating_mul(2).saturating_div(5).clamp(38, 54);
-    let columns =
-        Layout::horizontal([Constraint::Length(list_width), Constraint::Min(1)]).split(area);
+    let columns = Layout::horizontal([Constraint::Length(list_width), Constraint::Min(1)])
+        .spacing(1)
+        .split(area);
     (columns[0], columns[1])
+}
+
+/// Keep boards away from the physical terminal edges without sacrificing the
+/// useful height of very small mobile terminals.  Internal block padding and
+/// inter-panel gaps complete the spacing system inside this outer gutter.
+fn board_area(area: Rect) -> Rect {
+    let horizontal = u16::from(area.width >= 32);
+    let vertical = u16::from(area.height >= 13);
+    Rect::new(
+        area.x.saturating_add(horizontal),
+        area.y.saturating_add(vertical),
+        area.width.saturating_sub(horizontal.saturating_mul(2)),
+        area.height.saturating_sub(vertical.saturating_mul(2)),
+    )
 }
 
 /// Resolve the panel under a mouse coordinate using the same responsive
@@ -250,7 +268,7 @@ pub fn focus_at(app: &App, size: Size, column: u16, row: u16) -> Option<Focus> {
     }
     let header_height = nav_height.saturating_add(2);
     let body_height = size.height.saturating_sub(header_height.saturating_add(2));
-    let body = Rect::new(0, header_height, size.width, body_height);
+    let body = board_area(Rect::new(0, header_height, size.width, body_height));
     if !body.contains((column, row).into()) {
         return None;
     }
@@ -258,7 +276,11 @@ pub fn focus_at(app: &App, size: Size, column: u16, row: u16) -> Option<Focus> {
         return Some(Focus::Detail);
     }
     let density = density(size.width, size.height);
-    let (mut list, mut detail) = panes(app, body, density);
+    let (mut list, mut detail) = if app.view == View::Settings {
+        settings_panes(app, body, density)
+    } else {
+        panes(app, body, density)
+    };
     if app.view == View::Sessions && !app.preferences.split_preview && !app.expanded {
         if app.focus == Focus::Detail {
             list.width = 0;
@@ -926,18 +948,24 @@ fn draw_system(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
     );
 }
 
-fn draw_settings(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Palette) {
+fn settings_panes(app: &App, area: Rect, size: Density) -> (Rect, Rect) {
     let hidden = Rect::new(area.right(), area.y, 0, area.height);
-    let (nav_area, content_area) = if size == Density::Compact {
+    if size == Density::Compact {
         if app.focus == Focus::Detail {
             (hidden, area)
         } else {
             (area, hidden)
         }
     } else {
-        let columns = Layout::horizontal([Constraint::Length(24), Constraint::Min(30)]).split(area);
+        let columns = Layout::horizontal([Constraint::Length(24), Constraint::Min(30)])
+            .spacing(1)
+            .split(area);
         (columns[0], columns[1])
-    };
+    }
+}
+
+fn draw_settings(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Palette) {
+    let (nav_area, content_area) = settings_panes(app, area, size);
     if nav_area.width > 0 {
         let items = SettingsSection::ALL
             .iter()
@@ -1388,6 +1416,7 @@ fn draw_overlay(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(title)
+                    .padding(Padding::horizontal(1))
                     .border_style(Style::default().fg(colors.accent)),
             ),
         rect,
@@ -1449,6 +1478,7 @@ fn panel<'a>(title: &'a str, focused: bool, colors: Palette) -> Block<'a> {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title(title)
+        .padding(Padding::horizontal(1))
         .style(Style::default().bg(colors.surface))
         .border_style(Style::default().fg(if focused {
             colors.border_focused
@@ -1845,6 +1875,35 @@ mod tests {
         let output = render(test_app(), 120, 24);
         assert!(output.contains("1.SESSIONS  2.PROJECTS"));
         assert!(!output.contains("1.SESSIONS   2.PROJECTS"));
+    }
+
+    #[test]
+    fn boards_use_responsive_gutters_internal_padding_and_panel_gaps() {
+        let roomy = board_area(Rect::new(0, 3, 140, 35));
+        assert_eq!(roomy, Rect::new(1, 4, 138, 33));
+
+        let mobile = board_area(Rect::new(0, 3, 60, 11));
+        assert_eq!(mobile, Rect::new(1, 3, 58, 11));
+
+        let app = test_app();
+        let (list, detail) = panes(&app, roomy, Density::Wide);
+        assert_eq!(detail.x, list.right() + 1);
+
+        let inner = panel(" TEST ", false, app.theme.palette()).inner(list);
+        assert_eq!(inner.x, list.x + 2, "border plus one-cell padding");
+        assert_eq!(inner.right() + 2, list.right());
+    }
+
+    #[test]
+    fn mouse_focus_uses_the_same_board_gutters_and_settings_gap() {
+        let size = Size::new(90, 24);
+        let mut app = test_app();
+        assert_eq!(focus_at(&app, size, 0, 4), None);
+        assert_eq!(focus_at(&app, size, 1, 4), Some(Focus::List));
+
+        app.set_view(View::Settings);
+        assert_eq!(focus_at(&app, size, 25, 6), None);
+        assert_eq!(focus_at(&app, size, 26, 6), Some(Focus::Detail));
     }
 
     #[test]
