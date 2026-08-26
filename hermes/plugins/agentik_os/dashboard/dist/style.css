@@ -1,13 +1,13 @@
 .agk-os-hub {
-  --agk-background: var(--color-background, var(--background-base, #09090b));
-  --agk-card: var(--color-card, #18181b);
+  --agk-background: var(--color-background, var(--background-base, #0d0d0d));
+  --agk-card: var(--color-card, #171717);
   --agk-text: var(--color-card-foreground, var(--color-foreground, #fafafa));
-  --agk-muted: var(--color-muted-foreground, #a1a1aa);
-  --agk-border: var(--color-border, #27272a);
-  --agk-secondary: var(--color-secondary, #27272a);
+  --agk-muted: var(--color-muted-foreground, #a3a3a3);
+  --agk-border: var(--color-border, #2f2f2f);
+  --agk-secondary: var(--color-secondary, #212121);
   --agk-success: var(--color-success, #22c55e);
   --agk-warning: var(--color-warning, #f59e0b);
-  width: min(100%, 76rem);
+  width: min(100%, 72rem);
   margin: 0 auto;
   padding: 1.5rem;
   color: var(--agk-text);

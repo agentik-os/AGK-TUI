@@ -74,6 +74,10 @@ export function dashboardPath(id: OrganisationId): string {
   return getOrganisation(id).path;
 }
 
+export function consolePath(id: OrganisationId): string {
+  return `${getOrganisation(id).path}system?agk-console=1`;
+}
+
 export function withOrganisation(search: string, id: OrganisationId): string {
   const params = new URLSearchParams(search);
   params.set("org", id);

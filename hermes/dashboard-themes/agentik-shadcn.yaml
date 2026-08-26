@@ -3,7 +3,7 @@ label: Agentik Shadcn
 description: A compact neutral workspace inspired by modern shadcn applications.
 palette:
   background:
-    hex: "#09090b"
+    hex: "#0d0d0d"
     alpha: 1
   midground:
     hex: "#fafafa"
@@ -11,7 +11,7 @@ palette:
   foreground:
     hex: "#ffffff"
     alpha: 0
-  warmGlow: "rgba(124, 58, 237, 0.08)"
+  warmGlow: "rgba(16, 163, 127, 0.05)"
   noiseOpacity: 0
 typography:
   fontSans: "Geist, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
@@ -25,55 +25,107 @@ layout:
   density: compact
 layoutVariant: standard
 colorOverrides:
-  card: "#18181b"
+  card: "#171717"
   cardForeground: "#fafafa"
-  popover: "#18181b"
+  popover: "#171717"
   popoverForeground: "#fafafa"
   primary: "#fafafa"
-  primaryForeground: "#18181b"
-  secondary: "#27272a"
+  primaryForeground: "#171717"
+  secondary: "#212121"
   secondaryForeground: "#fafafa"
-  muted: "#27272a"
-  mutedForeground: "#a1a1aa"
-  accent: "#27272a"
+  muted: "#212121"
+  mutedForeground: "#a3a3a3"
+  accent: "#2f2f2f"
   accentForeground: "#fafafa"
   destructive: "#ef4444"
   destructiveForeground: "#fafafa"
   success: "#22c55e"
   warning: "#f59e0b"
-  border: "#27272a"
-  input: "#3f3f46"
-  ring: "#a1a1aa"
+  border: "#2f2f2f"
+  input: "#424242"
+  ring: "#a3a3a3"
 componentStyles:
   card:
-    background: "#18181b"
+    background: "#171717"
     boxShadow: "none"
     clipPath: "none"
   header:
-    background: "#09090b"
+    background: "#0d0d0d"
     clipPath: "none"
   sidebar:
-    background: "#09090b"
+    background: "#0d0d0d"
     clipPath: "none"
   tab:
     clipPath: "none"
   page:
-    background: "#09090b"
+    background: "#0d0d0d"
 customCSS: |
+  #root h1,
+  #root h2,
+  #root h3,
+  #root h4 {
+    font-family: var(--theme-font-sans);
+    letter-spacing: -0.015em !important;
+    text-transform: none !important;
+  }
+  #root .uppercase {
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  #root .tracking-wider,
+  #root .tracking-widest {
+    letter-spacing: 0;
+  }
+  #root button {
+    letter-spacing: 0 !important;
+    text-transform: none !important;
+  }
   #app-sidebar {
     border-color: var(--color-border);
   }
+  #app-sidebar > div:first-child {
+    height: 3.5rem;
+    border-color: var(--color-border);
+  }
+  #app-sidebar > div:first-child .uppercase {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    text-transform: none;
+  }
+  #app-sidebar nav {
+    padding: 0.5rem;
+    border-top: 0;
+  }
+  #app-sidebar nav ul {
+    gap: 0.125rem;
+  }
   #app-sidebar nav a {
-    padding: 0.5rem 1rem;
+    padding: 0.5rem 0.625rem;
+    border-radius: 0.5rem;
     font-size: 0.875rem;
     font-weight: 500;
     letter-spacing: -0.01em;
     text-transform: none;
+  }
+  #app-sidebar nav a[aria-current="page"] {
+    background: var(--color-secondary);
+  }
+  #app-sidebar nav a[aria-current="page"] > span:last-child {
+    display: none;
   }
   #app-sidebar nav a > svg {
     width: 1rem;
     height: 1rem;
   }
   #app-sidebar nav a > span:last-child {
-    border-radius: 0.375rem;
+    border-radius: 0.5rem;
+  }
+  #hermes-sidebar-plugin-nav-heading {
+    padding: 0.75rem 0.625rem 0.35rem;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
   }

@@ -71,7 +71,7 @@ def test_manifest_matches_the_official_dashboard_plugin_contract():
 
     assert manifest["name"] == "agentik-os"
     assert manifest["label"] == "OS & Agents"
-    assert manifest["version"] == "0.3.0"
+    assert manifest["version"] == "0.3.1"
     assert manifest["tab"] == {"path": "/os-agents", "position": "after:skills"}
     assert manifest["entry"] == "dist/index.js"
     assert manifest["css"] == "dist/style.css"
@@ -145,8 +145,8 @@ def test_agentik_shadcn_theme_is_official_local_and_reproducible():
     assert theme["layout"] == {"radius": "0.625rem", "density": "compact"}
     assert theme["layoutVariant"] == "standard"
     assert theme["palette"]["noiseOpacity"] == 0
-    assert theme["colorOverrides"]["card"] == "#18181b"
-    assert theme["colorOverrides"]["border"] == "#27272a"
+    assert theme["colorOverrides"]["card"] == "#171717"
+    assert theme["colorOverrides"]["border"] == "#2f2f2f"
     assert "fontUrl" not in theme["typography"]
 
     serialized = THEME.read_text(encoding="utf-8").lower()

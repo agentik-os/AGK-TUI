@@ -3,6 +3,7 @@ import "./styles.css";
 import {
   ORGANISATIONS,
   STORAGE_KEY,
+  consolePath,
   dashboardPath,
   getOrganisation,
   resolveOrganisationId,
@@ -163,6 +164,279 @@ const options = Array.from(
   app.querySelectorAll<HTMLButtonElement>("[data-organisation]"),
 );
 
+const CONSOLE_FLAG = "agk-console";
+const CONSOLE_WAIT_MS = 8_000;
+
+let consoleObserver: MutationObserver | null = null;
+let consoleWaitTimeout: number | null = null;
+let consoleBridgeGeneration = 0;
+let consoleRequestPending = false;
+
+function clearConsoleWait(): void {
+  if (consoleWaitTimeout !== null) {
+    window.clearTimeout(consoleWaitTimeout);
+    consoleWaitTimeout = null;
+  }
+}
+
+function cleanupConsoleBridge(): void {
+  consoleBridgeGeneration += 1;
+  consoleObserver?.disconnect();
+  consoleObserver = null;
+  clearConsoleWait();
+}
+
+function normalisedText(element: Element): string {
+  return (element.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+
+function isChatLink(link: HTMLAnchorElement, frameWindow: Window): boolean {
+  try {
+    const pathname = new URL(link.href, frameWindow.location.href).pathname;
+    return normalisedText(link) === "Chat" && /\/(?:chat)\/?$/.test(pathname);
+  } catch {
+    return false;
+  }
+}
+
+function injectConsoleStyle(frameDocument: Document): void {
+  if (frameDocument.getElementById("agk-console-nav-style")) {
+    return;
+  }
+
+  const style = frameDocument.createElement("style");
+  style.id = "agk-console-nav-style";
+  style.textContent = `
+    #app-sidebar [data-agk-console-nav] {
+      width: 100%;
+      padding: 0.5rem 0.625rem;
+      border: 0;
+      border-radius: calc(var(--radius, 0.625rem) - 2px);
+      background: transparent;
+      color: inherit;
+      font-family: var(--theme-font-sans, ui-sans-serif, system-ui, sans-serif);
+      font-size: 0.875rem;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      text-align: left;
+      text-transform: none;
+      cursor: pointer;
+    }
+
+    #app-sidebar [data-agk-console-nav]:hover {
+      background: color-mix(in srgb, currentColor 6%, transparent);
+    }
+
+    #app-sidebar [data-agk-console-nav]:focus-visible {
+      outline: 2px solid var(--color-ring, currentColor);
+      outline-offset: -2px;
+    }
+
+    #app-sidebar [data-agk-console-nav][aria-busy="true"] {
+      cursor: progress;
+      opacity: 0.66;
+    }
+
+    #app-sidebar .agk-console-glyph {
+      display: inline-flex;
+      width: 0.875rem;
+      flex: 0 0 0.875rem;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono, ui-monospace, monospace);
+      font-size: 0.6875rem;
+      font-weight: 650;
+      letter-spacing: -0.08em;
+    }
+  `;
+  frameDocument.head.append(style);
+}
+
+function createConsoleNavButton(
+  frameDocument: Document,
+  chatLink: HTMLAnchorElement,
+): HTMLButtonElement {
+  const button = frameDocument.createElement("button");
+  button.type = "button";
+  button.dataset.agkConsoleNav = "true";
+  button.className = chatLink.className;
+  button.setAttribute("aria-label", "Open console");
+  button.title = "Open console";
+
+  const glyph = frameDocument.createElement("span");
+  glyph.className = "agk-console-glyph";
+  glyph.setAttribute("aria-hidden", "true");
+  glyph.textContent = "›_";
+
+  const label = frameDocument.createElement("span");
+  const chatLabel = Array.from(chatLink.children).find(
+    (child) => child.tagName === "SPAN" && !child.hasAttribute("aria-hidden"),
+  );
+  label.className = chatLabel?.className ?? "truncate";
+  label.textContent = "Open console";
+
+  button.append(glyph, label);
+  button.addEventListener("click", () => {
+    button.setAttribute("aria-busy", "true");
+    consoleRequestPending = true;
+    cleanupConsoleBridge();
+    loading.hidden = false;
+    frame.classList.remove("is-ready");
+    frame.src = consolePath(activeId);
+    frame.focus();
+  });
+
+  return button;
+}
+
+function ensureConsoleNavigation(
+  frameDocument: Document,
+  frameWindow: Window,
+): HTMLButtonElement | null {
+  const existing = Array.from(
+    frameDocument.querySelectorAll<HTMLButtonElement>("[data-agk-console-nav]"),
+  );
+  const current = existing.shift() ?? null;
+  for (const duplicate of existing) {
+    duplicate.closest("li")?.remove();
+  }
+  if (current) {
+    return current;
+  }
+
+  const chatLink = Array.from(
+    frameDocument.querySelectorAll<HTMLAnchorElement>("#app-sidebar nav a[href]"),
+  ).find((link) => isChatLink(link, frameWindow));
+  const chatItem = chatLink?.closest("li");
+  if (!chatLink || !chatItem || !chatItem.parentElement) {
+    return null;
+  }
+
+  const item = frameDocument.createElement("li");
+  const button = createConsoleNavButton(frameDocument, chatLink);
+  item.dataset.agkConsoleNavItem = "true";
+  item.append(button);
+  chatItem.insertAdjacentElement("afterend", item);
+  return button;
+}
+
+function findOfficialConsoleButton(
+  frameDocument: Document,
+): HTMLButtonElement | null {
+  const operationsHeading = Array.from(
+    frameDocument.querySelectorAll<HTMLElement>("h1, h2, h3, [role='heading']"),
+  ).find((heading) => normalisedText(heading) === "Operations");
+  const operationsSection = operationsHeading?.closest("section");
+  if (!operationsSection) {
+    return null;
+  }
+
+  return (
+    Array.from(operationsSection.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => normalisedText(button) === "Open console",
+    ) ?? null
+  );
+}
+
+function hideOfficialConsoleButton(button: HTMLButtonElement): void {
+  button.dataset.agkConsoleOriginal = "true";
+  button.hidden = true;
+  button.setAttribute("aria-hidden", "true");
+  button.tabIndex = -1;
+}
+
+function consumeConsoleFlag(frameWindow: Window): void {
+  const url = new URL(frameWindow.location.href);
+  url.searchParams.delete(CONSOLE_FLAG);
+  frameWindow.history.replaceState(frameWindow.history.state, "", url);
+}
+
+function installConsoleBridge(): void {
+  cleanupConsoleBridge();
+
+  let frameDocument: Document | null;
+  let frameWindow: Window | null;
+  try {
+    frameDocument = frame.contentDocument;
+    frameWindow = frame.contentWindow;
+    if (!frameDocument?.documentElement || !frameWindow) {
+      return;
+    }
+    const currentUrl = new URL(frameWindow.location.href);
+    consoleRequestPending =
+      consoleRequestPending || currentUrl.searchParams.get(CONSOLE_FLAG) === "1";
+  } catch {
+    return;
+  }
+
+  const documentForFrame = frameDocument;
+  const windowForFrame = frameWindow;
+  const generation = consoleBridgeGeneration;
+  let reconcileQueued = false;
+
+  injectConsoleStyle(documentForFrame);
+
+  const reconcile = (): void => {
+    if (generation !== consoleBridgeGeneration) {
+      return;
+    }
+
+    const consoleNav = ensureConsoleNavigation(documentForFrame, windowForFrame);
+    if (consoleNav && consoleRequestPending) {
+      consoleNav.setAttribute("aria-busy", "true");
+    }
+
+    const officialButton = findOfficialConsoleButton(documentForFrame);
+    if (!officialButton) {
+      return;
+    }
+
+    hideOfficialConsoleButton(officialButton);
+    if (!consoleRequestPending) {
+      return;
+    }
+
+    consoleRequestPending = false;
+    clearConsoleWait();
+    consumeConsoleFlag(windowForFrame);
+    officialButton.click();
+  };
+
+  const scheduleReconcile = (): void => {
+    if (reconcileQueued || generation !== consoleBridgeGeneration) {
+      return;
+    }
+    reconcileQueued = true;
+    queueMicrotask(() => {
+      reconcileQueued = false;
+      reconcile();
+    });
+  };
+
+  consoleObserver = new MutationObserver(scheduleReconcile);
+  consoleObserver.observe(documentForFrame.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+
+  if (consoleRequestPending) {
+    consoleWaitTimeout = window.setTimeout(() => {
+      if (generation !== consoleBridgeGeneration) {
+        return;
+      }
+      consoleRequestPending = false;
+      const consoleNav = documentForFrame.querySelector<HTMLButtonElement>(
+        "[data-agk-console-nav]",
+      );
+      consoleNav?.removeAttribute("aria-busy");
+      consoleNav?.focus({ preventScroll: true });
+      consoleWaitTimeout = null;
+    }, CONSOLE_WAIT_MS);
+  }
+
+  reconcile();
+}
+
 let activeId = resolveOrganisationId(
   window.location.search,
   window.localStorage.getItem(STORAGE_KEY),
@@ -210,6 +484,8 @@ function setOrganisation(id: OrganisationId): void {
   window.history.replaceState(null, "", `${window.location.pathname}${nextSearch}${window.location.hash}`);
 
   if (frame.getAttribute("src") !== path) {
+    consoleRequestPending = false;
+    cleanupConsoleBridge();
     loading.hidden = false;
     frame.classList.remove("is-ready");
     frame.title = `Dashboard Hermes ${organisation.label}`;
@@ -276,7 +552,10 @@ document.addEventListener("pointerdown", (event) => {
 frame.addEventListener("load", () => {
   loading.hidden = true;
   frame.classList.add("is-ready");
+  installConsoleBridge();
 });
+
+window.addEventListener("pagehide", cleanupConsoleBridge);
 
 window.addEventListener("popstate", () => {
   setOrganisation(

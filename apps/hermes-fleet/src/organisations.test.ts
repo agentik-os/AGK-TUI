@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ORGANISATIONS,
+  consolePath,
   dashboardPath,
   getOrganisation,
   resolveOrganisationId,
@@ -41,6 +42,13 @@ describe("organisation routing", () => {
     expect(dashboardPath("agentik")).toBe("/agentik/");
     expect(dashboardPath("mission")).toBe("/mission/");
     expect(dashboardPath("private")).toBe("/private/");
+  });
+
+  it("maps console requests to each profile System page", () => {
+    expect(consolePath("operator")).toBe("/operator/system?agk-console=1");
+    expect(consolePath("agentik")).toBe("/agentik/system?agk-console=1");
+    expect(consolePath("mission")).toBe("/mission/system?agk-console=1");
+    expect(consolePath("private")).toBe("/private/system?agk-console=1");
   });
 
   it("updates org without discarding unrelated query parameters", () => {
