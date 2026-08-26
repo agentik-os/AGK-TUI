@@ -1405,9 +1405,10 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Pa
         help_key("Enter", "Open selected pane and type immediately", colors),
         help_key(
             "Tab",
-            "Alternate only between session list and pane",
+            "Alternate list/provider; provider input is immediate",
             colors,
         ),
+        help_key("Click pane", "Focus provider input immediately", colors),
         help_key("Tab Tab", "Rapid double Tab hides the left panel", colors),
         help_key("Ctrl-g", "Return to the main AGK menu", colors),
         help_key(
@@ -2059,6 +2060,40 @@ mod tests {
         assert!(output.contains("● 1 LIVE"));
         assert!(!output.contains("MISSION CONTROL"));
         assert!(output.contains("1 SESSIONS"));
+    }
+
+    #[test]
+    fn top_menu_survives_full_session_and_control_return() {
+        let mut app = test_app();
+        let backend = TestBackend::new(100, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        for (mode, expanded, focus) in [
+            (Mode::Control, false, Focus::List),
+            (Mode::Terminal, false, Focus::Detail),
+            (Mode::Terminal, true, Focus::Detail),
+            (Mode::Control, false, Focus::List),
+        ] {
+            app.mode = mode;
+            app.expanded = expanded;
+            app.focus = focus;
+            terminal.clear().unwrap();
+            terminal
+                .draw(|frame| draw(frame, &mut app, SessionPreview::Unavailable))
+                .unwrap();
+            let top_menu = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(100)
+                .nth(1)
+                .unwrap()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(top_menu.contains("1 SESSIONS"));
+            assert!(top_menu.contains("9 HELP"));
+        }
     }
 
     #[test]

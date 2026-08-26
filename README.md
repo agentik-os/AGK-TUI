@@ -134,7 +134,8 @@ redacted connected-toolkit list and connection states. Refresh it with
 
 In the session menu, `Enter` focuses the selected provider immediately and
 `x` closes it in one keystroke. A single `Tab` only alternates between the
-session list and provider pane; a rapid double `Tab` hides the left panel.
+session list and provider pane; focusing the provider accepts text immediately,
+without another `Enter`. A rapid double `Tab` hides the left panel.
 The persistent top menu and footer remain visible, including the active
 session/project context and the TKN, RAM, CPU, DISK and LIVE counters.
 

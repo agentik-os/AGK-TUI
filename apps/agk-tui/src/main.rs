@@ -153,6 +153,8 @@ async fn run(
     let mut last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
     let mut last_footer_refresh = Instant::now() - FOOTER_CONTEXT_REFRESH_TIME;
     let mut last_tab_at: Option<Instant> = None;
+    let mut preview_refresh_requested = true;
+    let mut rendered_layout = None;
 
     'event_loop: loop {
         if app.status != observed_status {
@@ -181,6 +183,7 @@ async fn run(
                                 app.expanded = false;
                                 app.scroll_preview_live();
                                 preview_cache.clear();
+                                preview_refresh_requested = true;
                                 app.status = Some(format!("Created and opened {name}"));
                             } else {
                                 app.status = Some(format!("Renamed and selected {name}"));
@@ -213,8 +216,26 @@ async fn run(
             update_footer(&mut host, app);
             last_footer_refresh = Instant::now();
         }
+        let size = terminal.size()?;
+        let layout = (
+            app.mode,
+            app.view,
+            app.expanded,
+            app.preferences.split_preview,
+            size.width,
+            size.height,
+        );
+        if rendered_layout != Some(layout) {
+            // Mode changes and responsive pane transitions rewrite large areas.
+            // Force the physical terminal to match Ratatui's model instead of
+            // trusting a stale differential buffer after an alternate-screen
+            // transition or resize.
+            terminal.clear()?;
+            preview_cache.invalidate_layout();
+            preview_refresh_requested = true;
+            rendered_layout = Some(layout);
+        }
         if app.mode == Mode::Terminal {
-            let size = terminal.size()?;
             let pane = ui::terminal_preview_area(size, app.expanded);
             app.preview_width = pane.width;
             app.preview_height = pane.height;
@@ -225,11 +246,13 @@ async fn run(
         let input_pending = event::poll(Duration::ZERO)?;
         let history_requested = app.preview_scroll > 0 && preview_cache.history.is_none();
         if preview_is_visible(app)
-            && (history_requested
+            && (preview_refresh_requested
+                || history_requested
                 || (!input_pending && last_preview_refresh.elapsed() >= PREVIEW_REFRESH_TIME))
         {
             refresh_preview(rmux, app, &mut preview_cache).await;
             last_preview_refresh = Instant::now();
+            preview_refresh_requested = false;
         } else {
             if app.view != View::Sessions {
                 preview_cache.clear();
@@ -257,14 +280,16 @@ async fn run(
                         app.view = View::Sessions;
                         app.focus = Focus::List;
                         app.expanded = false;
-                        preview_cache.clear();
+                        app.scroll_preview_live();
+                        preview_cache.invalidate_layout();
+                        preview_refresh_requested = true;
                         continue;
                     }
                     Event::Key(key) if accepts_key(key) && key.code == KeyCode::Tab => {
                         let double = register_tab(&mut last_tab_at, Instant::now());
-                        session_tab(app, true, double);
-                        preview_cache.clear();
-                        last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
+                        let _ = session_tab(app, true, double);
+                        preview_cache.invalidate_layout();
+                        preview_refresh_requested = true;
                         continue;
                     }
                     Event::Key(key)
@@ -272,12 +297,16 @@ async fn run(
                             && app.focus == Focus::Detail
                             && terminal_scroll_key(app, key) =>
                     {
-                        last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
+                        preview_refresh_requested = true;
                         continue;
                     }
                     Event::Key(key) if accepts_key(key) && app.focus == Focus::List => {
-                        if terminal_sidebar_key(app, key) {
+                        let selected_before = app.selected_session_name().map(str::to_owned);
+                        if terminal_sidebar_key(app, key)
+                            && selected_before.as_deref() != app.selected_session_name()
+                        {
                             preview_cache.clear();
+                            preview_refresh_requested = true;
                         }
                         continue;
                     }
@@ -285,6 +314,8 @@ async fn run(
                         let size = terminal.size()?;
                         match ui::terminal_focus_at(size, app.expanded, mouse.column, mouse.row) {
                             Some(Focus::List) => {
+                                let selected_before =
+                                    app.selected_session_name().map(str::to_owned);
                                 app.expanded = false;
                                 app.focus = Focus::List;
                                 match mouse.kind {
@@ -300,7 +331,10 @@ async fn run(
                                     }
                                     _ => {}
                                 }
-                                preview_cache.clear();
+                                if selected_before.as_deref() != app.selected_session_name() {
+                                    preview_cache.clear();
+                                    preview_refresh_requested = true;
+                                }
                                 continue;
                             }
                             Some(Focus::Detail) => {
@@ -308,14 +342,12 @@ async fn run(
                                 match mouse.kind {
                                     MouseEventKind::ScrollUp => {
                                         app.scroll_preview_up(3);
-                                        last_preview_refresh =
-                                            Instant::now() - PREVIEW_REFRESH_TIME;
+                                        preview_refresh_requested = true;
                                         continue;
                                     }
                                     MouseEventKind::ScrollDown => {
                                         app.scroll_preview_down(3);
-                                        last_preview_refresh =
-                                            Instant::now() - PREVIEW_REFRESH_TIME;
+                                        preview_refresh_requested = true;
                                         continue;
                                     }
                                     _ => {}
@@ -325,12 +357,17 @@ async fn run(
                         }
                     }
                     Event::Resize(_, _) => {
-                        preview_cache.clear();
+                        preview_cache.invalidate_layout();
+                        preview_refresh_requested = true;
                         continue;
                     }
                     _ => {}
                 }
                 if app.focus == Focus::Detail {
+                    if app.preview_scroll > 0 {
+                        app.scroll_preview_live();
+                        preview_refresh_requested = true;
+                    }
                     send_terminal_event(rmux, app, &mut preview_cache, event).await;
                 }
                 continue;
@@ -338,12 +375,18 @@ async fn run(
 
             let detail_available = detail_available(app);
             let preview_scroll_before = app.preview_scroll;
+            let selected_session_before = app.selected_session_name().map(str::to_owned);
             let action = match event {
                 Event::Mouse(mouse) => {
-                    if handle_mouse(app, mouse, terminal.size()?) {
-                        last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
+                    let outcome = handle_mouse(app, mouse, terminal.size()?);
+                    if outcome.preview_scrolled {
+                        preview_refresh_requested = true;
                     }
-                    Action::None
+                    if outcome.activate_session {
+                        Action::EnterTerminal
+                    } else {
+                        Action::None
+                    }
                 }
                 Event::Key(key)
                     if accepts_key(&key)
@@ -351,10 +394,11 @@ async fn run(
                         && app.view == View::Sessions =>
                 {
                     let double = register_tab(&mut last_tab_at, Instant::now());
-                    session_tab(app, detail_available, double);
-                    preview_cache.clear();
-                    last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
-                    Action::None
+                    if session_tab(app, detail_available, double) {
+                        Action::EnterTerminal
+                    } else {
+                        Action::None
+                    }
                 }
                 Event::Key(key) if accepts_key(&key) => {
                     let size = terminal.size()?;
@@ -367,14 +411,18 @@ async fn run(
                 }
                 Event::Paste(text) => input::handle_paste(app, &text),
                 Event::Resize(_, _) => {
-                    preview_cache.clear();
-                    last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
+                    preview_cache.invalidate_layout();
+                    preview_refresh_requested = true;
                     Action::None
                 }
                 _ => Action::None,
             };
             if app.preview_scroll != preview_scroll_before {
-                last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
+                preview_refresh_requested = true;
+            }
+            if selected_session_before.as_deref() != app.selected_session_name() {
+                preview_cache.clear();
+                preview_refresh_requested = true;
             }
             match action {
                 Action::None => {}
@@ -383,6 +431,7 @@ async fn run(
                 Action::Refresh => {
                     refresh_requested = true;
                     preview_cache.clear();
+                    preview_refresh_requested = true;
                 }
                 Action::PersistPreferences => match app.preferences.save() {
                     Ok(()) => {
@@ -398,32 +447,25 @@ async fn run(
                     Ok(true) => {
                         app.status = Some(format!("Provider {id} installed and verified"));
                         refresh_requested = true;
+                        rendered_layout = None;
+                        preview_refresh_requested = true;
                     }
                     Ok(false) => {
                         app.status = Some(format!("Provider {id} setup did not complete"));
                         refresh_requested = true;
+                        rendered_layout = None;
+                        preview_refresh_requested = true;
                     }
                     Err(error) => {
                         app.status = Some(format!("Provider setup failed: {error:#}"));
+                        rendered_layout = None;
+                        preview_refresh_requested = true;
                     }
                 },
                 Action::EnterTerminal => {
-                    last_tab_at = None;
-                    if app.selected_is_current_rmux_session() {
-                        app.status = Some(
-                            "This session is running AGK; recursive terminal mode is disabled"
-                                .into(),
-                        );
-                    } else if !app.current_session().is_some_and(|runtime| runtime.live) {
-                        app.status = Some(
-                            "This provider terminal is not live; press R to restart it".into(),
-                        );
-                    } else {
-                        app.mode = Mode::Terminal;
-                        app.focus = Focus::Detail;
-                        app.expanded = false;
-                        app.scroll_preview_live();
-                        preview_cache.clear();
+                    if enter_selected_terminal(app) {
+                        preview_cache.invalidate_layout();
+                        preview_refresh_requested = true;
                     }
                 }
                 Action::CreateSession { kind, name } => match create_session(kind.slug(), &name) {
@@ -447,6 +489,7 @@ async fn run(
                         pending_session = Some(PendingSession::renamed(name));
                         refresh_requested = true;
                         preview_cache.clear();
+                        preview_refresh_requested = true;
                     }
                     Err(error) => {
                         app.status = Some(format!("Session rename failed: {error:#}"));
@@ -464,6 +507,7 @@ async fn run(
                                 app.status = Some(message);
                                 refresh_requested = true;
                                 preview_cache.clear();
+                                preview_refresh_requested = true;
                             }
                             Err(error) => {
                                 app.status = Some(format!("Session close failed: {error:#}"));
@@ -598,6 +642,13 @@ impl PreviewCache {
             self.clear();
             self.session = Some(session.to_owned());
         }
+    }
+
+    fn invalidate_layout(&mut self) {
+        // Keep the last correct frame visible while the resized snapshot is
+        // fetched. Dropping the whole cache here produces a visible offline
+        // flash every time focus or fullscreen changes.
+        self.size = None;
     }
 
     fn view(&self) -> SessionPreview<'_> {
@@ -1027,17 +1078,34 @@ where
         .or_else(|| env_var("TMUX_SESSION").and_then(nonempty))
 }
 
-/// Returns true when the event changed the local RMUX history viewport.
-fn handle_mouse(app: &mut App, mouse: MouseEvent, terminal_size: ratatui::layout::Size) -> bool {
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MouseOutcome {
+    preview_scrolled: bool,
+    activate_session: bool,
+}
+
+fn handle_mouse(
+    app: &mut App,
+    mouse: MouseEvent,
+    terminal_size: ratatui::layout::Size,
+) -> MouseOutcome {
+    let mut outcome = MouseOutcome::default();
     if !matches!(
         mouse.kind,
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
     ) && !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
     {
-        return false;
+        return outcome;
     }
     if let Some(focus) = ui::focus_at(app, terminal_size, mouse.column, mouse.row) {
-        app.focus = focus;
+        // The top navigation is a direct horizontal axis, never a focus stop.
+        // Panel focus remains stable when the user merely clicks its chrome.
+        if focus != Focus::Nav {
+            app.focus = focus;
+            outcome.activate_session = app.view == View::Sessions
+                && focus == Focus::Detail
+                && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left));
+        }
     }
     match mouse.kind {
         MouseEventKind::ScrollUp if app.focus == Focus::List => {
@@ -1052,17 +1120,17 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent, terminal_size: ratatui::layout
         }
         MouseEventKind::ScrollUp if app.view == View::Sessions => {
             app.scroll_preview_up(3);
-            return true;
+            outcome.preview_scrolled = true;
         }
         MouseEventKind::ScrollDown if app.view == View::Sessions => {
             app.scroll_preview_down(3);
-            return true;
+            outcome.preview_scrolled = true;
         }
         MouseEventKind::ScrollUp => app.detail_scroll = app.detail_scroll.saturating_sub(3),
         MouseEventKind::ScrollDown => app.detail_scroll = app.detail_scroll.saturating_add(3),
         _ => {}
     }
-    false
+    outcome
 }
 
 fn accepts_key(key: &KeyEvent) -> bool {
@@ -1073,6 +1141,24 @@ fn terminal_returns_to_control(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
+fn enter_selected_terminal(app: &mut App) -> bool {
+    if app.selected_is_current_rmux_session() {
+        app.status =
+            Some("This session is running AGK; recursive terminal mode is disabled".into());
+        return false;
+    }
+    if !app.current_session().is_some_and(|runtime| runtime.live) {
+        app.status = Some("This provider terminal is not live; press R to restart it".into());
+        return false;
+    }
+    app.mode = Mode::Terminal;
+    app.view = View::Sessions;
+    app.focus = Focus::Detail;
+    app.expanded = false;
+    app.scroll_preview_live();
+    true
+}
+
 fn register_tab(last_tab_at: &mut Option<Instant>, now: Instant) -> bool {
     let double =
         last_tab_at.is_some_and(|previous| now.duration_since(previous) <= DOUBLE_TAB_TIME);
@@ -1080,22 +1166,24 @@ fn register_tab(last_tab_at: &mut Option<Instant>, now: Instant) -> bool {
     double
 }
 
-fn session_tab(app: &mut App, detail_available: bool, double: bool) {
+/// Returns true when the provider pane owns input after the transition.
+fn session_tab(app: &mut App, detail_available: bool, double: bool) -> bool {
     if double && detail_available {
         app.expanded = true;
         app.focus = Focus::Detail;
-        return;
+        return true;
     }
     if app.expanded {
         app.expanded = false;
         app.focus = Focus::List;
-        return;
+        return false;
     }
     app.focus = if app.focus == Focus::List && detail_available {
         Focus::Detail
     } else {
         Focus::List
     };
+    app.focus == Focus::Detail
 }
 
 fn terminal_sidebar_key(app: &mut App, key: &KeyEvent) -> bool {
@@ -1255,21 +1343,73 @@ mod tests {
         app.mode = Mode::Terminal;
         app.focus = Focus::Detail;
 
-        session_tab(&mut app, true, false);
+        assert!(!session_tab(&mut app, true, false));
         assert_eq!(app.focus, Focus::List);
         assert!(!app.expanded);
 
-        session_tab(&mut app, true, false);
+        assert!(session_tab(&mut app, true, false));
         assert_eq!(app.focus, Focus::Detail);
         assert!(!app.expanded);
 
-        session_tab(&mut app, true, true);
+        assert!(session_tab(&mut app, true, true));
         assert_eq!(app.focus, Focus::Detail);
         assert!(app.expanded);
 
-        session_tab(&mut app, true, false);
+        assert!(!session_tab(&mut app, true, false));
         assert_eq!(app.focus, Focus::List);
         assert!(!app.expanded);
+    }
+
+    #[test]
+    fn session_preview_focus_requests_immediate_provider_input() {
+        let mut app = App::new(Preferences::default());
+        app.set_snapshot(RegistrySnapshot {
+            runtimes: vec![runtime("live", true)],
+            ..RegistrySnapshot::default()
+        });
+        app.focus = Focus::List;
+
+        assert!(session_tab(&mut app, true, false));
+        assert!(enter_selected_terminal(&mut app));
+        assert_eq!(app.focus, Focus::Detail);
+        assert_eq!(app.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn clicking_the_session_pane_activates_input_without_a_nav_focus_stop() {
+        let mut app = App::new(Preferences::default());
+        app.set_snapshot(RegistrySnapshot {
+            runtimes: vec![runtime("live", true)],
+            ..RegistrySnapshot::default()
+        });
+        let size = ratatui::layout::Size::new(90, 24);
+
+        let pane = handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 50,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            },
+            size,
+        );
+        assert_eq!(app.focus, Focus::Detail);
+        assert!(pane.activate_session);
+
+        app.focus = Focus::List;
+        let nav = handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 2,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            },
+            size,
+        );
+        assert_eq!(app.focus, Focus::List);
+        assert!(!nav.activate_session);
     }
 
     #[test]
