@@ -3,7 +3,7 @@
   "label": "OS & Agents",
   "description": "Validated Agentik OS packages, installed Hermes agents, and their linked runtime sessions.",
   "icon": "Cpu",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "tab": {
     "path": "/os-agents",
     "position": "after:skills"

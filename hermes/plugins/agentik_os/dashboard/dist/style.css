@@ -7,6 +7,10 @@
   --agk-secondary: var(--color-secondary, #212121);
   --agk-success: var(--color-success, #22c55e);
   --agk-warning: var(--color-warning, #f59e0b);
+  --agk-panel-radius: 1rem;
+  --agk-card-radius: 0.875rem;
+  --agk-control-radius: 0.75rem;
+  --agk-panel-gap: 1rem;
   width: 100%;
   min-width: 0;
   margin: 0;
@@ -103,7 +107,7 @@
   gap: 0.45rem;
   padding: 0.5rem 0.75rem !important;
   border: 1px solid var(--agk-border) !important;
-  border-radius: var(--radius, 0.625rem);
+  border-radius: var(--agk-control-radius);
   background: transparent !important;
   color: var(--agk-text) !important;
   font-family: var(--theme-font-sans, ui-sans-serif, system-ui, sans-serif) !important;
@@ -139,10 +143,12 @@
   display: grid;
   min-height: calc(100dvh - 8rem);
   grid-template-columns: minmax(15.5rem, 18rem) minmax(0, 1fr);
-  overflow: hidden;
-  border: 1px solid var(--agk-border);
-  border-radius: calc(var(--radius, 0.625rem) + 0.125rem);
-  background: var(--agk-background);
+  align-items: stretch;
+  gap: var(--agk-panel-gap);
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .agk-os-hub .agk-os-context-panel {
@@ -150,8 +156,10 @@
   min-width: 0;
   min-height: 0;
   flex-direction: column;
-  border-right: 1px solid var(--agk-border);
-  background: color-mix(in srgb, var(--agk-card) 72%, var(--agk-background));
+  overflow: hidden;
+  border: 1px solid var(--agk-border);
+  border-radius: var(--agk-panel-radius);
+  background: var(--agk-card);
 }
 
 .agk-os-hub .agk-os-context-header {
@@ -216,7 +224,7 @@
   gap: 0.65rem;
   padding: 0.5rem 0.6rem !important;
   border: 1px solid transparent !important;
-  border-radius: calc(var(--radius, 0.625rem) - 0.0625rem) !important;
+  border-radius: var(--agk-control-radius) !important;
   background: transparent !important;
   color: var(--agk-muted) !important;
   text-align: left;
@@ -251,7 +259,7 @@
   height: 1.85rem;
   place-items: center;
   border: 1px solid var(--agk-border);
-  border-radius: calc(var(--radius, 0.625rem) - 0.125rem);
+  border-radius: var(--agk-control-radius);
   background: var(--agk-card);
 }
 
@@ -342,7 +350,9 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  background: var(--agk-background);
+  border: 1px solid var(--agk-border);
+  border-radius: var(--agk-panel-radius);
+  background: color-mix(in srgb, var(--agk-card) 32%, var(--agk-background));
 }
 
 .agk-os-hub .agk-os-detail-body {
@@ -373,7 +383,7 @@
 .agk-os-hub .agk-os-error {
   overflow: hidden;
   border-color: var(--agk-border);
-  border-radius: var(--radius, 0.625rem);
+  border-radius: var(--agk-card-radius);
   background: var(--agk-card);
 }
 
@@ -429,7 +439,7 @@
   margin: 0.75rem 1.5rem 0;
   padding: 0.65rem 0.75rem;
   border: 1px solid color-mix(in srgb, var(--agk-warning) 35%, var(--agk-border));
-  border-radius: var(--radius, 0.625rem);
+  border-radius: var(--agk-card-radius);
   background: color-mix(in srgb, var(--agk-warning) 8%, var(--agk-card));
   color: var(--agk-muted);
   font-size: 0.75rem;
@@ -614,7 +624,7 @@
   margin-top: 1rem;
   padding: 0.65rem 0.75rem;
   border: 1px solid var(--agk-border);
-  border-radius: calc(var(--radius, 0.625rem) - 0.125rem);
+  border-radius: var(--agk-control-radius);
   background: color-mix(in srgb, var(--agk-secondary) 45%, transparent);
   color: var(--agk-muted);
   font-size: 0.75rem;
@@ -664,7 +674,7 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 1rem 0 0;
   border: 1px solid var(--agk-border);
-  border-radius: calc(var(--radius, 0.625rem) - 0.125rem);
+  border-radius: var(--agk-control-radius);
 }
 
 .agk-os-hub .agk-os-agent-meta > div {
@@ -716,7 +726,7 @@
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--agk-border);
-  border-radius: calc(var(--radius, 0.625rem) - 0.125rem);
+  border-radius: var(--agk-control-radius);
   list-style: none;
 }
 
@@ -786,7 +796,7 @@
   margin-top: 0.75rem;
   padding: 0.85rem;
   border: 1px dashed var(--agk-border);
-  border-radius: calc(var(--radius, 0.625rem) - 0.125rem);
+  border-radius: var(--agk-control-radius);
 }
 
 .agk-os-hub .agk-os-session-empty p {
@@ -808,7 +818,7 @@
   flex: 0 0 auto;
   place-items: center;
   border: 1px solid var(--agk-border);
-  border-radius: calc(var(--radius, 0.625rem) - 0.125rem);
+  border-radius: var(--agk-control-radius);
 }
 
 .agk-os-hub .agk-os-empty h3 {
@@ -850,7 +860,7 @@
 
 .agk-os-hub .agk-os-skeleton {
   border: 1px solid var(--agk-border);
-  border-radius: var(--radius, 0.625rem);
+  border-radius: var(--agk-card-radius);
   background: var(--agk-secondary);
   animation: agk-os-pulse 1.4s ease-in-out infinite;
 }
@@ -918,12 +928,12 @@
   .agk-os-hub .agk-os-workspace {
     min-height: 0;
     grid-template-columns: minmax(0, 1fr);
+    gap: 0.75rem;
     overflow: visible;
   }
 
   .agk-os-hub .agk-os-context-panel {
-    border-right: 0;
-    border-bottom: 1px solid var(--agk-border);
+    border: 1px solid var(--agk-border);
   }
 
   .agk-os-hub .agk-os-context-header {
@@ -955,7 +965,7 @@
   }
 
   .agk-os-hub .agk-os-detail-panel {
-    overflow: visible;
+    overflow: hidden;
   }
 
   .agk-os-hub .agk-os-page-header {

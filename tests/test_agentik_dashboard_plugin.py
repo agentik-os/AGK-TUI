@@ -72,7 +72,7 @@ def test_manifest_matches_the_official_dashboard_plugin_contract():
 
     assert manifest["name"] == "agentik-os"
     assert manifest["label"] == "OS & Agents"
-    assert manifest["version"] == "0.4.0"
+    assert manifest["version"] == "0.4.1"
     assert manifest["tab"] == {"path": "/os-agents", "position": "after:skills"}
     assert manifest["entry"] == "dist/index.js"
     assert manifest["css"] == "dist/style.css"
@@ -156,6 +156,12 @@ def test_dashboard_uses_a_responsive_master_detail_panel_layout():
 
     assert 'className: "agk-os-tabs"' not in bundle
     assert "grid-template-columns: minmax(15.5rem, 18rem) minmax(0, 1fr)" in styles
+    assert "--agk-panel-radius: 1rem" in styles
+    assert "--agk-card-radius: 0.875rem" in styles
+    assert "gap: var(--agk-panel-gap)" in styles
+    assert styles.count("border-radius: var(--agk-panel-radius)") >= 2
+    assert "border-radius: var(--agk-card-radius)" in styles
+    assert ".agk-os-hub .agk-os-detail-panel {\n    overflow: hidden;" in styles
     assert "scroll-snap-type: x proximity" in styles
     assert "@media (max-width: 640px)" in styles
 
