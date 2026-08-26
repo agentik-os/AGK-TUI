@@ -1141,10 +1141,11 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
         help_key("/", "Search; Enter accepts, Esc restores", colors),
         help_key("Ctrl-p", "Command palette", colors),
         help_key(
-            "Ctrl-r / F5",
-            "Refresh RMUX and MCP registries in Control Mode",
+            "Ctrl-r",
+            "Reload AGK in Control Mode; forwarded inside a provider terminal",
             colors,
         ),
+        help_key("F5", "Refresh RMUX and MCP registries", colors),
         help_key(
             "PgUp/PgDn · g/G",
             "Browse RMUX history / return live",

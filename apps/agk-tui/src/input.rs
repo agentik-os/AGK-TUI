@@ -6,6 +6,7 @@ use crate::model::{App, Focus, Overlay, SessionKind, SessionTarget, SettingsSect
 pub enum Action {
     None,
     Quit,
+    Reload,
     Refresh,
     PersistPreferences,
     EnterTerminal,
@@ -116,8 +117,8 @@ pub fn palette_items(query: &str) -> Vec<PaletteItem> {
 
 pub fn handle_key(app: &mut App, key: KeyEvent, detail_available: bool) -> Action {
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('r') {
-        app.status = Some("Reloading live RMUX and MCP registries".into());
-        return Action::Refresh;
+        app.status = Some("Reloading AGK…".into());
+        return Action::Reload;
     }
 
     if app.overlay.is_open() {
@@ -780,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn control_r_requests_a_full_registry_reload() {
+    fn control_r_requests_a_full_agk_process_reload() {
         let mut app = app();
         assert_eq!(
             handle_key(
@@ -788,7 +789,7 @@ mod tests {
                 KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
                 true,
             ),
-            Action::Refresh
+            Action::Reload
         );
         assert!(
             app.status
@@ -798,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn control_r_refreshes_without_destroying_an_open_control_overlay() {
+    fn control_r_can_reload_from_an_open_control_overlay() {
         let mut app = app();
         app.overlay = Overlay::Search {
             value: "mcp".into(),
@@ -810,7 +811,7 @@ mod tests {
                 KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
                 true,
             ),
-            Action::Refresh
+            Action::Reload
         );
         assert!(matches!(app.overlay, Overlay::Search { .. }));
     }

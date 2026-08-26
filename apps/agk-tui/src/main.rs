@@ -7,6 +7,7 @@ mod ui;
 
 use std::{
     env, io,
+    os::unix::process::CommandExt,
     path::PathBuf,
     process::Command,
     time::{Duration, Instant},
@@ -277,6 +278,7 @@ async fn run(
             match action {
                 Action::None => {}
                 Action::Quit => break 'event_loop,
+                Action::Reload => return reload_agk(terminal),
                 Action::Refresh => {
                     refresh_requested = true;
                     preview_cache.clear();
@@ -373,6 +375,21 @@ async fn run(
         }
     }
     Ok(())
+}
+
+fn reload_agk(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+    disable_raw_mode().context("leave raw mode before AGK reload")?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        Show
+    )
+    .context("restore terminal before AGK reload")?;
+    let executable = env::current_exe().context("resolve the running AGK executable")?;
+    let error = Command::new(&executable).exec();
+    Err(error).with_context(|| format!("reload AGK from {}", executable.display()))
 }
 
 fn install_provider(
