@@ -135,17 +135,39 @@ pub enum SessionKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionTarget {
+    pub id: String,
     pub name: String,
     pub rmux_session: String,
     pub managed: bool,
+    pub native_session: Option<String>,
+    pub hermes_profile: Option<String>,
+    pub cwd: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentConversationContext {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub runtime_prefix: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OsConversationContext {
+    pub reference: String,
+    pub agent_id: String,
+    pub runtime_prefix: String,
 }
 
 impl From<&RuntimeRecord> for SessionTarget {
     fn from(runtime: &RuntimeRecord) -> Self {
         Self {
+            id: runtime.id.clone(),
             name: runtime.name.clone(),
             rmux_session: runtime.rmux_session.clone(),
             managed: runtime.managed,
+            native_session: runtime.native_session.clone(),
+            hermes_profile: runtime.hermes_profile.clone(),
+            cwd: runtime.cwd.clone(),
         }
     }
 }
@@ -201,6 +223,11 @@ pub enum Overlay {
         kind: SessionKind,
         value: String,
     },
+    NewAgentConversation {
+        agent_id: String,
+        runtime_prefix: String,
+        value: String,
+    },
     RenameSession {
         target: SessionTarget,
         value: String,
@@ -249,6 +276,10 @@ pub struct App {
     pub preview_scroll: u16,
     /// Renderer-published clamp bound for `preview_scroll`.
     pub preview_max_scroll: u16,
+    /// Active specialized-agent conversation browser.
+    pub agent_conversations: Option<AgentConversationContext>,
+    /// Active OS conversation browser. `None` means the normal OS registry.
+    pub os_conversations: Option<OsConversationContext>,
     last_session: Option<String>,
 }
 
@@ -277,6 +308,8 @@ impl App {
             preview_height: 0,
             preview_scroll: 0,
             preview_max_scroll: 0,
+            agent_conversations: None,
+            os_conversations: None,
             last_session: None,
         }
     }
@@ -291,6 +324,12 @@ impl App {
             self.cancel_theme_preview();
         }
         self.view = view;
+        if view != View::Agents {
+            self.agent_conversations = None;
+        }
+        if view != View::Os {
+            self.os_conversations = None;
+        }
         self.query.clear();
         self.selected = if view == View::Sessions {
             self.last_session
@@ -353,7 +392,11 @@ impl App {
         match self.view {
             View::Sessions => self.filtered_sessions().count(),
             View::Projects => self.filtered_objects().count(),
+            View::Agents if self.agent_conversations.is_some() => {
+                self.filtered_agent_conversations().count()
+            }
             View::Agents => self.filtered_agents().count(),
+            View::Os if self.os_conversations.is_some() => self.filtered_os_conversations().count(),
             View::Os => self.filtered_os().count(),
             View::Mcp => self.filtered_mcp().count(),
             View::Skills => self.filtered_skills().count(),
@@ -440,7 +483,62 @@ impl App {
     }
 
     pub fn current_agent(&self) -> Option<&AgentRecord> {
+        if let Some(context) = &self.agent_conversations {
+            return self
+                .snapshot
+                .agents
+                .iter()
+                .find(|agent| agent.id == context.agent_id);
+        }
         self.filtered_agents().nth(self.selected)
+    }
+
+    pub fn enter_agent_conversations(&mut self) -> bool {
+        let Some(agent) = self.current_agent() else {
+            return false;
+        };
+        self.agent_conversations = Some(AgentConversationContext {
+            agent_id: agent.id.clone(),
+            agent_name: agent.name.clone(),
+            runtime_prefix: agent.runtime_name.clone(),
+        });
+        self.selected = 0;
+        self.query.clear();
+        self.focus = Focus::List;
+        true
+    }
+
+    pub fn leave_agent_conversations(&mut self) -> bool {
+        if self.agent_conversations.take().is_none() {
+            return false;
+        }
+        self.selected = 0;
+        self.query.clear();
+        self.focus = Focus::List;
+        true
+    }
+
+    pub fn filtered_agent_conversations(&self) -> impl Iterator<Item = &RuntimeRecord> {
+        let prefix = self
+            .agent_conversations
+            .as_ref()
+            .map(|context| context.runtime_prefix.as_str());
+        self.snapshot.runtimes.iter().filter(move |runtime| {
+            let Some(prefix) = prefix else { return false };
+            (runtime.name == prefix || runtime.name.starts_with(&format!("{prefix}-")))
+                && matches_query(
+                    &self.query,
+                    &[&runtime.name, &runtime.kind, &runtime.status],
+                )
+        })
+    }
+
+    pub fn current_agent_conversation(&self) -> Option<&RuntimeRecord> {
+        self.filtered_agent_conversations().nth(self.selected)
+    }
+
+    pub fn current_agent_conversation_target(&self) -> Option<SessionTarget> {
+        self.current_agent_conversation().map(SessionTarget::from)
     }
 
     pub fn current_os(&self) -> Option<&OsPackage> {
@@ -476,6 +574,66 @@ impl App {
                     .iter()
                     .find(|agent| agent.id == "master-os-builder")
             })
+    }
+
+    pub fn enter_os_conversations(&mut self) -> bool {
+        let Some(package) = self.current_os() else {
+            return false;
+        };
+        let reference = format!("{}@{}", package.id, package.version);
+        let Some(agent) = self.current_os_agent() else {
+            return false;
+        };
+        self.os_conversations = Some(OsConversationContext {
+            reference,
+            agent_id: agent.id.clone(),
+            runtime_prefix: agent.runtime_name.clone(),
+        });
+        self.selected = 0;
+        self.query.clear();
+        self.focus = Focus::List;
+        true
+    }
+
+    pub fn leave_os_conversations(&mut self) -> bool {
+        if self.os_conversations.take().is_none() {
+            return false;
+        }
+        self.selected = 0;
+        self.query.clear();
+        self.focus = Focus::List;
+        true
+    }
+
+    pub fn filtered_os_conversations(&self) -> impl Iterator<Item = &RuntimeRecord> {
+        let prefix = self
+            .os_conversations
+            .as_ref()
+            .map(|context| context.runtime_prefix.as_str());
+        self.snapshot.runtimes.iter().filter(move |runtime| {
+            let Some(prefix) = prefix else { return false };
+            (runtime.name == prefix || runtime.name.starts_with(&format!("{prefix}-")))
+                && matches_query(
+                    &self.query,
+                    &[&runtime.name, &runtime.kind, &runtime.status],
+                )
+        })
+    }
+
+    pub fn current_os_conversation(&self) -> Option<&RuntimeRecord> {
+        self.filtered_os_conversations().nth(self.selected)
+    }
+
+    pub fn current_os_conversation_target(&self) -> Option<SessionTarget> {
+        self.current_os_conversation().map(SessionTarget::from)
+    }
+
+    pub fn os_context_package(&self) -> Option<&OsPackage> {
+        let reference = &self.os_conversations.as_ref()?.reference;
+        self.snapshot
+            .os_packages
+            .iter()
+            .find(|package| format!("{}@{}", package.id, package.version) == *reference)
     }
 
     pub fn current_mcp(&self) -> Option<&CapabilityRecord> {
@@ -599,9 +757,15 @@ impl App {
             View::Projects => self
                 .current_object()
                 .map(|item| format!("object:{}", item.id)),
+            View::Agents if self.agent_conversations.is_some() => self
+                .current_agent_conversation()
+                .map(|item| format!("runtime:{}", item.name)),
             View::Agents => self
                 .current_agent()
                 .map(|item| format!("agent:{}", item.id)),
+            View::Os if self.os_conversations.is_some() => self
+                .current_os_conversation()
+                .map(|item| format!("runtime:{}", item.name)),
             View::Os => self
                 .current_os()
                 .map(|item| format!("os:{}@{}", item.id, item.version)),
@@ -624,9 +788,17 @@ impl App {
                 .filtered_objects()
                 .map(|item| format!("object:{}", item.id))
                 .collect(),
+            View::Agents if self.agent_conversations.is_some() => self
+                .filtered_agent_conversations()
+                .map(|item| format!("runtime:{}", item.name))
+                .collect(),
             View::Agents => self
                 .filtered_agents()
                 .map(|item| format!("agent:{}", item.id))
+                .collect(),
+            View::Os if self.os_conversations.is_some() => self
+                .filtered_os_conversations()
+                .map(|item| format!("runtime:{}", item.name))
                 .collect(),
             View::Os => self
                 .filtered_os()
@@ -745,6 +917,7 @@ mod tests {
             project: None,
             mission: None,
             native_session: None,
+            hermes_profile: None,
             rmux_session: name.into(),
             cwd: "/work".into(),
             status: "active".into(),

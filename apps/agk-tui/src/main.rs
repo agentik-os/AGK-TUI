@@ -519,7 +519,7 @@ async fn run(
                         app.overlay = Overlay::NewName { kind, value: name };
                     }
                 },
-                Action::OpenAgent { id, session } => match open_agent(&id) {
+                Action::OpenAgent { id, session } => match open_agent(&id, &session) {
                     Ok(message) => {
                         app.status = Some(format!("{message} · opening agent terminal…"));
                         pending_session = Some(PendingSession::created(session));
@@ -527,6 +527,16 @@ async fn run(
                     }
                     Err(error) => {
                         app.status = Some(format!("Agent launch failed: {error:#}"));
+                    }
+                },
+                Action::ResumeConversation { target } => match resume_conversation(&target) {
+                    Ok(message) => {
+                        app.status = Some(format!("{message} · opening synced conversation…"));
+                        pending_session = Some(PendingSession::created(target.name));
+                        refresh_requested = true;
+                    }
+                    Err(error) => {
+                        app.status = Some(format!("Conversation resume failed: {error:#}"));
                     }
                 },
                 Action::RenameSession { target, name } => match rename_session(&target, &name) {
@@ -891,17 +901,56 @@ fn create_session(kind: &str, name: &str) -> Result<String> {
     })
 }
 
-fn open_agent(id: &str) -> Result<String> {
-    let output = Command::new("agk")
-        .args(["specialist", "start", id])
-        .output()
-        .context("run `agk specialist start`")?;
+fn open_agent(id: &str, session: &str) -> Result<String> {
+    let mut command = Command::new("agk");
+    command.args(["specialist", "start", id]);
+    if !session.is_empty() {
+        command.args(["--session", session]);
+    }
+    let output = command.output().context("run `agk specialist start`")?;
     if !output.status.success() {
         anyhow::bail!(command_error(&output));
     }
     let message = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     Ok(if message.is_empty() {
         format!("Opened {id}")
+    } else {
+        message
+    })
+}
+
+fn resume_conversation(target: &SessionTarget) -> Result<String> {
+    let mut command = Command::new("agk");
+    if target.managed {
+        command.args(["restart", target.id.as_str()]);
+    } else {
+        let native = target
+            .native_session
+            .as_deref()
+            .context("synced conversation has no Hermes session id")?;
+        command.args([
+            "new",
+            "hermes",
+            target.name.as_str(),
+            "--native-session",
+            native,
+        ]);
+        if !target.cwd.is_empty() {
+            command.args(["--cwd", target.cwd.as_str()]);
+        }
+        if let Some(profile) = target.hermes_profile.as_deref() {
+            command.args(["--profile", profile]);
+        }
+    }
+    let output = command
+        .output()
+        .context("resume Hermes conversation through AGK")?;
+    if !output.status.success() {
+        anyhow::bail!(command_error(&output));
+    }
+    let message = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok(if message.is_empty() {
+        format!("Resumed {}", target.name)
     } else {
         message
     })
@@ -1336,6 +1385,7 @@ mod tests {
             project: None,
             mission: None,
             native_session: None,
+            hermes_profile: None,
             rmux_session: name.into(),
             cwd: "/home/operator".into(),
             status: if live { "running" } else { "interrupted" }.into(),

@@ -6184,13 +6184,35 @@ class DiscordAdapter(BasePlatformAdapter):
         from hermes_cli.commands import COMMAND_REGISTRY
 
         commands = [command for command in COMMAND_REGISTRY if not getattr(command, "cli_only", False)]
+        # Plugin commands belong in the same dynamic command center. Keeping
+        # them here means a new AGK agent does not need another top-level slash
+        # command or a Discord tree resync.
+        try:
+            from types import SimpleNamespace
+            from hermes_cli.commands import _iter_plugin_command_entries
+
+            commands.extend(
+                SimpleNamespace(
+                    name=name,
+                    description=description,
+                    args_hint=args_hint,
+                    category="Plugins",
+                    cli_only=False,
+                )
+                for name, description, args_hint in _iter_plugin_command_entries()
+                if not any(item.name == name for item in commands)
+            )
+        except Exception:
+            logger.debug("Discord command panel could not load plugin commands", exc_info=True)
         adapter = self
 
         class PanelView(discord.ui.View):
             def __init__(self):
-                super().__init__(timeout=300)
+                super().__init__(timeout=900)
                 self.category = None
                 self.command_page = 0
+                self.session_page = 0
+                self.session_rows = []
                 self._show_categories()
 
             async def _authorized(self, current) -> bool:
@@ -6206,7 +6228,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 select.callback = self._select_category
                 self.add_item(select)
-                self._add_common(include_back=False)
+                self._add_common(include_back=False, include_sessions=True)
 
             def _show_commands(self, category, page=0):
                 self.clear_items()
@@ -6228,7 +6250,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     following.callback = lambda current: self._change_page(current, 1)
                     self.add_item(previous)
                     self.add_item(following)
-                self._add_common(include_back=True)
+                self._add_common(include_back=True, include_sessions=True)
 
             async def _change_page(self, current, delta):
                 if await self._authorized(current):
@@ -6238,11 +6260,19 @@ class DiscordAdapter(BasePlatformAdapter):
                         view=self,
                     )
 
-            def _add_common(self, *, include_back):
+            def _add_common(self, *, include_back, include_sessions=False):
                 if include_back:
                     back = discord.ui.Button(label="Back", style=discord.ButtonStyle.grey, custom_id="panel_back")
                     back.callback = self._back
                     self.add_item(back)
+                if include_sessions:
+                    sessions = discord.ui.Button(
+                        label="Sessions",
+                        style=discord.ButtonStyle.blurple,
+                        custom_id="panel_sessions",
+                    )
+                    sessions.callback = self._open_sessions
+                    self.add_item(sessions)
                 refresh = discord.ui.Button(label="Refresh", style=discord.ButtonStyle.grey, custom_id="panel_refresh")
                 refresh.callback = self._refresh
                 self.add_item(refresh)
@@ -6264,6 +6294,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 command = next((item for item in commands if item.name == name), None)
                 if command is None:
                     await current.response.send_message("Command is no longer available. Refresh the panel.", ephemeral=True)
+                    return
+                if name in {"resume", "sessions"}:
+                    await self._open_sessions(current)
                     return
                 hint = str(getattr(command, "args_hint", "") or "")
                 finite = re.fullmatch(r"\[?([\w-]+(?:\|[\w-]+)+)\]?", hint.replace(" ", ""))
@@ -6298,6 +6331,124 @@ class DiscordAdapter(BasePlatformAdapter):
                     await current.response.send_modal(ArgsModal())
                     return
                 await adapter._run_simple_slash(current, f"/{name}")
+
+            async def _open_sessions(self, current):
+                if not await self._authorized(current):
+                    return
+                if not adapter._is_discord_owner_or_admin(current):
+                    await current.response.send_message(
+                        "Administrator access is required to browse profile sessions.",
+                        ephemeral=True,
+                    )
+                    return
+                runner = getattr(adapter, "gateway_runner", None)
+                admin_check = getattr(runner, "_resume_caller_is_admin", None)
+                event = adapter._build_slash_event(current, "/sessions all")
+                if not callable(admin_check) or not admin_check(event.source):
+                    await current.response.send_message(
+                        "This Discord identity must be an explicit Hermes slash admin before cross-session resume is available.",
+                        ephemeral=True,
+                    )
+                    return
+                await current.response.defer()
+                try:
+                    from .agk_session_panel import session_picker_rows
+
+                    session_db = getattr(runner, "_session_db", None)
+                    if session_db is None:
+                        raise RuntimeError("Hermes session database is unavailable")
+                    rows = await asyncio.to_thread(
+                        session_db.list_sessions_rich,
+                        source=None,
+                        session_key=None,
+                        exclude_sources=["tool", "cron"],
+                        limit=100,
+                        order_by_last_active=True,
+                        compact_rows=True,
+                        include_pinned=True,
+                    )
+                    self.session_rows = session_picker_rows(rows, limit=100)
+                except Exception:
+                    logger.exception("[%s] Discord session picker failed", adapter.name)
+                    self.session_rows = []
+                self.session_page = 0
+                self._show_session_page()
+                content = (
+                    "Choose a profile conversation to continue in this Discord chat."
+                    if self.session_rows
+                    else "No resumable profile conversation is available yet."
+                )
+                await current.edit_original_response(content=content, view=self)
+
+            def _show_session_page(self):
+                self.clear_items()
+                page_count = max(1, (len(self.session_rows) + 24) // 25)
+                self.session_page = min(max(0, self.session_page), page_count - 1)
+                visible = self.session_rows[
+                    self.session_page * 25 : (self.session_page + 1) * 25
+                ]
+                if visible:
+                    picker = discord.ui.Select(
+                        placeholder="Continue a Hermes conversation...",
+                        options=[
+                            discord.SelectOption(
+                                label=row["label"][:100],
+                                value=row["id"],
+                                description=row["description"][:100],
+                            )
+                            for row in visible
+                        ],
+                        custom_id="panel_session_resume",
+                    )
+                    picker.callback = self._resume_session
+                    self.add_item(picker)
+                if page_count > 1:
+                    previous = discord.ui.Button(
+                        label="Previous",
+                        style=discord.ButtonStyle.grey,
+                        custom_id="panel_session_previous",
+                        disabled=self.session_page == 0,
+                    )
+                    following = discord.ui.Button(
+                        label="Next",
+                        style=discord.ButtonStyle.grey,
+                        custom_id="panel_session_next",
+                        disabled=self.session_page >= page_count - 1,
+                    )
+                    previous.callback = lambda selected: self._change_session_page(selected, -1)
+                    following.callback = lambda selected: self._change_session_page(selected, 1)
+                    self.add_item(previous)
+                    self.add_item(following)
+                self._add_common(include_back=True)
+
+            async def _change_session_page(self, current, delta):
+                if not await self._authorized(current):
+                    return
+                self.session_page += delta
+                self._show_session_page()
+                await current.response.edit_message(
+                    content=f"Profile conversations · page {self.session_page + 1}",
+                    view=self,
+                )
+
+            async def _resume_session(self, current):
+                if not await self._authorized(current):
+                    return
+                from .agk_session_panel import resume_all_command
+
+                try:
+                    command = resume_all_command(current.data["values"][0])
+                except (KeyError, IndexError, ValueError):
+                    await current.response.send_message(
+                        "That session selection is no longer valid. Refresh the panel.",
+                        ephemeral=True,
+                    )
+                    return
+                await adapter._run_simple_slash(
+                    current,
+                    command,
+                    "Conversation resumed. Your next message continues the same Hermes session.",
+                )
 
             async def _back(self, current):
                 if await self._authorized(current):
@@ -6356,6 +6507,12 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         tree = self._client.tree
+        # Dynamic Views are the durable public surface. Future profile bots
+        # inherit this policy when sync-hermes installs the adapter.
+        ui_only = str(
+            self.config.extra.get("command_ui_mode", "full") or "full"
+        ).strip().lower() == "ui_only"
+        # AGK_DISCORD_UI_ONLY_V1
 
         @tree.command(name="new", description="Start a new conversation")
         async def slash_new(interaction: discord.Interaction):
@@ -6764,6 +6921,17 @@ class DiscordAdapter(BasePlatformAdapter):
         # UX so users don't see commands they can't invoke. Off by default
         # to preserve the slash UX for deployments that intentionally allow
         # everyone in the guild.
+        if ui_only:
+            allowed_ui_commands = {"panel", "settings", "clear"}
+            for registered in list(tree.get_commands()):
+                if getattr(registered, "name", "") not in allowed_ui_commands:
+                    tree.remove_command(registered.name)
+            logger.info(
+                "[%s] Discord UI-only mode: exposed %d dynamic command surfaces",
+                self.name,
+                len(tree.get_commands()),
+            )
+
         if os.getenv("DISCORD_HIDE_SLASH_COMMANDS", "false").strip().lower() in {
             "true", "1", "yes", "on",
         }:

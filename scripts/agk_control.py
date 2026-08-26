@@ -200,10 +200,10 @@ def agent_catalog_path(home: Path) -> Path:
         "AGK_TERMINAL_ROOT", Path(__file__).resolve().parents[1]
     ))
     candidates = [
-        install_root / "agents",
-        install_root / "hermes" / "agents",
         home / ".hermes" / "agents",
         home / ".local" / "share" / "agk" / "agents",
+        install_root / "agents",
+        install_root / "hermes" / "agents",
     ]
     return next(
         (candidate for candidate in candidates if candidate.is_dir()),
@@ -373,6 +373,7 @@ class RuntimeRegistry:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(runtime_sessions)")}
         additions = {
             "native_session": "TEXT",
+            "hermes_profile": "TEXT",
             "command_json": "TEXT NOT NULL DEFAULT '[]'",
             "exit_code": "INTEGER",
         }
@@ -395,11 +396,16 @@ class RuntimeRegistry:
     def create(self, *, name: str, kind: str, cwd: Path, client: str | None = None,
                project: str | None = None, mission: str | None = None,
                parent: str | None = None, command: list[str] | None = None,
-               native_session: str | None = None) -> sqlite3.Row:
+               native_session: str | None = None,
+               hermes_profile: str | None = None) -> sqlite3.Row:
         if kind not in TYPES:
             raise ValueError(f"unsupported session type: {kind}")
         if not NAME_RE.fullmatch(name):
             raise ValueError("name must be 3-80 lowercase letters, digits or hyphens")
+        if hermes_profile is not None and (
+            kind != "hermes" or not NAME_RE.fullmatch(hermes_profile)
+        ):
+            raise ValueError("Hermes profile must be a safe lowercase profile id")
         cwd = cwd.expanduser().resolve()
         allowed = self.env.home.resolve()
         if cwd != allowed and allowed not in cwd.parents:
@@ -418,11 +424,11 @@ class RuntimeRegistry:
             INSERT INTO runtime_sessions(
               id,name,type,environment,client,project,mission,hermes_session,
               rmux_session,cwd,status,parent_session_id,created_at,last_activity,
-              archived_at,native_session,command_json,exit_code
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              archived_at,native_session,hermes_profile,command_json,exit_code
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (runtime_id, name, kind, self.env.name, client, project, mission,
                native_session if kind == "hermes" else None, name, str(cwd),
-               "running", parent, now, now, None, native_session,
+               "running", parent, now, now, None, native_session, hermes_profile,
                json.dumps(launch), None))
         self.db.execute(
             "INSERT INTO runtime_events(runtime_id,event,created_at) VALUES(?,?,?)",
@@ -493,7 +499,9 @@ class RuntimeRegistry:
     def restart_frontend(self, row: sqlite3.Row) -> sqlite3.Row:
         command = json.loads(row["command_json"] or "[]")
         if not command:
-            command = default_command(row["type"], row["native_session"])
+            command = default_command(
+                row["type"], row["native_session"], row["hermes_profile"]
+            )
         if self.runtime.has_session(row["rmux_session"]):
             self.runtime.respawn(row["rmux_session"], row["cwd"], command)
         else:
@@ -503,7 +511,8 @@ class RuntimeRegistry:
         return updated
 
     def ensure_specialist(
-        self, *, name: str, cwd: Path, command: list[str]
+        self, *, name: str, cwd: Path, command: list[str],
+        hermes_profile: str | None = None,
     ) -> tuple[sqlite3.Row, bool]:
         """Create or repair the one canonical runtime for a catalog agent."""
         row = self.get(name)
@@ -514,6 +523,7 @@ class RuntimeRegistry:
                     kind="hermes",
                     cwd=cwd,
                     command=command,
+                    hermes_profile=hermes_profile,
                 ),
                 True,
             )
@@ -535,10 +545,10 @@ class RuntimeRegistry:
             """
             UPDATE runtime_sessions
                SET type='hermes', cwd=?, status='running', archived_at=NULL,
-                   command_json=?, exit_code=NULL, last_activity=?
+                   hermes_profile=?, command_json=?, exit_code=NULL, last_activity=?
              WHERE id=?
             """,
-            (desired_cwd, json.dumps(command), now, row["id"]),
+            (desired_cwd, hermes_profile, json.dumps(command), now, row["id"]),
         )
         self.db.commit()
         updated = self.get(row["id"])
@@ -559,7 +569,10 @@ class RuntimeRegistry:
         elif row["type"] == "hermes" and native:
             # Hermes has resume but no documented fork flag. Start a new lineage
             # while retaining the parent link in Agentik metadata.
-            command = ["hermes", "--in", row["cwd"]]
+            command = ["hermes"]
+            if row["hermes_profile"]:
+                command.extend(["--profile", row["hermes_profile"]])
+            command.extend(["--in", row["cwd"]])
             native = None
         else:
             command = default_command(row["type"])
@@ -567,7 +580,8 @@ class RuntimeRegistry:
         return self.create(name=name, kind=row["type"], cwd=Path(row["cwd"]),
                            client=row["client"], project=row["project"],
                            mission=row["mission"], parent=row["id"],
-                           command=command, native_session=native)
+                           command=command, native_session=native,
+                           hermes_profile=row["hermes_profile"])
 
     def reconcile(self) -> tuple[int, list[str]]:
         proc = self.runtime.panes()
@@ -605,14 +619,23 @@ class RuntimeRegistry:
         return changed, sorted(live - managed)
 
 
-def default_command(kind: str, native_session: str | None = None) -> list[str]:
+def default_command(
+    kind: str,
+    native_session: str | None = None,
+    hermes_profile: str | None = None,
+) -> list[str]:
     executable = lambda name: shutil.which(name) or name
     openrouter_model = os.environ.get("AGK_OPENROUTER_MODEL", "stealth/ox-alpha")
     claude = [executable("env"), "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1", executable("claude"), "--dangerously-skip-permissions"]
     if native_session:
         claude.extend(["--resume", native_session])
+    hermes = [executable("hermes")]
+    if hermes_profile:
+        hermes.extend(["--profile", hermes_profile])
+    if native_session:
+        hermes.extend(["--resume", native_session])
     commands = {
-        "hermes": [executable("hermes"), "--resume", native_session] if native_session else [executable("hermes")],
+        "hermes": hermes,
         "claude": claude,
         "codex": [executable("codex"), "resume", native_session] if native_session else [executable("codex")],
         "openrouter": [executable("hermes"), "--provider", "openrouter", "--model", openrouter_model],
@@ -625,13 +648,26 @@ def default_command(kind: str, native_session: str | None = None) -> list[str]:
 
 
 def start_specialist(
-    env: Environment, registry: RuntimeRegistry, agent_id: str
+    env: Environment,
+    registry: RuntimeRegistry,
+    agent_id: str,
+    session_name: str | None = None,
 ) -> tuple[sqlite3.Row, bool]:
     definition = specialist_definition(env, agent_id)
     workspace = prepare_specialist_workspace(env, definition)
     command = specialist_command(env, definition, workspace)
-    session = f"{env.name}-{agent_id}"
-    return registry.ensure_specialist(name=session, cwd=workspace, command=command)
+    canonical = f"{env.name}-{agent_id}"
+    session = session_name or canonical
+    if session != canonical and (
+        not NAME_RE.fullmatch(session) or not session.startswith(f"{canonical}-")
+    ):
+        raise ValueError(f"specialist conversation must start with {canonical}-")
+    return registry.ensure_specialist(
+        name=session,
+        cwd=workspace,
+        command=command,
+        hermes_profile=definition.get("profile"),
+    )
 
 
 def filtered(rows: list[sqlite3.Row], query: str) -> list[sqlite3.Row]:
@@ -1197,13 +1233,14 @@ def main() -> int:
     sub.add_parser("status"); sub.add_parser("doctor"); sub.add_parser("sessions")
     new = sub.add_parser("new")
     new.add_argument("type", choices=sorted(TYPES)); new.add_argument("name")
-    new.add_argument("--cwd", type=Path); new.add_argument("--client"); new.add_argument("--project"); new.add_argument("--mission"); new.add_argument("--native-session")
+    new.add_argument("--cwd", type=Path); new.add_argument("--client"); new.add_argument("--project"); new.add_argument("--mission"); new.add_argument("--native-session"); new.add_argument("--profile")
     resume = sub.add_parser("resume"); resume.add_argument("target", nargs="?")
     open_p = sub.add_parser("open"); open_p.add_argument("target")
     agent = sub.add_parser("agent"); agent.add_argument("type", choices=("hermes", "claude", "codex")); agent.add_argument("name", nargs="?")
     specialist = sub.add_parser("specialist")
     specialist.add_argument("action", choices=("start",))
     specialist.add_argument("id")
+    specialist.add_argument("--session")
     for action in ("info", "archive", "restart"):
         item = sub.add_parser(action); item.add_argument("target")
     for action in ("kill", "close"):
@@ -1231,8 +1268,9 @@ def main() -> int:
     if args.command == "new":
         row = registry.create(name=args.name, kind=args.type, cwd=args.cwd or env.home,
                               client=args.client, project=args.project, mission=args.mission,
-                              command=default_command(args.type, args.native_session),
-                              native_session=args.native_session)
+                              command=default_command(args.type, args.native_session, args.profile),
+                              native_session=args.native_session,
+                              hermes_profile=args.profile)
         print(f"Created {row['id']} · {row['name']} · {row['type'].upper()}"); return 0
     if args.command == "agent":
         name = args.name or f"{env.name}-{args.type}-{time.strftime('%Y%m%d-%H%M%S')}"
@@ -1240,7 +1278,7 @@ def main() -> int:
         print(f"Started {row['id']} · {row['name']}"); return 0
     if args.command == "specialist":
         try:
-            row, created = start_specialist(env, registry, args.id)
+            row, created = start_specialist(env, registry, args.id, args.session)
         except (OSError, RuntimeError, ValueError, PermissionError) as error:
             print(f"Specialist start failed: {error}", file=sys.stderr)
             return 1

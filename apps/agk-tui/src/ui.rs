@@ -661,6 +661,96 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect, size: Density, colors
 
 fn draw_agents(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Palette) {
     let (list_area, detail_area) = panes(app, area, size);
+    if let Some(context) = &app.agent_conversations {
+        if list_area.width > 0 {
+            let items = app
+                .filtered_agent_conversations()
+                .map(|runtime| {
+                    ListItem::new(vec![
+                        Line::from(vec![
+                            Span::styled(
+                                if runtime.live { "● " } else { "↻ " },
+                                Style::default().fg(if runtime.live {
+                                    colors.success
+                                } else {
+                                    colors.info
+                                }),
+                            ),
+                            Span::styled(
+                                runtime.name.clone(),
+                                Style::default()
+                                    .fg(colors.text)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                        ]),
+                        Line::styled(
+                            format!("  {} · {}", runtime.kind, runtime.status),
+                            Style::default().fg(colors.text_muted),
+                        ),
+                    ])
+                })
+                .collect::<Vec<_>>();
+            selectable(
+                frame,
+                list_area,
+                items,
+                app.selected,
+                app.focus == Focus::List,
+                " AGENT CONVERSATIONS ",
+                colors,
+            );
+        }
+        if detail_area.width > 0 {
+            let text = app.current_agent_conversation().map_or_else(
+                || {
+                    Text::from(vec![
+                        field("Agent", &context.agent_name, colors),
+                        field("Profile", &context.agent_id, colors),
+                        Line::raw(""),
+                        Line::styled(
+                            "No conversation yet.",
+                            Style::default().fg(colors.text),
+                        ),
+                        Line::styled(
+                            "n creates a dedicated conversation · Esc returns",
+                            Style::default().fg(colors.text_muted),
+                        ),
+                    ])
+                },
+                |runtime| {
+                    Text::from(vec![
+                        field("Agent", &context.agent_name, colors),
+                        field("Conversation", &runtime.name, colors),
+                        field("Status", &runtime.status, colors),
+                        field(
+                            "Hermes",
+                            runtime.native_session.as_deref().unwrap_or("pending"),
+                            colors,
+                        ),
+                        field(
+                            "Profile",
+                            runtime.hermes_profile.as_deref().unwrap_or("default"),
+                            colors,
+                        ),
+                        Line::raw(""),
+                        Line::styled(
+                            "Enter opens or resumes · n creates · x closes live runtime · Esc returns",
+                            Style::default().fg(colors.text_muted),
+                        ),
+                    ])
+                },
+            );
+            detail(
+                frame,
+                detail_area,
+                text,
+                " AGENT CONVERSATION ",
+                app,
+                colors,
+            );
+        }
+        return;
+    }
     if list_area.width > 0 {
         let items = app
             .filtered_agents()
@@ -728,7 +818,7 @@ fn draw_agents(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: 
                     Line::styled(agent.description.clone(), Style::default().fg(colors.text)),
                     Line::raw(""),
                     Line::styled(
-                        "Enter opens the linked live runtime.",
+                        "Enter lists this agent's synced conversations.",
                         Style::default().fg(colors.text_muted),
                     ),
                 ])
@@ -740,6 +830,82 @@ fn draw_agents(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: 
 
 fn draw_os(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Palette) {
     let (list_area, detail_area) = panes(app, area, size);
+    if let Some(context) = &app.os_conversations {
+        if list_area.width > 0 {
+            let items = app
+                .filtered_os_conversations()
+                .map(|runtime| {
+                    ListItem::new(vec![
+                        Line::from(vec![
+                            Span::styled(
+                                if runtime.live { "● " } else { "○ " },
+                                Style::default().fg(if runtime.live {
+                                    colors.success
+                                } else {
+                                    colors.warning
+                                }),
+                            ),
+                            Span::styled(
+                                runtime.name.clone(),
+                                Style::default()
+                                    .fg(colors.text)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                        ]),
+                        Line::styled(
+                            format!("  {} · {}", runtime.kind, runtime.status),
+                            Style::default().fg(colors.text_muted),
+                        ),
+                    ])
+                })
+                .collect::<Vec<_>>();
+            selectable(
+                frame,
+                list_area,
+                items,
+                app.selected,
+                app.focus == Focus::List,
+                " OS CONVERSATIONS ",
+                colors,
+            );
+        }
+        if detail_area.width > 0 {
+            let package_name = app
+                .os_context_package()
+                .map(|package| package.name.as_str())
+                .unwrap_or(context.reference.as_str());
+            let text = app.current_os_conversation().map_or_else(
+                || {
+                    Text::from(vec![
+                        field("OS", package_name, colors),
+                        field("Agent", &context.agent_id, colors),
+                        Line::raw(""),
+                        Line::styled("No conversation yet.", Style::default().fg(colors.text)),
+                        Line::styled(
+                            "n creates a new dedicated conversation · Esc returns to OS registry",
+                            Style::default().fg(colors.text_muted),
+                        ),
+                    ])
+                },
+                |runtime| {
+                    Text::from(vec![
+                        field("OS", package_name, colors),
+                        field("Agent", &context.agent_id, colors),
+                        field("Conversation", &runtime.name, colors),
+                        field("Status", &runtime.status, colors),
+                        field("Runtime", &runtime.kind, colors),
+                        Line::raw(""),
+                        Line::styled(
+                            "Enter opens · n creates · x closes live runtime · Esc returns",
+                            Style::default().fg(colors.text_muted),
+                        ),
+                    ])
+                },
+            );
+            detail(frame, detail_area, text, " OS CONVERSATION ", app, colors);
+        }
+        return;
+    }
     if list_area.width > 0 {
         let items = app
             .filtered_os()
@@ -821,7 +987,7 @@ fn draw_os(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Pale
                     ),
                     Line::raw(""),
                     Line::styled(
-                        "Enter opens a conversation with the responsible agent.",
+                        "Enter lists this OS conversations (open / new / delete).",
                         Style::default().fg(colors.text_muted),
                     ),
                 ])
@@ -1671,6 +1837,24 @@ fn draw_overlay(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
                 ),
             ],
         ),
+        Overlay::NewAgentConversation {
+            agent_id,
+            runtime_prefix,
+            value,
+        } => (
+            centered(area, 66, 9),
+            " NEW AGENT CONVERSATION ",
+            vec![
+                field("Agent", agent_id, colors),
+                field("Runtime", &format!("{runtime_prefix}-{value}"), colors),
+                Line::raw(""),
+                Line::styled(format!("> {value}▌"), Style::default().fg(colors.text)),
+                Line::styled(
+                    "3+ lowercase letters, numbers or - · Enter create · Esc cancel",
+                    Style::default().fg(colors.text_muted),
+                ),
+            ],
+        ),
         Overlay::RenameSession { target, value } => (
             centered(area, 58, 7),
             " RENAME SESSION ",
@@ -1973,6 +2157,7 @@ mod tests {
                 project: Some("luna".into()),
                 mission: Some("launch".into()),
                 native_session: Some("hermes-moon".into()),
+                hermes_profile: None,
                 rmux_session: "mission-moon-hermes".into(),
                 cwd: "/work/luna".into(),
                 status: "active".into(),

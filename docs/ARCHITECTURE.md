@@ -47,6 +47,14 @@ Hermes checkout, while profile-installed skills and MCP credentials remain
 inside their Linux security boundary. Composio is exposed uniformly through
 `agk-terminal composio`, but each profile authorizes its own account.
 
+AGK also reads eligible active messaging sessions from the profile-local
+Hermes `state.db`. It projects them as resumable entries in Sessions and, for
+named profiles, beneath the corresponding catalog agent. Resuming creates an
+RMUX wrapper around the existing native Hermes session ID; it does not copy or
+translate the transcript. Discord's session selector resolves the same IDs
+through Hermes' protected cross-platform resume path. See
+[Conversation continuity](SESSION-SYNC.md).
+
 ```text
 AGK native TUI
   ├─ reads ~/.agentik/{runtime,control}.db

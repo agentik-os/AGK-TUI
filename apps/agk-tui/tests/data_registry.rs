@@ -155,6 +155,129 @@ fn add_modern_hermes_usage_schema(connection: &Connection) {
         .unwrap();
 }
 
+fn gateway_session_db(path: &Path) -> Connection {
+    parent(path);
+    let connection = Connection::open(path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                session_key TEXT,
+                title TEXT,
+                cwd TEXT,
+                started_at REAL NOT NULL,
+                last_activity_at REAL,
+                ended_at REAL,
+                archived INTEGER DEFAULT 0,
+                hidden INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0,
+                model TEXT,
+                billing_provider TEXT,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                api_call_count INTEGER DEFAULT 0
+            );",
+        )
+        .unwrap();
+    connection
+}
+
+#[test]
+fn active_profile_chats_are_resumable_in_sessions_and_agent_views() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(&temp);
+    write(
+        paths.agent_catalog.join("research/agent.yaml"),
+        "id: research-agent\nname: Research Agent\nversion: 1.0.0\ndescription: Researches\nscope: [operator]\nruntime: hermes\nprofile: research\nprompt: prompt.md\n",
+    );
+    write(
+        paths.agent_catalog.join("research/prompt.md"),
+        "instructions",
+    );
+
+    let main = gateway_session_db(&paths.hermes_state_db);
+    main.execute(
+        "INSERT INTO sessions(
+            id,source,session_key,title,cwd,started_at,last_activity_at,message_count,
+            model,billing_provider,input_tokens,output_tokens
+         ) VALUES ('discord-main','discord','agent:main:discord:dm:1',
+                   'Continue launch','',10,30,4,'gpt-5.6-sol','openai-codex',100,20)",
+        [],
+    )
+    .unwrap();
+    main.execute(
+        "INSERT INTO sessions(id,source,session_key,title,started_at,last_activity_at,message_count)
+         VALUES ('ended-chat','discord','agent:main:discord:dm:1','Old',1,2,1)",
+        [],
+    )
+    .unwrap();
+    main.execute("UPDATE sessions SET ended_at=3 WHERE id='ended-chat'", [])
+        .unwrap();
+    drop(main);
+
+    let profile_db = paths
+        .hermes_state_db
+        .parent()
+        .unwrap()
+        .join("profiles/research/state.db");
+    let research = gateway_session_db(&profile_db);
+    research
+        .execute(
+            "INSERT INTO sessions(
+            id,source,session_key,title,cwd,started_at,last_activity_at,message_count,
+            model,billing_provider,input_tokens,output_tokens
+         ) VALUES ('telegram-agent','telegram','agent:main:telegram:dm:2',
+                   'Weekly synthesis','',20,40,5,'claude-sonnet-4-6','anthropic',50,10)",
+            [],
+        )
+        .unwrap();
+    drop(research);
+
+    let snapshot = RegistryClient::new("operator", paths).load(&[]);
+    let main_chat = snapshot
+        .runtimes
+        .iter()
+        .find(|runtime| runtime.native_session.as_deref() == Some("discord-main"))
+        .unwrap();
+    assert!(main_chat.name.starts_with("operator-chat-continue-launch-"));
+    assert_eq!(main_chat.status, "discord · synced");
+    assert!(!main_chat.managed && !main_chat.live);
+    assert_eq!(main_chat.tokens, 120);
+
+    let agent_chat = snapshot
+        .runtimes
+        .iter()
+        .find(|runtime| runtime.native_session.as_deref() == Some("telegram-agent"))
+        .unwrap();
+    assert!(
+        agent_chat
+            .name
+            .starts_with("operator-research-agent-chat-weekly-synthesis-")
+    );
+    assert_eq!(agent_chat.hermes_profile.as_deref(), Some("research"));
+    assert_eq!(agent_chat.tokens, 60);
+    assert!(
+        snapshot
+            .runtimes
+            .iter()
+            .all(|runtime| runtime.native_session.as_deref() != Some("ended-chat"))
+    );
+
+    let agent = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.id == "research-agent")
+        .unwrap();
+    assert_eq!(agent.runtime_id.as_deref(), Some(agent_chat.id.as_str()));
+    assert_eq!(agent.status, "telegram · synced");
+    assert!(!agent.live);
+    assert_eq!(snapshot.token_total, 180);
+}
+
 #[test]
 fn missing_stores_are_empty_and_never_created() {
     let temp = TempDir::new().unwrap();

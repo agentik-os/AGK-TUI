@@ -25,6 +25,7 @@ reopen AGK from a phone and continue the same live conversation.
 - a profile-local MCP inventory, including redacted Composio connections;
 - global Rules synchronized to every supported provider;
 - optional Hermes gateways for Discord and headless operation;
+- seamless conversation continuation between Discord and AGK;
 - a transactional client-organization control plane for Mission work;
 - on a VPS, a topology manager for Operator, Agentik, Mission and Private.
 
@@ -152,11 +153,27 @@ footer the correct Git repository and branch context.
 ### 3 Agents
 
 Agents lists installed specialized-agent manifests, their Hermes profile,
-linked OS packages and durable runtime status. `Enter` starts or resumes the
-canonical `{profile}-{agent-id}` RMUX session and opens its conversation.
+linked OS packages and durable runtime status. `Enter` opens that agent's
+synced conversation list; another `Enter` resumes the selected native Hermes
+conversation in RMUX, while `n` starts a dedicated new conversation.
 Every agent gets its own workspace under
 `~/.agentik/agents/<agent-id>/workspace` and a frozen copy of its installed
 instructions.
+
+### Discord and terminal continuity
+
+Hermes' native session ID is the shared conversation identity. From a terminal
+chat, `/handoff discord` continues it through the profile bot. From Discord,
+open `/panel`, choose **Sessions**, then select any authorized active
+conversation. Back in AGK, the same conversation appears under **Sessions** or
+under its named profile in **Agents** and resumes with one `Enter`.
+
+The transcript is not duplicated: Discord and AGK reopen the same Hermes
+record, protected by Hermes' turn lease. Routine restart notifications are
+silent; only a gateway that stays unavailable for ten minutes emits one alert
+in the Operator bot's `#general`, with silent recovery. See
+[Conversation continuity](docs/SESSION-SYNC.md) for the full security and
+operational model.
 
 ### 4 OS
 

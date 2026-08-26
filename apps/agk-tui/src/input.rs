@@ -15,6 +15,7 @@ pub enum Action {
     EnterTerminal,
     InstallProvider { id: String },
     OpenAgent { id: String, session: String },
+    ResumeConversation { target: SessionTarget },
     CreateSession { kind: SessionKind, name: String },
     RenameSession { target: SessionTarget, name: String },
     CloseSession { target: SessionTarget },
@@ -205,9 +206,41 @@ pub fn handle_key_for_layout(
             };
             Action::None
         }
+        KeyCode::Char('n') if app.view == View::Os && app.os_conversations.is_some() => {
+            let context = app
+                .os_conversations
+                .as_ref()
+                .expect("OS conversation context")
+                .clone();
+            app.overlay = Overlay::NewAgentConversation {
+                agent_id: context.agent_id,
+                runtime_prefix: context.runtime_prefix,
+                value: String::new(),
+            };
+            Action::None
+        }
+        KeyCode::Char('n') if app.view == View::Agents && app.agent_conversations.is_some() => {
+            let context = app
+                .agent_conversations
+                .as_ref()
+                .expect("agent conversation context")
+                .clone();
+            app.overlay = Overlay::NewAgentConversation {
+                agent_id: context.agent_id,
+                runtime_prefix: context.runtime_prefix,
+                value: String::new(),
+            };
+            Action::None
+        }
         KeyCode::Char('n') => {
             app.overlay = Overlay::NewKind { selected: 0 };
             Action::None
+        }
+        KeyCode::Char('x') if app.view == View::Os && app.os_conversations.is_some() => {
+            close_conversation_target(app, app.current_os_conversation_target())
+        }
+        KeyCode::Char('x') if app.view == View::Agents && app.agent_conversations.is_some() => {
+            close_conversation_target(app, app.current_agent_conversation_target())
         }
         KeyCode::Char('x') if app.view == View::Sessions && app.focus != Focus::Nav => {
             close_selected_session(app)
@@ -348,21 +381,50 @@ pub fn handle_key_for_layout(
         }
         KeyCode::Enter if app.view == View::Settings => activate_settings(app),
         KeyCode::Enter if app.view == View::Sessions => {
-            if app.current_session().is_some() {
-                Action::EnterTerminal
+            open_conversation_target(app, app.current_session().map(SessionTarget::from))
+        }
+        KeyCode::Enter if app.view == View::Agents => {
+            if app.agent_conversations.is_none() {
+                if app.enter_agent_conversations() {
+                    app.status = Some(
+                        "Agent conversations · Enter resumes · n creates · Esc returns".into(),
+                    );
+                } else {
+                    app.status = Some("No agent selected".into());
+                }
+                Action::None
             } else {
-                app.status = Some("No session selected".into());
+                open_conversation_target(app, app.current_agent_conversation_target())
+            }
+        }
+        KeyCode::Enter if app.view == View::Os => {
+            if app.os_conversations.is_none() {
+                if app.enter_os_conversations() {
+                    app.status =
+                        Some("OS conversations · Enter open · n new · x delete · Esc back".into());
+                } else {
+                    app.status = Some("No responsible catalog agent is assigned".into());
+                }
+                Action::None
+            } else if let Some(runtime) = app.current_os_conversation() {
+                open_conversation_target(app, Some(SessionTarget::from(runtime)))
+            } else {
+                app.status = Some("No conversation yet · press n to create one".into());
                 Action::None
             }
         }
-        KeyCode::Enter if app.view == View::Agents => {
-            open_agent_conversation(app, app.current_agent().map(|agent| agent.id.clone()))
-        }
-        KeyCode::Enter if app.view == View::Os => {
-            open_agent_conversation(app, app.current_os_agent().map(|agent| agent.id.clone()))
-        }
         KeyCode::Enter => {
             app.focus = Focus::Detail;
+            Action::None
+        }
+        KeyCode::Esc if app.view == View::Os && app.os_conversations.is_some() => {
+            app.leave_os_conversations();
+            app.status = Some("Returned to OS registry".into());
+            Action::None
+        }
+        KeyCode::Esc if app.view == View::Agents && app.agent_conversations.is_some() => {
+            app.leave_agent_conversations();
+            app.status = Some("Returned to agent registry".into());
             Action::None
         }
         KeyCode::Esc => {
@@ -400,7 +462,9 @@ pub fn handle_paste(app: &mut App, text: &str) -> Action {
             query.extend(text.chars().filter(|character| !character.is_control()));
             *selected = 0;
         }
-        Overlay::NewName { value, .. } | Overlay::RenameSession { value, .. } => {
+        Overlay::NewName { value, .. }
+        | Overlay::NewAgentConversation { value, .. }
+        | Overlay::RenameSession { value, .. } => {
             value.extend(
                 text.chars()
                     .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
@@ -444,13 +508,50 @@ fn new_session_name(app: &mut App, kind: SessionKind) -> Action {
 }
 
 fn close_selected_session(app: &mut App) -> Action {
-    let Some(target) = app.current_session_target() else {
-        app.status = Some("No session selected".into());
+    close_conversation_target(app, app.current_session_target())
+}
+
+fn open_conversation_target(app: &mut App, target: Option<SessionTarget>) -> Action {
+    let Some(target) = target else {
+        app.status = Some("No conversation selected".into());
         return Action::None;
     };
+    let live = app
+        .snapshot
+        .runtimes
+        .iter()
+        .find(|runtime| runtime.id == target.id)
+        .is_some_and(|runtime| runtime.live);
+    if live {
+        if app.select_session_by_name(&target.name) {
+            return Action::EnterTerminal;
+        }
+        app.status = Some("Conversation is no longer available".into());
+        return Action::None;
+    }
+    if target.native_session.is_some() {
+        app.set_view(View::Sessions);
+        app.select_session_by_name(&target.name);
+        return Action::ResumeConversation { target };
+    }
+    app.status = Some("This terminal is offline and has no resumable provider session".into());
+    Action::None
+}
+
+fn close_conversation_target(app: &mut App, target: Option<SessionTarget>) -> Action {
+    let Some(target) = target else {
+        app.status = Some("No conversation selected".into());
+        return Action::None;
+    };
+    if !target.managed {
+        app.status = Some(
+            "Synced Hermes history is preserved; resume it or archive it from Hermes Sessions"
+                .into(),
+        );
+        return Action::None;
+    }
     if app.current_rmux_session.as_deref() == Some(target.rmux_session.as_str()) {
-        app.status =
-            Some("AGK cannot close the RMUX session that is running this interface".into());
+        app.status = Some("AGK cannot close the conversation running this interface".into());
         return Action::None;
     }
     Action::CloseSession { target }
@@ -614,6 +715,62 @@ fn handle_overlay_key(app: &mut App, key: KeyEvent, compact: bool) -> Action {
             }
             _ => {
                 app.overlay = Overlay::NewName { kind, value };
+                Action::None
+            }
+        },
+        Overlay::NewAgentConversation {
+            agent_id,
+            runtime_prefix,
+            mut value,
+        } => match key.code {
+            KeyCode::Esc => Action::None,
+            KeyCode::Backspace => {
+                value.pop();
+                app.overlay = Overlay::NewAgentConversation {
+                    agent_id,
+                    runtime_prefix,
+                    value,
+                };
+                Action::None
+            }
+            KeyCode::Char(character)
+                if printable(key.modifiers)
+                    && (character.is_ascii_alphanumeric() || character == '-')
+                    && value.len() < 40 =>
+            {
+                value.push(character.to_ascii_lowercase());
+                app.overlay = Overlay::NewAgentConversation {
+                    agent_id,
+                    runtime_prefix,
+                    value,
+                };
+                Action::None
+            }
+            KeyCode::Enter => {
+                let session = format!("{runtime_prefix}-{value}");
+                if value.len() >= 3 && valid_session_name(&session) {
+                    Action::OpenAgent {
+                        id: agent_id,
+                        session,
+                    }
+                } else {
+                    app.status = Some(
+                        "Conversation name must be 3+ lowercase letters, numbers or hyphens".into(),
+                    );
+                    app.overlay = Overlay::NewAgentConversation {
+                        agent_id,
+                        runtime_prefix,
+                        value,
+                    };
+                    Action::None
+                }
+            }
+            _ => {
+                app.overlay = Overlay::NewAgentConversation {
+                    agent_id,
+                    runtime_prefix,
+                    value,
+                };
                 Action::None
             }
         },
@@ -868,34 +1025,6 @@ fn open_custom_theme_editor(app: &mut App) -> Action {
     Action::None
 }
 
-fn open_agent_conversation(app: &mut App, agent_id: Option<String>) -> Action {
-    let Some(agent_id) = agent_id else {
-        app.status = Some("No responsible catalog agent is assigned".into());
-        app.focus = Focus::Detail;
-        return Action::None;
-    };
-    let Some(agent) = app
-        .snapshot
-        .agents
-        .iter()
-        .find(|agent| agent.id == agent_id)
-    else {
-        app.status = Some("The responsible catalog agent is unavailable".into());
-        return Action::None;
-    };
-    let session = agent.runtime_name.clone();
-    let live = agent.live;
-    if live && app.select_session_by_name(&session) {
-        app.status = Some(format!("Opened {}", agent_id));
-        Action::EnterTerminal
-    } else {
-        Action::OpenAgent {
-            id: agent_id,
-            session,
-        }
-    }
-}
-
 fn cycle_refresh(app: &mut App, forwards: bool) {
     const VALUES: [u64; 4] = [250, 500, 1_000, 2_000];
     let index = VALUES
@@ -945,6 +1074,7 @@ mod tests {
                 project: None,
                 mission: None,
                 native_session: None,
+                hermes_profile: None,
                 rmux_session: "mission-moon-hermes".into(),
                 cwd: "/work".into(),
                 status: "active".into(),
@@ -1391,18 +1521,68 @@ mod tests {
     }
 
     #[test]
-    fn os_enter_starts_the_responsible_profile_agent_without_a_middle_step() {
+    fn os_enter_lists_conversations_then_supports_new_open_and_delete() {
         let mut app = app();
         add_os_agent(&mut app);
         app.set_view(View::Os);
 
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Enter), true),
+            Action::None
+        );
+        assert_eq!(
+            app.os_conversations
+                .as_ref()
+                .map(|context| context.agent_id.as_str()),
+            Some("research-agent")
+        );
+
+        handle_key(&mut app, key(KeyCode::Char('n')), true);
+        for character in "weekly".chars() {
+            handle_key(&mut app, key(KeyCode::Char(character)), true);
+        }
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter), true),
             Action::OpenAgent {
                 id: "research-agent".into(),
-                session: "operator-research-agent".into(),
+                session: "operator-research-agent-weekly".into(),
             }
         );
+
+        app.overlay = Overlay::None;
+        app.snapshot.runtimes.push(RuntimeRecord {
+            id: "runtime-weekly".into(),
+            name: "operator-research-agent-weekly".into(),
+            kind: "hermes".into(),
+            environment: "operator".into(),
+            client: None,
+            project: None,
+            mission: None,
+            native_session: None,
+            hermes_profile: None,
+            rmux_session: "operator-research-agent-weekly".into(),
+            cwd: "/work".into(),
+            status: "running".into(),
+            created_at: 1.0,
+            last_activity: 2.0,
+            tokens: 0,
+            model_usage: Vec::new(),
+            managed: true,
+            live: true,
+        });
+        let target = app
+            .current_os_conversation_target()
+            .expect("OS conversation");
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('x')), true),
+            Action::CloseSession { target }
+        );
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter), true),
+            Action::EnterTerminal
+        );
+        assert_eq!(app.view, View::Sessions);
     }
 
     #[test]

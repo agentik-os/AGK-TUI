@@ -30,6 +30,14 @@ mkdir -p "$hermes_home/plugins" "$hermes_home/agents" \
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$hermes_bin" "$HOME/.local/bin/hermes"
 hermes config migrate >/dev/null
+# AGK owns lifecycle health centrally. Routine stop/start chatter is disabled
+# on every messaging adapter; the external watchdog emits one Discord #general
+# alert only after ten continuous minutes of unavailability.
+hermes config set platforms.discord.gateway_restart_notification false >/dev/null
+hermes config set platforms.telegram.gateway_restart_notification false >/dev/null
+# Keep Discord's stable surface small; evolving actions (including session
+# resume) live inside registry-driven Views and therefore need no slash resync.
+hermes config set platforms.discord.extra.command_ui_mode ui_only >/dev/null
 for plugin_path in agentik_os platforms/discord; do
   plugin_target=$hermes_home/plugins/$plugin_path
   mkdir -p "$(dirname "$plugin_target")"

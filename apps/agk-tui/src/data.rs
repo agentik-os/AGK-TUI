@@ -30,6 +30,10 @@ pub struct RuntimeRecord {
     pub project: Option<String>,
     pub mission: Option<String>,
     pub native_session: Option<String>,
+    /// Named Hermes profile that owns `native_session`; `None` is the main
+    /// profile in this Linux user's trust boundary.
+    #[serde(default)]
+    pub hermes_profile: Option<String>,
     pub rmux_session: String,
     pub cwd: String,
     pub status: String,
@@ -371,6 +375,21 @@ impl RegistryClient {
             }
         };
 
+        match self.load_synced_gateway_conversations(&snapshot.runtimes) {
+            Ok(records) => snapshot.runtimes.extend(records),
+            Err(error) => warn(
+                &mut snapshot.warnings,
+                "Hermes messaging conversations",
+                error,
+            ),
+        }
+        snapshot.runtimes.sort_by(|left, right| {
+            right
+                .last_activity
+                .total_cmp(&left.last_activity)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+
         match self.load_hermes_usage(&snapshot.runtimes) {
             Ok((runtime_usage, aggregate)) => {
                 for (runtime, usage) in snapshot.runtimes.iter_mut().zip(runtime_usage) {
@@ -476,6 +495,11 @@ impl RegistryClient {
         } else {
             "NULL AS native_session"
         };
+        let profile_column = if columns.contains("hermes_profile") {
+            "hermes_profile"
+        } else {
+            "NULL AS hermes_profile"
+        };
         let archive_clause = if columns.contains("archived_at") {
             " AND archived_at IS NULL"
         } else {
@@ -483,7 +507,7 @@ impl RegistryClient {
         };
         let sql = format!(
             "SELECT id,name,type,environment,client,project,mission,{native_column},\
-             rmux_session,cwd,status,created_at,last_activity \
+             {profile_column},rmux_session,cwd,status,created_at,last_activity \
              FROM runtime_sessions WHERE environment=?1{archive_clause} \
              ORDER BY last_activity DESC,name"
         );
@@ -498,11 +522,12 @@ impl RegistryClient {
                 project: row.get(5)?,
                 mission: row.get(6)?,
                 native_session: row.get(7)?,
-                rmux_session: row.get(8)?,
-                cwd: row.get(9)?,
-                status: row.get(10)?,
-                created_at: row.get(11)?,
-                last_activity: row.get(12)?,
+                hermes_profile: row.get(8)?,
+                rmux_session: row.get(9)?,
+                cwd: row.get(10)?,
+                status: row.get(11)?,
+                created_at: row.get(12)?,
+                last_activity: row.get(13)?,
             })
         })?;
 
@@ -525,6 +550,7 @@ impl RegistryClient {
                 project: row.project,
                 mission: row.mission,
                 native_session: row.native_session,
+                hermes_profile: row.hermes_profile,
                 rmux_session: row.rmux_session,
                 cwd: row.cwd,
                 status,
@@ -548,36 +574,230 @@ impl RegistryClient {
         Ok(records)
     }
 
+    /// Surface active messaging conversations as resumable, read-only rows.
+    /// Hermes keeps the transcript authoritative; pressing Enter in the TUI
+    /// later creates a normal AGK/RMUX frontend around this exact session ID.
+    fn load_synced_gateway_conversations(
+        &self,
+        runtimes: &[RuntimeRecord],
+    ) -> Result<Vec<RuntimeRecord>> {
+        let mut stores = vec![(None, self.paths.hermes_state_db.clone())];
+        if let Some(hermes_root) = self.paths.hermes_state_db.parent()
+            && hermes_root
+                .file_name()
+                .is_some_and(|name| name == ".hermes")
+        {
+            let profiles_root = hermes_root.join("profiles");
+            if profiles_root.is_dir() {
+                let mut entries =
+                    fs::read_dir(&profiles_root)?.collect::<std::io::Result<Vec<_>>>()?;
+                entries.sort_by_key(|entry| entry.file_name());
+                for entry in entries {
+                    if !entry.file_type()?.is_dir() {
+                        continue;
+                    }
+                    let profile = entry.file_name().to_string_lossy().into_owned();
+                    if valid_kebab_id(&profile) {
+                        stores.push((Some(profile), entry.path().join("state.db")));
+                    }
+                }
+            }
+        }
+
+        let profile_prefixes =
+            agent_profile_runtime_prefixes(&self.paths.agent_catalog, &self.environment);
+        let mut linked = runtimes
+            .iter()
+            .filter_map(|runtime| {
+                runtime
+                    .native_session
+                    .as_ref()
+                    .map(|session| (runtime.hermes_profile.clone(), session.clone()))
+            })
+            .collect::<HashSet<_>>();
+        let mut names = runtimes
+            .iter()
+            .map(|runtime| runtime.name.clone())
+            .collect::<HashSet<_>>();
+        let mut records = Vec::new();
+
+        for (profile, database) in stores {
+            let Some(connection) = open_read_only(&database)? else {
+                continue;
+            };
+            let columns = table_columns(&connection, "sessions")?;
+            if !["id", "source", "session_key", "started_at"]
+                .iter()
+                .all(|column| columns.contains(*column))
+            {
+                continue;
+            }
+            let expression = |column: &str, fallback: &str| {
+                if columns.contains(column) {
+                    format!("COALESCE({column},{fallback})")
+                } else {
+                    fallback.to_owned()
+                }
+            };
+            let mut clauses = vec![
+                "session_key IS NOT NULL".to_owned(),
+                "TRIM(session_key) <> ''".to_owned(),
+                "LOWER(source) IN ('discord','telegram','slack','whatsapp','matrix','signal','google_chat','mattermost','feishu')".to_owned(),
+            ];
+            if columns.contains("ended_at") {
+                clauses.push("ended_at IS NULL".into());
+            }
+            if columns.contains("archived") {
+                clauses.push("COALESCE(archived,0)=0".into());
+            }
+            if columns.contains("hidden") {
+                clauses.push("COALESCE(hidden,0)=0".into());
+            }
+            if columns.contains("message_count") {
+                clauses.push("COALESCE(message_count,0)>0".into());
+            }
+            let last_activity = expression("last_activity_at", "started_at");
+            let sql = format!(
+                "SELECT id,COALESCE(source,'hermes'),{}, {},started_at,{} \
+                 FROM sessions WHERE {} ORDER BY {} DESC LIMIT 100",
+                expression("title", "''"),
+                expression("cwd", "''"),
+                last_activity,
+                clauses.join(" AND "),
+                last_activity,
+            );
+            let mut statement = connection.prepare(&sql)?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, f64>(4)?,
+                    row.get::<_, f64>(5)?,
+                ))
+            })?;
+            let workspace = hermes_workspace_for_state_db(&database);
+            for row in rows {
+                let (session_id, source, title, cwd, created_at, last_activity) = row?;
+                let link = (profile.clone(), session_id.clone());
+                if linked.contains(&link) {
+                    continue;
+                }
+                let prefix = profile
+                    .as_ref()
+                    .and_then(|profile| profile_prefixes.get(profile))
+                    .cloned()
+                    .unwrap_or_else(|| match &profile {
+                        Some(profile) => format!("{}-{profile}", self.environment),
+                        None => self.environment.clone(),
+                    });
+                let title_slug = session_title_slug(&title, &source);
+                let suffix = session_id
+                    .chars()
+                    .filter(|character| character.is_ascii_alphanumeric())
+                    .rev()
+                    .take(8)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                let base = format!("{prefix}-chat-{title_slug}-{suffix}");
+                let mut name = base.chars().take(80).collect::<String>();
+                let mut discriminator = 2;
+                while names.contains(&name) {
+                    let tail = format!("-{discriminator}");
+                    let keep = 80usize.saturating_sub(tail.len());
+                    name = format!("{}{}", base.chars().take(keep).collect::<String>(), tail);
+                    discriminator += 1;
+                }
+                names.insert(name.clone());
+                linked.insert(link);
+                records.push(RuntimeRecord {
+                    id: format!(
+                        "hermes:{}:{session_id}",
+                        profile.as_deref().unwrap_or("main")
+                    ),
+                    name: name.clone(),
+                    kind: "hermes".into(),
+                    environment: self.environment.clone(),
+                    client: None,
+                    project: None,
+                    mission: None,
+                    native_session: Some(session_id),
+                    hermes_profile: profile.clone(),
+                    rmux_session: name,
+                    cwd: if cwd.trim().is_empty() {
+                        workspace.to_string_lossy().into_owned()
+                    } else {
+                        cwd
+                    },
+                    status: format!("{} · synced", source.to_ascii_lowercase()),
+                    created_at,
+                    last_activity,
+                    tokens: 0,
+                    model_usage: Vec::new(),
+                    managed: false,
+                    live: false,
+                });
+            }
+        }
+        Ok(records)
+    }
+
     fn load_hermes_usage(
         &self,
         runtimes: &[RuntimeRecord],
     ) -> Result<(Vec<Vec<ModelUsageRecord>>, Vec<ModelUsageRecord>)> {
-        let Some(connection) = open_read_only(&self.paths.hermes_state_db)? else {
-            return Ok((vec![Vec::new(); runtimes.len()], Vec::new()));
-        };
-        let links = resolve_hermes_session_links(&connection, runtimes)?;
-        let session_ids = links.iter().flatten().cloned().collect::<BTreeSet<_>>();
-        if session_ids.is_empty() {
-            return Ok((vec![Vec::new(); runtimes.len()], Vec::new()));
+        let mut runtime_usage = vec![Vec::new(); runtimes.len()];
+        let mut groups: BTreeMap<Option<String>, Vec<usize>> = BTreeMap::new();
+        for (index, runtime) in runtimes.iter().enumerate() {
+            groups
+                .entry(runtime.hermes_profile.clone())
+                .or_default()
+                .push(index);
         }
-
-        let by_session = load_session_model_usage(&connection, &session_ids)?;
-        let runtime_usage = links
-            .iter()
-            .map(|session_id| {
-                session_id
+        let mut aggregate_rows = Vec::new();
+        for (profile, indices) in groups {
+            let database = match profile.as_deref() {
+                None => self.paths.hermes_state_db.clone(),
+                Some(profile) => self
+                    .paths
+                    .hermes_state_db
+                    .parent()
+                    .unwrap_or_else(|| Path::new("/"))
+                    .join("profiles")
+                    .join(profile)
+                    .join("state.db"),
+            };
+            let Some(connection) = open_read_only(&database)? else {
+                continue;
+            };
+            let subset = indices
+                .iter()
+                .map(|index| runtimes[*index].clone())
+                .collect::<Vec<_>>();
+            let links = resolve_hermes_session_links(&connection, &subset)?;
+            let session_ids = links.iter().flatten().cloned().collect::<BTreeSet<_>>();
+            if session_ids.is_empty() {
+                continue;
+            }
+            let by_session = load_session_model_usage(&connection, &session_ids)?;
+            for (position, session_id) in links.iter().enumerate() {
+                runtime_usage[indices[position]] = session_id
                     .as_ref()
                     .and_then(|id| by_session.get(id))
                     .cloned()
-                    .unwrap_or_default()
-            })
-            .collect();
-        let aggregate = aggregate_model_usage(
-            session_ids
-                .iter()
-                .filter_map(|session_id| by_session.get(session_id))
-                .flatten(),
-        );
+                    .unwrap_or_default();
+            }
+            for session_id in session_ids {
+                if let Some(rows) = by_session.get(&session_id) {
+                    aggregate_rows.extend(rows.iter().cloned());
+                }
+            }
+        }
+        let aggregate = aggregate_model_usage(aggregate_rows.iter());
         Ok((runtime_usage, aggregate))
     }
 
@@ -676,13 +896,6 @@ impl RegistryClient {
             }
         }
         manifests.sort();
-        let runtime_by_name: HashMap<&str, &RuntimeRecord> = runtimes
-            .iter()
-            // An unmanaged RMUX name must not impersonate an installed agent.
-            // The Agentik runtime row is the durable identity contract.
-            .filter(|record| record.managed)
-            .map(|record| (record.name.as_str(), record))
-            .collect();
         let data_environment = self.data_environment();
         let mut agents = Vec::new();
         for manifest_path in manifests {
@@ -726,7 +939,30 @@ impl RegistryClient {
                 continue;
             }
             let runtime_name = format!("{}-{}", self.environment, manifest.id);
-            let running = runtime_by_name.get(runtime_name.as_str()).copied();
+            let mut conversations = runtimes
+                .iter()
+                .filter(|record| {
+                    record.name == runtime_name
+                        || record.name.starts_with(&format!("{runtime_name}-"))
+                })
+                .collect::<Vec<_>>();
+            conversations.sort_by(|left, right| {
+                right
+                    .live
+                    .cmp(&left.live)
+                    .then_with(|| right.last_activity.total_cmp(&left.last_activity))
+            });
+            let running = conversations
+                .iter()
+                .copied()
+                // An unmanaged RMUX name must not impersonate an installed
+                // agent. Synced Hermes conversations are allowed only when
+                // they carry a canonical native_session.
+                .find(|record| record.managed || record.native_session.is_some());
+            let synced = conversations
+                .iter()
+                .filter(|record| record.native_session.is_some())
+                .count();
             agents.push(AgentRecord {
                 id: manifest.id,
                 name: manifest.name,
@@ -749,7 +985,13 @@ impl RegistryClient {
                 runtime_id: running.map(|record| record.id.clone()),
                 status: running
                     .map(|record| record.status.clone())
-                    .unwrap_or_else(|| "not-started".into()),
+                    .unwrap_or_else(|| {
+                        if synced > 0 {
+                            format!("{synced} synced")
+                        } else {
+                            "not-started".into()
+                        }
+                    }),
                 live: running.is_some_and(|record| record.live),
             });
         }
@@ -1158,6 +1400,7 @@ struct RawRuntime {
     project: Option<String>,
     mission: Option<String>,
     native_session: Option<String>,
+    hermes_profile: Option<String>,
     rmux_session: String,
     cwd: String,
     status: String,
@@ -1237,12 +1480,6 @@ struct OsAssignment {
 
 fn discover_bundled_catalog() -> PathBuf {
     let mut candidates = Vec::new();
-    if let Some(root) = std::env::var_os("AGK_TERMINAL_ROOT") {
-        candidates.push(PathBuf::from(root).join("agents"));
-    }
-    if let Some(root) = std::env::var_os("AGK_INSTALL_ROOT") {
-        candidates.push(PathBuf::from(root).join("agents"));
-    }
     if let Some(home) = std::env::var_os("HERMES_HOME") {
         candidates.push(PathBuf::from(home).join("agents"));
     }
@@ -1250,6 +1487,12 @@ fn discover_bundled_catalog() -> PathBuf {
         let home = PathBuf::from(home);
         candidates.push(home.join(".hermes/agents"));
         candidates.push(home.join(".local/share/agk/agents"));
+    }
+    if let Some(root) = std::env::var_os("AGK_TERMINAL_ROOT") {
+        candidates.push(PathBuf::from(root).join("agents"));
+    }
+    if let Some(root) = std::env::var_os("AGK_INSTALL_ROOT") {
+        candidates.push(PathBuf::from(root).join("agents"));
     }
     // Last-resort compatibility for machines that have not migrated yet.
     candidates.push(PathBuf::from("/opt/agentik/hermes/current/agents"));
@@ -1398,6 +1641,75 @@ fn visible_rmux_name(name: &str) -> bool {
     !name.is_empty()
 }
 
+fn agent_profile_runtime_prefixes(root: &Path, environment: &str) -> HashMap<String, String> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return HashMap::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let manifest = entry.path().join("agent.yaml");
+            let text = fs::read_to_string(manifest).ok()?;
+            let definition = serde_yaml::from_str::<AgentManifest>(&text).ok()?;
+            let profile = definition.profile?;
+            (valid_kebab_id(&profile) && valid_agent_id(&definition.id))
+                .then(|| (profile, format!("{environment}-{}", definition.id)))
+        })
+        .collect()
+}
+
+fn hermes_workspace_for_state_db(database: &Path) -> PathBuf {
+    let home = database.parent().unwrap_or_else(|| Path::new("/"));
+    let workspace = home.join("workspace");
+    if workspace.is_dir() {
+        return workspace;
+    }
+    if home.file_name().is_some_and(|name| name == ".hermes") {
+        return home
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| home.to_path_buf());
+    }
+    // Named profiles always have their own existing Hermes directory, while
+    // `workspace/` is optional.  RMUX requires an existing cwd, so fall back
+    // to the profile root instead of inventing a path here.
+    home.to_path_buf()
+}
+
+fn session_title_slug(title: &str, source: &str) -> String {
+    let mut slug = String::new();
+    let mut separator = false;
+    for character in title.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            if separator && !slug.is_empty() && slug.len() < 34 {
+                slug.push('-');
+            }
+            separator = false;
+            if slug.len() < 34 {
+                slug.push(character);
+            }
+        } else {
+            separator = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.len() < 3 {
+        slug = source
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .take(20)
+            .collect::<String>()
+            .to_ascii_lowercase();
+    }
+    if slug.len() < 3 {
+        "conversation".into()
+    } else {
+        slug
+    }
+}
+
 fn unmanaged_runtimes(names: &[String], environment: &str) -> Vec<RuntimeRecord> {
     names
         .iter()
@@ -1419,6 +1731,7 @@ fn unmanaged_runtime(name: String, environment: &str) -> RuntimeRecord {
         project: None,
         mission: None,
         native_session: None,
+        hermes_profile: None,
         rmux_session: name,
         cwd: String::new(),
         status: "running".into(),

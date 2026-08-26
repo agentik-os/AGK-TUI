@@ -203,6 +203,8 @@ install -m 0755 "$repo_root/scripts/install-shared-hermes.sh" \
 install -m 0755 "$repo_root/scripts/topology.py" "$install_root/scripts/topology.py"
 install -m 0755 "$repo_root/scripts/composio_inventory.py" \
   "$install_root/scripts/composio_inventory.py"
+install -m 0755 "$repo_root/scripts/gateway_watchdog.py" \
+  "$install_root/scripts/gateway_watchdog.py"
 install -m 0755 "$repo_root/scripts/client_control.py" \
   "$install_root/scripts/client_control.py"
 install -m 0755 "$repo_root/scripts/install-hermes-fleet-dashboard.sh" \
@@ -241,8 +243,10 @@ if [ -n "$composio_bin" ]; then
   install -m 0755 "$composio_bin" "$install_root/bin/composio"
 fi
 
-if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+if [ ! -x "$install_root/venv/bin/python" ]; then
   python3 -m venv "$install_root/venv"
+fi
+if ! "$install_root/venv/bin/python" -c 'import yaml' >/dev/null 2>&1; then
   "$install_root/venv/bin/python" -m pip install --disable-pip-version-check \
     -r "$repo_root/requirements.txt"
 fi
@@ -257,12 +261,17 @@ if [ "$system_install" = true ]; then
     /etc/systemd/system/agk-topology-refresh.service
   install -m 0644 "$repo_root/systemd/agk-topology-refresh.timer" \
     /etc/systemd/system/agk-topology-refresh.timer
+  install -m 0644 "$repo_root/systemd/agk-gateway-watchdog.service" \
+    /etc/systemd/system/agk-gateway-watchdog.service
+  install -m 0644 "$repo_root/systemd/agk-gateway-watchdog.timer" \
+    /etc/systemd/system/agk-gateway-watchdog.timer
   install -d -m 0755 "$install_root/systemd"
   install -m 0644 "$repo_root/systemd/hermes-dashboard.service.in" \
     "$install_root/systemd/hermes-dashboard.service.in"
   install -m 0644 "$repo_root/systemd/hermes-fleet.service.in" \
     "$install_root/systemd/hermes-fleet.service.in"
   systemctl daemon-reload
+  systemctl enable --now agk-gateway-watchdog.timer
   if [ "$defer_topology" = false ]; then
     "$install_root/scripts/topology.py" apply --yes
     systemctl enable --now agk-topology-refresh.timer

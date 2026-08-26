@@ -78,6 +78,9 @@ def test_reconcile_marks_missing_runtime_interrupted(tmp_path, monkeypatch):
 def test_default_resume_commands_use_documented_cli(monkeypatch):
     monkeypatch.setattr(agk.shutil, "which", lambda name: f"/verified/{name}")
     assert agk.default_command("hermes", "S-1") == ["/verified/hermes", "--resume", "S-1"]
+    assert agk.default_command("hermes", "S-2", "research") == [
+        "/verified/hermes", "--profile", "research", "--resume", "S-2"
+    ]
     assert agk.default_command("claude", "C-1") == [
         "/verified/env", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1",
         "/verified/claude", "--dangerously-skip-permissions", "--resume", "C-1"
@@ -131,6 +134,7 @@ def test_specialist_start_binds_catalog_profile_and_durable_rmux(tmp_path, monke
     workspace = tmp_path / ".agentik/agents/kitchen-agent/workspace"
     assert created is True
     assert row["name"] == "mission-kitchen-agent"
+    assert row["hermes_profile"] == "kitchen"
     assert agk.json.loads(row["command_json"]) == [
         "/verified/hermes", "-p", "kitchen", "--in", str(workspace)
     ]

@@ -29,6 +29,25 @@ def test_system_install_preserves_the_collective_mission_context():
     assert "HERMES_HOME=/home/mission/.hermes/profiles/collective" in source
 
 
+def test_install_enables_quiet_gateway_health_monitoring_for_every_profile():
+    installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+    sync = (ROOT / "scripts" / "sync-hermes.sh").read_text(encoding="utf-8")
+    service = (
+        ROOT / "systemd" / "agk-gateway-watchdog.service"
+    ).read_text(encoding="utf-8")
+    timer = (
+        ROOT / "systemd" / "agk-gateway-watchdog.timer"
+    ).read_text(encoding="utf-8")
+
+    assert "gateway_watchdog.py" in installer
+    assert "enable --now agk-gateway-watchdog.timer" in installer
+    assert "platforms.discord.gateway_restart_notification false" in sync
+    assert "platforms.telegram.gateway_restart_notification false" in sync
+    assert "platforms.discord.extra.command_ui_mode ui_only" in sync
+    assert "ReadWritePaths=/var/lib/agk-terminal" in service
+    assert "OnUnitActiveSec=60s" in timer
+
+
 def test_install_includes_the_transactional_client_control_plane():
     source = (ROOT / "install.sh").read_text(encoding="utf-8")
     launcher = (ROOT / "bin" / "agk").read_text(encoding="utf-8")
