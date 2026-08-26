@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+fleet_dashboard_root=$repo_root/apps/hermes-fleet
 
 cargo fmt --manifest-path "$repo_root/apps/agk-tui/Cargo.toml" -- --check
 cargo clippy --locked --manifest-path "$repo_root/apps/agk-tui/Cargo.toml" --all-targets -- -D warnings
@@ -22,5 +23,13 @@ bash -n \
   "$repo_root/bin/agk-terminal" \
   "$repo_root/scripts/doctor.sh" \
   "$repo_root/scripts/install-shared-hermes.sh" \
+  "$repo_root/scripts/install-hermes-fleet-dashboard.sh" \
   "$repo_root/scripts/provider.sh" \
   "$repo_root/scripts/sync-hermes.sh"
+
+npm --prefix "$fleet_dashboard_root" ci
+npm --prefix "$fleet_dashboard_root" test
+npm --prefix "$fleet_dashboard_root" run typecheck
+npm --prefix "$fleet_dashboard_root" run build
+test -f "$fleet_dashboard_root/server-dist/server.js"
+node --check "$fleet_dashboard_root/server-dist/server.js"

@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 prefix=${PREFIX:-$HOME/.local}
 install_hermes=true
+install_hermes_fleet=false
 system_install=false
 defer_topology=false
 target_user=
@@ -14,11 +15,13 @@ while [ "$#" -gt 0 ]; do
     --prefix) prefix=${2:?missing prefix}; shift 2 ;;
     --system) prefix=/usr/local; system_install=true; shift ;;
     --without-hermes) install_hermes=false; shift ;;
+    --with-hermes-fleet) install_hermes_fleet=true; shift ;;
     --defer-topology) defer_topology=true; shift ;;
     --user) target_user=${2:?missing target user}; shift 2 ;;
     --rmux-version) rmux_version=${2:?missing RMUX version}; shift 2 ;;
     -h|--help)
-      echo "usage: ./install.sh [--system] [--user USER] [--prefix PATH] [--without-hermes] [--defer-topology] [--rmux-version VERSION]"
+      echo "usage: ./install.sh [--system] [--user USER] [--prefix PATH] [--without-hermes] [--with-hermes-fleet] [--defer-topology] [--rmux-version VERSION]"
+      echo "  --with-hermes-fleet  Build and expose the four-profile dashboard through Tailscale Serve (system install only)"
       exit 0
       ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -31,6 +34,10 @@ if [ "$system_install" = true ] && [ "$(id -u)" -ne 0 ]; then
 fi
 if [ "$defer_topology" = true ] && [ "$system_install" != true ]; then
   echo "--defer-topology is only valid with --system" >&2
+  exit 2
+fi
+if [ "$install_hermes_fleet" = true ] && [ "$system_install" != true ]; then
+  echo "--with-hermes-fleet is only valid with --system" >&2
   exit 2
 fi
 
@@ -193,6 +200,8 @@ install -m 0755 "$repo_root/scripts/install-shared-hermes.sh" \
 install -m 0755 "$repo_root/scripts/topology.py" "$install_root/scripts/topology.py"
 install -m 0755 "$repo_root/scripts/composio_inventory.py" \
   "$install_root/scripts/composio_inventory.py"
+install -m 0755 "$repo_root/scripts/install-hermes-fleet-dashboard.sh" \
+  "$install_root/scripts/install-hermes-fleet-dashboard.sh"
 install -m 0644 "$repo_root/config/topology.yaml" "$install_root/config/topology.yaml"
 install -m 0644 "$repo_root/config/providers.yaml" "$install_root/config/providers.yaml"
 install -m 0644 "$repo_root/config/hermes.env.example" "$install_root/config/hermes.env.example"
@@ -232,6 +241,11 @@ if [ "$system_install" = true ]; then
     /etc/systemd/system/agk-topology-refresh.service
   install -m 0644 "$repo_root/systemd/agk-topology-refresh.timer" \
     /etc/systemd/system/agk-topology-refresh.timer
+  install -d -m 0755 "$install_root/systemd"
+  install -m 0644 "$repo_root/systemd/hermes-dashboard.service.in" \
+    "$install_root/systemd/hermes-dashboard.service.in"
+  install -m 0644 "$repo_root/systemd/hermes-fleet.service.in" \
+    "$install_root/systemd/hermes-fleet.service.in"
   systemctl daemon-reload
   if [ "$defer_topology" = false ]; then
     "$install_root/scripts/topology.py" apply --yes
@@ -296,6 +310,10 @@ if [ "$system_install" = true ]; then
       AGK_TERMINAL_ROOT="$install_root" \
       PATH="/home/mission/.local/bin:$bin_dir:/usr/local/bin:/usr/bin:/bin" \
       "$install_root/scripts/sync-hermes.sh"
+  fi
+  if [ "$install_hermes_fleet" = true ]; then
+    "$install_root/scripts/install-hermes-fleet-dashboard.sh" \
+      --source-root "$repo_root"
   fi
 elif run_for_target hermes --version >/dev/null 2>&1; then
   run_for_target "$install_root/scripts/sync-hermes.sh"
