@@ -48,7 +48,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, preview: SessionPreview<'_>) {
             Constraint::Length(1),
         ])
         .split(area);
-        draw_terminal(frame, preview, rows[0], colors);
+        draw_terminal_workspace(frame, app, preview, rows[0], size, colors);
         draw_footer_separator(frame, rows[1], colors);
         draw_footer(frame, app, rows[2], colors);
         return;
@@ -70,20 +70,76 @@ pub fn draw(frame: &mut Frame, app: &mut App, preview: SessionPreview<'_>) {
     draw_overlay(frame, app, area, colors);
 }
 
-fn draw_terminal(frame: &mut Frame, preview: SessionPreview<'_>, area: Rect, colors: Palette) {
+fn draw_terminal_workspace(
+    frame: &mut Frame,
+    app: &mut App,
+    preview: SessionPreview<'_>,
+    area: Rect,
+    size: Density,
+    colors: Palette,
+) {
+    let (list_area, pane_area) = terminal_panes(area, size, app.expanded);
+    if list_area.width > 0 {
+        let records = app.filtered_sessions().collect::<Vec<_>>();
+        let items = records
+            .iter()
+            .map(|runtime| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        if runtime.live { "● " } else { "○ " },
+                        Style::default().fg(if runtime.live {
+                            colors.success
+                        } else {
+                            colors.text_muted
+                        }),
+                    ),
+                    Span::styled(runtime.name.clone(), Style::default().fg(colors.text)),
+                ]))
+            })
+            .collect();
+        selectable(
+            frame,
+            list_area,
+            items,
+            app.selected,
+            app.focus == Focus::List,
+            &format!(" SESSIONS · {} ", records.len()),
+            colors,
+        );
+    }
+
+    let title = app
+        .current_session()
+        .map(|runtime| format!(" {} · LIVE ", runtime.name))
+        .unwrap_or_else(|| " SESSION · OFFLINE ".into());
+    let block = panel(&title, app.focus == Focus::Detail, colors);
+    let inner = block.inner(pane_area);
+    frame.render_widget(block, pane_area);
+    app.preview_width = inner.width;
+    app.preview_height = inner.height;
     match preview {
-        SessionPreview::Live(pane) => frame.render_widget(PaneWidget::new(pane), area),
+        SessionPreview::Live(pane) => frame.render_widget(PaneWidget::new(pane), inner),
+        SessionPreview::History(lines) => {
+            let visible = usize::from(inner.height);
+            let start = lines.len().saturating_sub(visible);
+            frame.render_widget(
+                Paragraph::new(Text::from_iter(lines[start..].iter().map(|line| {
+                    Line::styled(line.clone(), Style::default().fg(colors.text))
+                }))),
+                inner,
+            );
+        }
         SessionPreview::CurrentSession => frame.render_widget(
-            Paragraph::new("This RMUX session is running AGK\n\nTab  Return to Mission Control")
+            Paragraph::new("This RMUX session is running AGK\n\nCtrl-g  Return")
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(colors.text_muted).bg(colors.background)),
-            area,
+            inner,
         ),
-        SessionPreview::History(_) | SessionPreview::Unavailable => frame.render_widget(
-            Paragraph::new("Live RMUX pane unavailable\n\nTab/Ctrl-g  Return")
+        SessionPreview::Unavailable => frame.render_widget(
+            Paragraph::new("Provider pane unavailable\n\nCtrl-g  Return")
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(colors.text_muted).bg(colors.background)),
-            area,
+            inner,
         ),
     }
 }
@@ -240,18 +296,56 @@ fn panes(app: &App, area: Rect, size: Density) -> (Rect, Rect) {
     (columns[0], columns[1])
 }
 
+fn terminal_panes(area: Rect, size: Density, expanded: bool) -> (Rect, Rect) {
+    let area = horizontal_area(area);
+    let hidden = Rect::new(area.x, area.y, 0, area.height);
+    if expanded || area.width < 36 {
+        return (hidden, area);
+    }
+    let list_width = match size {
+        Density::Compact => area
+            .width
+            .saturating_mul(35)
+            .saturating_div(100)
+            .clamp(16, 22),
+        Density::Standard => 26.min(area.width.saturating_sub(20)),
+        Density::Wide => 32.min(area.width.saturating_sub(24)),
+    };
+    let columns = Layout::horizontal([Constraint::Length(list_width), Constraint::Min(1)])
+        .spacing(1)
+        .split(area);
+    (columns[0], columns[1])
+}
+
+pub fn terminal_preview_area(size: Size, expanded: bool) -> Rect {
+    let content = Rect::new(0, 0, size.width, size.height.saturating_sub(2));
+    let (_, pane) = terminal_panes(content, density(size.width, size.height), expanded);
+    Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
+        .inner(pane)
+}
+
+pub fn terminal_focus_at(size: Size, expanded: bool, column: u16, row: u16) -> Option<Focus> {
+    if column >= size.width || row >= size.height.saturating_sub(2) {
+        return None;
+    }
+    let content = Rect::new(0, 0, size.width, size.height.saturating_sub(2));
+    let (list, pane) = terminal_panes(content, density(size.width, size.height), expanded);
+    if list.contains((column, row).into()) {
+        Some(Focus::List)
+    } else if pane.contains((column, row).into()) {
+        Some(Focus::Detail)
+    } else {
+        None
+    }
+}
+
 /// Keep boards away from the physical terminal edges without sacrificing the
 /// useful height of very small mobile terminals.  Internal block padding and
 /// inter-panel gaps complete the spacing system inside this outer gutter.
 fn board_area(area: Rect) -> Rect {
-    let area = horizontal_area(area);
-    let vertical = u16::from(area.height >= 13);
-    Rect::new(
-        area.x,
-        area.y.saturating_add(vertical),
-        area.width,
-        area.height.saturating_sub(vertical.saturating_mul(2)),
-    )
+    horizontal_area(area)
 }
 
 fn horizontal_area(area: Rect) -> Rect {
@@ -1197,12 +1291,9 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Pa
         ),
         Line::raw(""),
         heading("SESSIONS", colors),
-        help_key("Enter", "Open selected RMUX pane fullscreen", colors),
-        help_key(
-            "Tab / Ctrl-g",
-            "Return from terminal to Mission Control",
-            colors,
-        ),
+        help_key("Enter", "Open selected pane and type immediately", colors),
+        help_key("Tab · Tab", "Focus session list, then expand pane", colors),
+        help_key("Ctrl-g", "Return to the main AGK menu", colors),
         help_key(
             "Ctrl-r",
             "Forwarded to the active terminal provider",
@@ -1921,7 +2012,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(rows[0].starts_with(" 1.SESSIONS"));
         assert_eq!(rows[1], format!(" {} ", "─".repeat(58)));
-        assert!(rows[2].trim().is_empty());
+        assert!(rows[2].starts_with(" ╭"));
     }
 
     #[test]
@@ -1934,7 +2025,7 @@ mod tests {
     #[test]
     fn boards_use_responsive_gutters_internal_padding_and_panel_gaps() {
         let roomy = board_area(Rect::new(0, 3, 140, 35));
-        assert_eq!(roomy, Rect::new(1, 4, 138, 33));
+        assert_eq!(roomy, Rect::new(1, 3, 138, 35));
 
         let mobile = board_area(Rect::new(0, 3, 60, 11));
         assert_eq!(mobile, Rect::new(1, 3, 58, 11));
@@ -1953,12 +2044,23 @@ mod tests {
         let size = Size::new(90, 24);
         let mut app = test_app();
         assert_eq!(focus_at(&app, size, 0, 3), None);
-        assert_eq!(focus_at(&app, size, 1, 2), None);
+        assert_eq!(focus_at(&app, size, 1, 2), Some(Focus::List));
         assert_eq!(focus_at(&app, size, 1, 3), Some(Focus::List));
 
         app.set_view(View::Settings);
         assert_eq!(focus_at(&app, size, 25, 6), None);
         assert_eq!(focus_at(&app, size, 26, 6), Some(Focus::Detail));
+    }
+
+    #[test]
+    fn interactive_terminal_keeps_a_padded_sidebar_until_expanded() {
+        let size = Size::new(60, 20);
+        assert_eq!(terminal_preview_area(size, false), Rect::new(24, 1, 33, 16));
+        assert_eq!(terminal_focus_at(size, false, 1, 2), Some(Focus::List));
+        assert_eq!(terminal_focus_at(size, false, 22, 2), Some(Focus::Detail));
+
+        assert_eq!(terminal_preview_area(size, true), Rect::new(3, 1, 54, 16));
+        assert_eq!(terminal_focus_at(size, true, 1, 2), Some(Focus::Detail));
     }
 
     #[test]

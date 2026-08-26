@@ -176,9 +176,9 @@ async fn run(
                             if enter_terminal {
                                 app.mode = Mode::Terminal;
                                 app.focus = Focus::Detail;
+                                app.expanded = false;
                                 app.scroll_preview_live();
                                 preview_cache.clear();
-                                execute!(terminal.backend_mut(), DisableMouseCapture)?;
                                 app.status = Some(format!("Created and opened {name}"));
                             } else {
                                 app.status = Some(format!("Renamed and selected {name}"));
@@ -213,12 +213,9 @@ async fn run(
         }
         if app.mode == Mode::Terminal {
             let size = terminal.size()?;
-            app.preview_width = size.width;
-            // The provider owns every usable row above AGK's one-line
-            // separator and one-line footer. Resizing the RMUX window to this
-            // exact viewport keeps Claude/Codex/Hermes composers anchored to
-            // the visible bottom edge instead of below a cropped preview.
-            app.preview_height = size.height.saturating_sub(2);
+            let pane = ui::terminal_preview_area(size, app.expanded);
+            app.preview_width = pane.width;
+            app.preview_height = pane.height;
         }
         // A pane snapshot is an RPC and must never sit in front of queued
         // keyboard input. Capture only a visible preview, and never rediscover
@@ -248,18 +245,60 @@ async fn run(
 
         for event in queued_events {
             if app.mode == Mode::Terminal {
-                if let Event::Key(key) = &event
-                    && accepts_key(key)
-                    && terminal_returns_to_control(key)
-                {
-                    app.mode = Mode::Control;
-                    app.view = View::Sessions;
-                    app.focus = Focus::List;
-                    preview_cache.clear();
-                    execute!(terminal.backend_mut(), EnableMouseCapture)?;
-                    continue;
+                match &event {
+                    Event::Key(key) if accepts_key(key) && terminal_returns_to_control(key) => {
+                        app.mode = Mode::Control;
+                        app.view = View::Sessions;
+                        app.focus = Focus::List;
+                        app.expanded = false;
+                        preview_cache.clear();
+                        continue;
+                    }
+                    Event::Key(key) if accepts_key(key) && key.code == KeyCode::Tab => {
+                        terminal_tab(app);
+                        continue;
+                    }
+                    Event::Key(key) if accepts_key(key) && app.focus == Focus::List => {
+                        if terminal_sidebar_key(app, key) {
+                            preview_cache.clear();
+                        }
+                        continue;
+                    }
+                    Event::Mouse(mouse) => {
+                        let size = terminal.size()?;
+                        match ui::terminal_focus_at(size, app.expanded, mouse.column, mouse.row) {
+                            Some(Focus::List) => {
+                                app.expanded = false;
+                                app.focus = Focus::List;
+                                match mouse.kind {
+                                    MouseEventKind::ScrollUp => {
+                                        for _ in 0..3 {
+                                            app.select_previous();
+                                        }
+                                    }
+                                    MouseEventKind::ScrollDown => {
+                                        for _ in 0..3 {
+                                            app.select_next();
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                preview_cache.clear();
+                                continue;
+                            }
+                            Some(Focus::Detail) => app.focus = Focus::Detail,
+                            Some(Focus::Nav) | None => continue,
+                        }
+                    }
+                    Event::Resize(_, _) => {
+                        preview_cache.clear();
+                        continue;
+                    }
+                    _ => {}
                 }
-                send_terminal_event(rmux, app, &mut preview_cache, event).await;
+                if app.focus == Focus::Detail {
+                    send_terminal_event(rmux, app, &mut preview_cache, event).await;
+                }
                 continue;
             }
 
@@ -330,11 +369,9 @@ async fn run(
                     } else {
                         app.mode = Mode::Terminal;
                         app.focus = Focus::Detail;
+                        app.expanded = false;
                         app.scroll_preview_live();
                         preview_cache.clear();
-                        // In terminal mode AGK forwards keys itself. Releasing
-                        // mouse capture restores native drag-selection/copy.
-                        execute!(terminal.backend_mut(), DisableMouseCapture)?;
                     }
                 }
                 Action::CreateSession { kind, name } => match create_session(kind.slug(), &name) {
@@ -823,6 +860,12 @@ async fn send_terminal_event(rmux: &Rmux, app: &App, cache: &mut PreviewCache, e
                 return;
             }
         }
+        Event::Mouse(mouse) => {
+            let Some(key) = terminal_mouse_key(&mouse.kind) else {
+                return;
+            };
+            pane.send_key(key).await.map(|_| ())
+        }
         _ => return,
     };
     if result.is_err() {
@@ -972,8 +1015,44 @@ fn accepts_key(key: &KeyEvent) -> bool {
 }
 
 fn terminal_returns_to_control(key: &KeyEvent) -> bool {
-    key.code == KeyCode::Tab
-        || (key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL))
+    key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn terminal_tab(app: &mut App) {
+    if app.focus == Focus::Detail {
+        app.expanded = false;
+        app.focus = Focus::List;
+    } else {
+        app.expanded = true;
+        app.focus = Focus::Detail;
+    }
+}
+
+fn terminal_sidebar_key(app: &mut App, key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.select_previous();
+            true
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.select_next();
+            true
+        }
+        KeyCode::Enter => {
+            app.expanded = false;
+            app.focus = Focus::Detail;
+            true
+        }
+        _ => false,
+    }
+}
+
+fn terminal_mouse_key(kind: &MouseEventKind) -> Option<&'static str> {
+    match kind {
+        MouseEventKind::ScrollUp => Some("PageUp"),
+        MouseEventKind::ScrollDown => Some("PageDown"),
+        _ => None,
+    }
 }
 
 fn detail_available(app: &App) -> bool {
@@ -1076,7 +1155,7 @@ mod tests {
 
     #[test]
     fn terminal_escape_keys_do_not_capture_provider_control_r() {
-        assert!(terminal_returns_to_control(&KeyEvent::new(
+        assert!(!terminal_returns_to_control(&KeyEvent::new(
             KeyCode::Tab,
             KeyModifiers::NONE,
         )));
@@ -1088,6 +1167,63 @@ mod tests {
             KeyCode::Char('r'),
             KeyModifiers::CONTROL,
         )));
+    }
+
+    #[test]
+    fn terminal_tabs_focus_the_sidebar_then_expand_the_pane() {
+        let mut app = App::new(Preferences::default());
+        app.mode = Mode::Terminal;
+        app.focus = Focus::Detail;
+
+        terminal_tab(&mut app);
+        assert_eq!(app.focus, Focus::List);
+        assert!(!app.expanded);
+
+        terminal_tab(&mut app);
+        assert_eq!(app.focus, Focus::Detail);
+        assert!(app.expanded);
+
+        terminal_tab(&mut app);
+        assert_eq!(app.focus, Focus::List);
+        assert!(!app.expanded);
+    }
+
+    #[test]
+    fn terminal_sidebar_selects_a_session_then_returns_to_direct_input() {
+        let mut app = App::new(Preferences::default());
+        app.set_snapshot(RegistrySnapshot {
+            runtimes: vec![runtime("one", true), runtime("two", true)],
+            ..RegistrySnapshot::default()
+        });
+        app.focus = Focus::List;
+
+        assert!(terminal_sidebar_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)
+        ));
+        assert_eq!(app.selected_session_name(), Some("two"));
+        assert!(terminal_sidebar_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+        ));
+        assert_eq!(app.focus, Focus::Detail);
+        assert!(!app.expanded);
+    }
+
+    #[test]
+    fn terminal_mouse_wheel_maps_to_provider_scrollback_keys() {
+        assert_eq!(
+            terminal_mouse_key(&MouseEventKind::ScrollUp),
+            Some("PageUp")
+        );
+        assert_eq!(
+            terminal_mouse_key(&MouseEventKind::ScrollDown),
+            Some("PageDown")
+        );
+        assert_eq!(
+            terminal_mouse_key(&MouseEventKind::Down(MouseButton::Left)),
+            None
+        );
     }
 
     #[test]
