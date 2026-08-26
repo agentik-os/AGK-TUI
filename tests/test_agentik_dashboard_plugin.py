@@ -21,6 +21,7 @@ BUNDLE = DASHBOARD / "dist" / "index.js"
 STYLES = DASHBOARD / "dist" / "style.css"
 PLUGIN_API = DASHBOARD / "plugin_api.py"
 THEME = ROOT / "hermes" / "dashboard-themes" / "agentik-shadcn.yaml"
+LIGHT_THEME = ROOT / "hermes" / "dashboard-themes" / "agentik-shadcn-light.yaml"
 
 
 class RecordingRouter:
@@ -140,25 +141,33 @@ def test_css_is_scoped_and_has_no_external_hosts():
 
 def test_agentik_shadcn_theme_is_official_local_and_reproducible():
     theme = yaml.safe_load(THEME.read_text(encoding="utf-8"))
+    light_theme = yaml.safe_load(LIGHT_THEME.read_text(encoding="utf-8"))
 
     assert theme["name"] == "agentik-shadcn"
-    assert theme["layout"] == {"radius": "0.625rem", "density": "compact"}
-    assert theme["layoutVariant"] == "standard"
-    assert theme["palette"]["noiseOpacity"] == 0
+    assert light_theme["name"] == "agentik-shadcn-light"
+    for candidate in (theme, light_theme):
+        assert candidate["layout"] == {"radius": "0.625rem", "density": "compact"}
+        assert candidate["layoutVariant"] == "standard"
+        assert candidate["palette"]["noiseOpacity"] == 0
+        assert "fontUrl" not in candidate["typography"]
     assert theme["colorOverrides"]["card"] == "#171717"
     assert theme["colorOverrides"]["border"] == "#2f2f2f"
-    assert "fontUrl" not in theme["typography"]
+    assert light_theme["colorOverrides"]["card"] == "#ffffff"
+    assert light_theme["colorOverrides"]["border"] == "#dfdfdc"
+    assert theme["customCSS"].replace("color-scheme: dark", "color-scheme: light") == light_theme["customCSS"]
 
-    serialized = THEME.read_text(encoding="utf-8").lower()
-    assert "http://" not in serialized
-    assert "https://" not in serialized
-    assert "gradient" not in serialized
-    assert "backdrop-filter" not in serialized
+    for theme_path in (THEME, LIGHT_THEME):
+        serialized = theme_path.read_text(encoding="utf-8").lower()
+        assert "http://" not in serialized
+        assert "https://" not in serialized
+        assert "gradient" not in serialized
+        assert "backdrop-filter" not in serialized
 
     installer = (ROOT / "install.sh").read_text(encoding="utf-8")
     sync = (ROOT / "scripts" / "sync-hermes.sh").read_text(encoding="utf-8")
     for source in (installer, sync):
         assert "hermes/dashboard-themes/agentik-shadcn.yaml" in source
+        assert "hermes/dashboard-themes/agentik-shadcn-light.yaml" in source
 
 
 def test_api_source_keeps_the_canonical_os_dependencies_field():

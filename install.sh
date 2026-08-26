@@ -215,6 +215,8 @@ cp -a "$repo_root/hermes/plugins/platforms/discord" \
   "$install_root/hermes/plugins/platforms/"
 install -m 0644 "$repo_root/hermes/dashboard-themes/agentik-shadcn.yaml" \
   "$install_root/hermes/dashboard-themes/agentik-shadcn.yaml"
+install -m 0644 "$repo_root/hermes/dashboard-themes/agentik-shadcn-light.yaml" \
+  "$install_root/hermes/dashboard-themes/agentik-shadcn-light.yaml"
 cp -a "$repo_root/hermes/agents/master-os-builder" "$install_root/agents/"
 install -m 0644 "$repo_root/rmux/rmux.conf" "$install_root/rmux/rmux.conf"
 install -m 0755 "$repo_root/bin/agk" "$bin_dir/agk"

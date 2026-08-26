@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ORGANISATIONS,
+  colorSchemeForHex,
   consolePath,
   dashboardPath,
   getOrganisation,
@@ -49,6 +50,13 @@ describe("organisation routing", () => {
     expect(consolePath("agentik")).toBe("/agentik/system?agk-console=1");
     expect(consolePath("mission")).toBe("/mission/system?agk-console=1");
     expect(consolePath("private")).toBe("/private/system?agk-console=1");
+  });
+
+  it("maps Hermes background tokens to the matching Fleet color scheme", () => {
+    expect(colorSchemeForHex("#0d0d0d")).toBe("dark");
+    expect(colorSchemeForHex("#fbfbfa")).toBe("light");
+    expect(colorSchemeForHex("#fff")).toBe("light");
+    expect(colorSchemeForHex("not-a-color")).toBe("dark");
   });
 
   it("updates org without discarding unrelated query parameters", () => {

@@ -47,6 +47,9 @@ mv "$agent_target.new" "$agent_target"
 install -m 0644 \
   "$install_root/hermes/dashboard-themes/agentik-shadcn.yaml" \
   "$hermes_home/dashboard-themes/agentik-shadcn.yaml"
+install -m 0644 \
+  "$install_root/hermes/dashboard-themes/agentik-shadcn-light.yaml" \
+  "$hermes_home/dashboard-themes/agentik-shadcn-light.yaml"
 
 for plugin_path in agentik_os platforms/discord; do
   hermes plugins doctor --ci "$hermes_home/plugins/$plugin_path" >/dev/null

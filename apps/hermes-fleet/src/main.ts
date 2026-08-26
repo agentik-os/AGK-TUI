@@ -3,6 +3,7 @@ import "./styles.css";
 import {
   ORGANISATIONS,
   STORAGE_KEY,
+  colorSchemeForHex,
   consolePath,
   dashboardPath,
   getOrganisation,
@@ -168,6 +169,7 @@ const CONSOLE_FLAG = "agk-console";
 const CONSOLE_WAIT_MS = 8_000;
 
 let consoleObserver: MutationObserver | null = null;
+let themeObserver: MutationObserver | null = null;
 let consoleWaitTimeout: number | null = null;
 let consoleBridgeGeneration = 0;
 let consoleRequestPending = false;
@@ -183,11 +185,25 @@ function cleanupConsoleBridge(): void {
   consoleBridgeGeneration += 1;
   consoleObserver?.disconnect();
   consoleObserver = null;
+  themeObserver?.disconnect();
+  themeObserver = null;
   clearConsoleWait();
 }
 
 function normalisedText(element: Element): string {
   return (element.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+
+function syncShellColorScheme(frameDocument: Document): void {
+  const computedStyle = frameDocument.defaultView?.getComputedStyle(
+    frameDocument.documentElement,
+  );
+  const background =
+    computedStyle?.getPropertyValue("--background-base").trim() ?? "";
+  if (!background) {
+    return;
+  }
+  document.documentElement.dataset.colorScheme = colorSchemeForHex(background);
 }
 
 function isChatLink(link: HTMLAnchorElement, frameWindow: Window): boolean {
@@ -375,11 +391,24 @@ function installConsoleBridge(): void {
   let reconcileQueued = false;
 
   injectConsoleStyle(documentForFrame);
+  syncShellColorScheme(documentForFrame);
+
+  themeObserver = new MutationObserver(() => {
+    if (generation === consoleBridgeGeneration) {
+      syncShellColorScheme(documentForFrame);
+    }
+  });
+  themeObserver.observe(documentForFrame.documentElement, {
+    attributes: true,
+    attributeFilter: ["style"],
+  });
 
   const reconcile = (): void => {
     if (generation !== consoleBridgeGeneration) {
       return;
     }
+
+    syncShellColorScheme(documentForFrame);
 
     const consoleNav = ensureConsoleNavigation(documentForFrame, windowForFrame);
     if (consoleNav && consoleRequestPending) {

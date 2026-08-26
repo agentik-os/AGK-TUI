@@ -35,9 +35,30 @@ export const ORGANISATIONS = [
 
 export type Organisation = (typeof ORGANISATIONS)[number];
 export type OrganisationId = Organisation["id"];
+export type FleetColorScheme = "dark" | "light";
 
 export const DEFAULT_ORGANISATION: OrganisationId = "operator";
 export const STORAGE_KEY = "agk.hermes-fleet.organisation";
+
+export function colorSchemeForHex(color: string): FleetColorScheme {
+  const normalized = color.trim().replace(/^#/, "");
+  const expanded =
+    normalized.length === 3
+      ? normalized
+          .split("")
+          .map((part) => `${part}${part}`)
+          .join("")
+      : normalized;
+  if (!/^[0-9a-f]{6}$/i.test(expanded)) {
+    return "dark";
+  }
+
+  const red = Number.parseInt(expanded.slice(0, 2), 16);
+  const green = Number.parseInt(expanded.slice(2, 4), 16);
+  const blue = Number.parseInt(expanded.slice(4, 6), 16);
+  const perceivedBrightness = (red * 299 + green * 587 + blue * 114) / 1000;
+  return perceivedBrightness >= 160 ? "light" : "dark";
+}
 
 export function isOrganisationId(value: string | null): value is OrganisationId {
   return ORGANISATIONS.some((organisation) => organisation.id === value);
