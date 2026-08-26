@@ -139,7 +139,11 @@ def handle_agent(args: dict, **_kwargs) -> str:
         if not definition:
             return tool_error(f"unknown Agentik agent: {agent_id}")
         environment = _environment()
-        if environment not in set(definition.get("scope") or []):
+        # Operator is AGK's global administrative control plane. It may launch
+        # any installed specialized agent, but the runtime still stays inside
+        # Operator's own Linux home; this grants orchestration authority without
+        # crossing into another environment's private state.
+        if environment != "operator" and environment not in set(definition.get("scope") or []):
             return tool_error(f"agent {agent_id} is not allowed in {environment}")
         session = f"{environment}-{agent_id}"
         row = _runtime_row(session)
