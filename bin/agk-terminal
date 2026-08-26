@@ -1,9 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-install_root=${AGK_TERMINAL_ROOT:-/usr/local/lib/agk-terminal}
+resolve_launcher() {
+  local path=$1 target
+  case "$path" in /*) ;; *) path=$PWD/$path ;; esac
+  while [ -L "$path" ]; do
+    target=$(readlink "$path")
+    case "$target" in
+      /*) path=$target ;;
+      *) path=$(dirname "$path")/$target ;;
+    esac
+  done
+  printf '%s/%s\n' "$(cd "$(dirname "$path")" && pwd -P)" "$(basename "$path")"
+}
+
+launcher=$(resolve_launcher "${BASH_SOURCE[0]}")
+prefix_root=$(cd "$(dirname "$launcher")/.." && pwd -P)
+install_root=${AGK_TERMINAL_ROOT:-$prefix_root/lib/agk-terminal}
 if [ -z "${HOME:-}" ]; then
-  HOME=$(getent passwd "$(id -u)" | cut -d: -f6)
+  HOME=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6 || true)
+  HOME=${HOME:-$(cd ~ && pwd -P)}
   export HOME
 fi
 export PATH="$install_root/bin:$HOME/.local/bin:$PATH"

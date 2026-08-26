@@ -11,8 +11,19 @@ if [ ! -d "$agent_source" ]; then
   agent_source=$install_root/hermes/agents/master-os-builder
 fi
 agent_target=$hermes_home/agents/master-os-builder
-hermes_bin=$(command -v hermes)
-hermes_bin=$(readlink -f "$hermes_bin")
+resolve_executable() {
+  local path=$1 target
+  while [ -L "$path" ]; do
+    target=$(readlink "$path")
+    case "$target" in
+      /*) path=$target ;;
+      *) path=$(dirname "$path")/$target ;;
+    esac
+  done
+  printf '%s/%s\n' "$(cd "$(dirname "$path")" && pwd -P)" "$(basename "$path")"
+}
+
+hermes_bin=$(resolve_executable "$(command -v hermes)")
 
 mkdir -p "$hermes_home/plugins" "$hermes_home/agents"
 mkdir -p "$HOME/.local/bin"

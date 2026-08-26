@@ -10,11 +10,15 @@ usage() {
 AGK-TUI online installer
 
 Usage:
+  # Debian/Ubuntu VPS
   curl -fsSL https://raw.githubusercontent.com/agentik-os/AGK-TUI/main/install | sudo bash
+
+  # macOS (run as your normal user)
+  curl -fsSL https://raw.githubusercontent.com/agentik-os/AGK-TUI/main/install | bash
 
 Options:
   --core-only      Skip optional Claude Code, Codex and OpenCode installation
-  --skip-packages  Do not run apt-get (for an already provisioned host)
+  --skip-packages  Require an already provisioned host toolchain
   --dry-run        Print the full installation plan without changing the host
   --ref REF        Install a specific branch, tag or commit (default: main)
   -h, --help       Show this help
@@ -57,11 +61,30 @@ for argument in "${bootstrap_args[@]}"; do
     dry_run=true
   fi
 done
-if [ "$dry_run" = false ] && [ "$(id -u)" -ne 0 ]; then
-  echo "AGK-TUI installation needs root privileges." >&2
-  echo "Run the curl command with: | sudo bash" >&2
-  exit 1
-fi
+platform=$(uname -s)
+case "$platform" in
+  Linux)
+    bootstrap=bootstrap-vps.sh
+    mode="fresh Debian/Ubuntu VPS"
+    if [ "$dry_run" = false ] && [ "$(id -u)" -ne 0 ]; then
+      echo "AGK-TUI Linux installation needs root privileges." >&2
+      echo "Run the curl command with: | sudo bash" >&2
+      exit 1
+    fi
+    ;;
+  Darwin)
+    bootstrap=bootstrap-macos.sh
+    mode="single-user macOS profile"
+    if [ "$dry_run" = false ] && [ "$(id -u)" -eq 0 ]; then
+      echo "Run the macOS installation as your normal user, without sudo." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "unsupported AGK-TUI platform: $platform" >&2
+    exit 1
+    ;;
+esac
 
 for command in curl tar mktemp awk; do
   command -v "$command" >/dev/null || {
@@ -87,7 +110,7 @@ archive_url="https://codeload.github.com/$repository/tar.gz/$ref"
 
 printf 'AGK-TUI online installer\n'
 printf '  source: https://github.com/%s @ %s\n' "$repository" "$ref"
-printf '  mode:   fresh Debian/Ubuntu VPS\n\n'
+printf '  mode:   %s\n\n' "$mode"
 
 curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors \
   -fsSL "$archive_url" -o "$archive"
@@ -101,17 +124,21 @@ if ! tar -tzf "$archive" | awk '
 fi
 
 mkdir -p "$source_dir"
-tar -xzf "$archive" --strip-components=1 --no-same-owner -C "$source_dir"
-for expected in bootstrap-vps.sh install.sh apps/agk-tui/Cargo.toml; do
+if [ "$platform" = Linux ]; then
+  tar -xzf "$archive" --strip-components=1 --no-same-owner -C "$source_dir"
+else
+  tar -xzf "$archive" --strip-components=1 -C "$source_dir"
+fi
+for expected in bootstrap-vps.sh bootstrap-macos.sh install.sh apps/agk-tui/Cargo.toml; do
   [ -e "$source_dir/$expected" ] || {
     echo "downloaded AGK-TUI archive is incomplete: missing $expected" >&2
     exit 1
   }
 done
 
-# bootstrap-vps installs Rust as `operator` and verifies that this profile can
-# read the staged source. The temporary tree contains only the public archive.
+# The temporary tree contains only the validated public archive. Linux builds
+# as `operator`; macOS builds inside the current single-user profile.
 chmod 0755 "$temporary" "$source_dir"
 chmod -R a+rX "$source_dir"
 
-bash "$source_dir/bootstrap-vps.sh" "${bootstrap_args[@]}"
+bash "$source_dir/$bootstrap" "${bootstrap_args[@]}"

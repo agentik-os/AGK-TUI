@@ -94,7 +94,9 @@ install_provider() {
         hermes --version
       else
         download_and_run https://hermes-agent.nousresearch.com/install.sh --skip-setup --non-interactive
-        hermes setup --quick
+        if [ "$install_mode" != "--no-login" ]; then
+          hermes setup --quick
+        fi
       fi
       ;;
     claude)

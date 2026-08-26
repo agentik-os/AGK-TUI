@@ -24,6 +24,8 @@ def test_online_installer_is_valid_bash_and_documents_the_one_liner():
     assert help_result.returncode == 0, help_result.stderr
     assert "curl -fsSL" in help_result.stdout
     assert "| sudo bash" in help_result.stdout
+    assert "macOS" in help_result.stdout
+    assert "| bash" in help_result.stdout
     assert "--core-only" in help_result.stdout
     assert "--dry-run" in help_result.stdout
     assert "--ref REF" in help_result.stdout
@@ -37,6 +39,13 @@ def test_online_installer_downloads_a_scoped_archive_and_checks_its_layout():
     assert "--tlsv1.2" in source
     assert "--retry-all-errors" in source
     assert "refusing an archive with unsafe paths" in source
-    for expected in ("bootstrap-vps.sh", "install.sh", "apps/agk-tui/Cargo.toml"):
+    for expected in (
+        "bootstrap-vps.sh",
+        "bootstrap-macos.sh",
+        "install.sh",
+        "apps/agk-tui/Cargo.toml",
+    ):
         assert expected in source
-    assert 'bash "$source_dir/bootstrap-vps.sh"' in source
+    assert "bootstrap=bootstrap-vps.sh" in source
+    assert "bootstrap=bootstrap-macos.sh" in source
+    assert 'bash "$source_dir/$bootstrap"' in source

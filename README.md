@@ -53,6 +53,28 @@ The default RMUX package is the published `0.10.0` release; an already-running
 newer daemon is preserved only when its client passes a real wire-protocol
 `list-sessions` check.
 
+### macOS
+
+On Apple Silicon or Intel, run the same online installer as your normal user,
+without `sudo`:
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/agentik-os/AGK-TUI/main/install | bash
+```
+
+The macOS bootstrap is single-user and installs into `~/.local`. It verifies
+the official RMUX archive checksum, installs a private Python runtime with uv,
+builds the native TUI, synchronizes the Hermes extensions, and installs
+Hermes, Composio, Claude Code, Codex and OpenCode without logging into any
+account. It never creates Linux users or services. Command Line Tools are the
+only Apple prerequisite; if they are missing, the installer opens Apple's
+standard installation dialog and asks you to rerun it afterward.
+
+Use `--core-only` to omit Claude Code, Codex and OpenCode, or install from a
+clone with `./bootstrap-macos.sh`. After installation, open a new Terminal and
+run `agk`.
+
 Credentials are deliberately never copied. After bootstrap, authenticate only
 the profiles that need each service:
 
@@ -112,6 +134,11 @@ In the session menu, `Enter` focuses the selected provider immediately and
 `x` closes it in one keystroke. `Tab` returns from the provider to the session
 list; the persistent footer keeps the active session/project context and the
 TKN, RAM, CPU, DISK and LIVE counters visible.
+
+TKN is attributed to the currently selected Hermes model. The System view
+shows every model/provider pair separately, including input/output, cache,
+reasoning and API-call counters. AGK displays `—` instead of inventing a value
+for a provider session that has no authoritative linked usage record.
 
 For an exact, irreversible cleanup of one archived AGK registry record and its
 RMUX process, use `agk purge --yes SESSION`. Normal `x` uses the recoverable
