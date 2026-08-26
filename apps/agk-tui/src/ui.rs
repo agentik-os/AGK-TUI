@@ -57,17 +57,16 @@ pub fn draw(frame: &mut Frame, app: &mut App, preview: SessionPreview<'_>) {
     let rows = Layout::vertical([
         Constraint::Length(nav_height(area.width)),
         Constraint::Length(1),
-        Constraint::Length(1),
         Constraint::Min(3),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
     .split(area);
     draw_nav(frame, app, rows[0], colors);
-    draw_footer_separator(frame, rows[2], colors);
-    draw_body(frame, app, preview, rows[3], size, colors);
-    draw_footer_separator(frame, rows[4], colors);
-    draw_footer(frame, app, rows[5], colors);
+    draw_footer_separator(frame, rows[1], colors);
+    draw_body(frame, app, preview, rows[2], size, colors);
+    draw_footer_separator(frame, rows[3], colors);
+    draw_footer(frame, app, rows[4], colors);
     draw_overlay(frame, app, area, colors);
 }
 
@@ -90,6 +89,7 @@ fn draw_terminal(frame: &mut Frame, preview: SessionPreview<'_>, area: Rect, col
 }
 
 fn draw_nav(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
+    let area = horizontal_area(area);
     let (start, end) = nav_window(app.view, area.width);
     let views = &View::ALL[start..end];
     let labels_width = views
@@ -217,7 +217,7 @@ fn draw_body(
         View::Skills => draw_skills(frame, app, area, size, colors),
         View::System => draw_system(frame, app, area, colors),
         View::Settings => draw_settings(frame, app, area, size, colors),
-        View::Help => draw_help(frame, app, area, colors),
+        View::Help => draw_help(frame, app, area, size, colors),
     }
 }
 
@@ -244,13 +244,23 @@ fn panes(app: &App, area: Rect, size: Density) -> (Rect, Rect) {
 /// useful height of very small mobile terminals.  Internal block padding and
 /// inter-panel gaps complete the spacing system inside this outer gutter.
 fn board_area(area: Rect) -> Rect {
-    let horizontal = u16::from(area.width >= 32);
+    let area = horizontal_area(area);
     let vertical = u16::from(area.height >= 13);
     Rect::new(
-        area.x.saturating_add(horizontal),
+        area.x,
         area.y.saturating_add(vertical),
-        area.width.saturating_sub(horizontal.saturating_mul(2)),
+        area.width,
         area.height.saturating_sub(vertical.saturating_mul(2)),
+    )
+}
+
+fn horizontal_area(area: Rect) -> Rect {
+    let gutter = u16::from(area.width >= 32);
+    Rect::new(
+        area.x.saturating_add(gutter),
+        area.y,
+        area.width.saturating_sub(gutter.saturating_mul(2)),
+        area.height,
     )
 }
 
@@ -264,9 +274,10 @@ pub fn focus_at(app: &App, size: Size, column: u16, row: u16) -> Option<Focus> {
     }
     let nav_height = nav_height(size.width);
     if row < nav_height {
-        return Some(Focus::Nav);
+        let nav = horizontal_area(Rect::new(0, 0, size.width, nav_height));
+        return nav.contains((column, row).into()).then_some(Focus::Nav);
     }
-    let header_height = nav_height.saturating_add(2);
+    let header_height = nav_height.saturating_add(1);
     let body_height = size.height.saturating_sub(header_height.saturating_add(2));
     let body = board_area(Rect::new(0, header_height, size.width, body_height));
     if !body.contains((column, row).into()) {
@@ -449,7 +460,7 @@ fn draw_sessions(
                 .style(Style::default().fg(colors.text_muted).bg(colors.surface)),
                 inner,
             ),
-            SessionPreview::Unavailable => frame.render_widget(
+            SessionPreview::Unavailable if size != Density::Compact => frame.render_widget(
                 Paragraph::new(
                     "No live pane snapshot\n\nEnter  Fullscreen terminal\nF / F11  Expand\nTab  Session list\nv  Toggle split preview",
                 )
@@ -458,6 +469,7 @@ fn draw_sessions(
                 .style(Style::default().fg(colors.text_muted).bg(colors.surface)),
                 inner,
             ),
+            SessionPreview::Unavailable => {}
         }
     } else {
         app.preview_width = 0;
@@ -1171,8 +1183,8 @@ fn draw_appearance(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
     );
 }
 
-fn draw_help(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
-    let help = Text::from(vec![
+fn draw_help(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Palette) {
+    let mut lines = vec![
         heading("NAVIGATION", colors),
         help_key("←/→", "Always change the top menu", colors),
         help_key("1–9", "Open a numbered top menu", colors),
@@ -1203,11 +1215,15 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
             "Choose provider, create session, then open it when RMUX is live",
             colors,
         ),
-        help_key(
+    ];
+    if size != Density::Compact {
+        lines.push(help_key(
             "1/2/3/4/5",
             "New Hermes / Codex / Claude Code / OpenCode / Hermes OpenRouter",
             colors,
-        ),
+        ));
+    }
+    lines.extend([
         help_key("x / r", "Close immediately / rename session", colors),
         Line::raw(""),
         heading("COMMANDS", colors),
@@ -1231,6 +1247,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
         help_key("Esc", "Revert preview, collapse, or clear filter", colors),
         help_key("q", "Detach AGK; work sessions keep running", colors),
     ]);
+    let help = Text::from(lines);
     frame.render_widget(
         Paragraph::new(help)
             .scroll((app.detail_scroll, 0))
@@ -1242,6 +1259,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
 }
 
 fn draw_footer_separator(frame: &mut Frame, area: Rect, colors: Palette) {
+    let area = horizontal_area(area);
     frame.render_widget(
         Paragraph::new("─".repeat(usize::from(area.width)))
             .style(Style::default().fg(colors.border).bg(Color::Reset)),
@@ -1250,6 +1268,7 @@ fn draw_footer_separator(frame: &mut Frame, area: Rect, colors: Palette) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
+    let area = horizontal_area(area);
     let live = app
         .snapshot
         .runtimes
@@ -1270,7 +1289,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
         .as_deref()
         .map(|model| format!("{model} · {full_metrics}"));
     let compact_metrics = format!(
-        "TKN {}  RAM {}  CPU {}  DSK {}  ● {live} LIVE",
+        "TKN {}  RAM {}  CPU {}  DISK {}  ● {live} LIVE",
         tokens,
         format_percent(app.footer.ram_percent),
         format_percent(app.footer.cpu_percent),
@@ -1309,6 +1328,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
 }
 
 fn draw_overlay(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
+    let compact = density(area.width, area.height) == Density::Compact;
     let (rect, title, lines) = match &app.overlay {
         Overlay::None => return,
         Overlay::Search { value, .. } => (
@@ -1373,7 +1393,11 @@ fn draw_overlay(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
                             Style::default().fg(colors.accent),
                         ),
                         Span::styled(
-                            format!("{}. {}", index + 1, kind.label()),
+                            if compact {
+                                kind.label().to_owned()
+                            } else {
+                                format!("{}. {}", index + 1, kind.label())
+                            },
                             Style::default().fg(colors.text),
                         ),
                     ])
@@ -1826,6 +1850,36 @@ mod tests {
     }
 
     #[test]
+    fn compact_offline_preview_keeps_the_board_but_removes_instruction_noise() {
+        let mut app = test_app();
+        app.focus = Focus::Detail;
+        let output = render(app, 60, 20);
+        assert!(output.contains("moon · OFFLINE"));
+        for removed in [
+            "No live pane snapshot",
+            "Fullscreen terminal",
+            "Expand",
+            "Toggle split preview",
+        ] {
+            assert!(
+                !output.contains(removed),
+                "mobile preview leaked {removed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_provider_picker_uses_arrows_without_numbered_providers() {
+        let mut app = test_app();
+        app.overlay = Overlay::NewKind { selected: 0 };
+        let output = render(app, 60, 20);
+        assert!(output.contains("Hermes"));
+        assert!(output.contains("Claude"));
+        assert!(!output.contains("1. Hermes"));
+        assert!(!output.contains("3. Claude"));
+    }
+
+    #[test]
     fn standard_density_never_squeezes_list_and_preview_side_by_side() {
         let output = render(test_app(), 90, 24);
         assert!(output.contains("SESSIONS · 1"));
@@ -1865,9 +1919,9 @@ mod tests {
             .take(3)
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>();
-        assert!(rows[0].starts_with("1.SESSIONS"));
-        assert!(rows[1].trim().is_empty());
-        assert_eq!(rows[2], "─".repeat(60));
+        assert!(rows[0].starts_with(" 1.SESSIONS"));
+        assert_eq!(rows[1], format!(" {} ", "─".repeat(58)));
+        assert!(rows[2].trim().is_empty());
     }
 
     #[test]
@@ -1898,8 +1952,9 @@ mod tests {
     fn mouse_focus_uses_the_same_board_gutters_and_settings_gap() {
         let size = Size::new(90, 24);
         let mut app = test_app();
-        assert_eq!(focus_at(&app, size, 0, 4), None);
-        assert_eq!(focus_at(&app, size, 1, 4), Some(Focus::List));
+        assert_eq!(focus_at(&app, size, 0, 3), None);
+        assert_eq!(focus_at(&app, size, 1, 2), None);
+        assert_eq!(focus_at(&app, size, 1, 3), Some(Focus::List));
 
         app.set_view(View::Settings);
         assert_eq!(focus_at(&app, size, 25, 6), None);
@@ -1979,8 +2034,10 @@ mod tests {
             .draw(|frame| draw(frame, &mut app, SessionPreview::Unavailable))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 23)].symbol(), "A");
+        assert_eq!(buffer[(0, 23)].symbol(), " ");
         assert_eq!(buffer[(0, 23)].bg, Color::Reset);
+        assert_eq!(buffer[(1, 23)].symbol(), "A");
+        assert_eq!(buffer[(1, 23)].bg, Color::Reset);
         assert_eq!(buffer[(79, 23)].bg, Color::Reset);
     }
 

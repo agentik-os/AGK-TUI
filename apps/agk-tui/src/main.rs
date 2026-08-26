@@ -26,7 +26,7 @@ use crossterm::{
 };
 use data::RegistryClient;
 use input::Action;
-use model::{App, Focus, Mode, Overlay, SessionTarget, View};
+use model::{App, Density, Focus, Mode, Overlay, SessionTarget, View, density};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use ratatui_rmux::PaneState;
 use rmux_sdk::{Pane, PaneCursor, PaneSnapshot, Rmux};
@@ -270,7 +270,13 @@ async fn run(
                     Action::None
                 }
                 Event::Key(key) if accepts_key(&key) => {
-                    input::handle_key(app, key, detail_available)
+                    let size = terminal.size()?;
+                    input::handle_key_for_layout(
+                        app,
+                        key,
+                        detail_available,
+                        density(size.width, size.height) == Density::Compact,
+                    )
                 }
                 Event::Paste(text) => input::handle_paste(app, &text),
                 Event::Resize(_, _) => {

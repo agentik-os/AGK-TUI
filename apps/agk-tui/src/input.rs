@@ -115,14 +115,24 @@ pub fn palette_items(query: &str) -> Vec<PaletteItem> {
         .collect()
 }
 
-pub fn handle_key(app: &mut App, key: KeyEvent, detail_available: bool) -> Action {
+#[cfg(test)]
+fn handle_key(app: &mut App, key: KeyEvent, detail_available: bool) -> Action {
+    handle_key_for_layout(app, key, detail_available, false)
+}
+
+pub fn handle_key_for_layout(
+    app: &mut App,
+    key: KeyEvent,
+    detail_available: bool,
+    compact: bool,
+) -> Action {
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('r') {
         app.status = Some("Reloading AGK…".into());
         return Action::Reload;
     }
 
     if app.overlay.is_open() {
-        return handle_overlay_key(app, key);
+        return handle_overlay_key(app, key, compact);
     }
 
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
@@ -152,19 +162,19 @@ pub fn handle_key(app: &mut App, key: KeyEvent, detail_available: bool) -> Actio
 
     match key.code {
         KeyCode::Char('q') => Action::Quit,
-        KeyCode::Char('1') if app.view == View::Sessions && app.focus != Focus::Nav => {
+        KeyCode::Char('1') if !compact && app.view == View::Sessions && app.focus != Focus::Nav => {
             new_session_name(app, SessionKind::Hermes)
         }
-        KeyCode::Char('2') if app.view == View::Sessions && app.focus != Focus::Nav => {
+        KeyCode::Char('2') if !compact && app.view == View::Sessions && app.focus != Focus::Nav => {
             new_session_name(app, SessionKind::Codex)
         }
-        KeyCode::Char('3') if app.view == View::Sessions && app.focus != Focus::Nav => {
+        KeyCode::Char('3') if !compact && app.view == View::Sessions && app.focus != Focus::Nav => {
             new_session_name(app, SessionKind::Claude)
         }
-        KeyCode::Char('4') if app.view == View::Sessions && app.focus != Focus::Nav => {
+        KeyCode::Char('4') if !compact && app.view == View::Sessions && app.focus != Focus::Nav => {
             new_session_name(app, SessionKind::OpenCode)
         }
-        KeyCode::Char('5') if app.view == View::Sessions && app.focus != Focus::Nav => {
+        KeyCode::Char('5') if !compact && app.view == View::Sessions && app.focus != Focus::Nav => {
             new_session_name(app, SessionKind::OpenRouter)
         }
         KeyCode::Char('1') => set_view(app, View::Sessions),
@@ -443,7 +453,7 @@ fn valid_session_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Action {
+fn handle_overlay_key(app: &mut App, key: KeyEvent, compact: bool) -> Action {
     let overlay = std::mem::replace(&mut app.overlay, Overlay::None);
     match overlay {
         Overlay::Search {
@@ -521,7 +531,7 @@ fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Action {
         },
         Overlay::NewKind { mut selected } => match key.code {
             KeyCode::Esc => Action::None,
-            KeyCode::Char(choice @ '1'..='6') if printable(key.modifiers) => {
+            KeyCode::Char(choice @ '1'..='6') if !compact && printable(key.modifiers) => {
                 let index = choice as usize - '1' as usize;
                 app.overlay = Overlay::NewName {
                     kind: SessionKind::ALL[index],
@@ -1016,6 +1026,28 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn compact_layout_reserves_numbers_for_the_main_menu() {
+        let mut app = app();
+        app.focus = Focus::List;
+        handle_key_for_layout(&mut app, key(KeyCode::Char('3')), true, true);
+        assert_eq!(app.view, View::Agents);
+        assert_eq!(app.overlay, Overlay::None);
+
+        app.overlay = Overlay::NewKind { selected: 0 };
+        handle_key_for_layout(&mut app, key(KeyCode::Char('2')), true, true);
+        assert_eq!(app.overlay, Overlay::NewKind { selected: 0 });
+        handle_key_for_layout(&mut app, key(KeyCode::Down), true, true);
+        handle_key_for_layout(&mut app, key(KeyCode::Enter), true, true);
+        assert_eq!(
+            app.overlay,
+            Overlay::NewName {
+                kind: SessionKind::Codex,
+                value: String::new(),
+            }
+        );
     }
 
     #[test]
