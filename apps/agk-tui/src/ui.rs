@@ -100,10 +100,10 @@ fn draw_nav(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
         && end == View::ALL.len()
         && labels_width
             .saturating_add(marker_width)
-            .saturating_add(gaps * 3)
+            .saturating_add(gaps * 2)
             <= usize::from(area.width)
     {
-        3
+        2
     } else {
         1
     };
@@ -1751,6 +1751,13 @@ mod tests {
         assert!(rows[0].starts_with("1.SESSIONS"));
         assert!(rows[1].trim().is_empty());
         assert_eq!(rows[2], "─".repeat(60));
+    }
+
+    #[test]
+    fn desktop_top_menu_uses_compact_two_space_gaps() {
+        let output = render(test_app(), 120, 24);
+        assert!(output.contains("1.SESSIONS  2.PROJECTS"));
+        assert!(!output.contains("1.SESSIONS   2.PROJECTS"));
     }
 
     #[test]
