@@ -1,6 +1,7 @@
 mod data;
 mod input;
 mod model;
+mod paste;
 mod system_info;
 mod theme;
 mod ui;
@@ -1003,7 +1004,7 @@ async fn send_terminal_event(rmux: &Rmux, app: &App, cache: &mut PreviewCache, e
         return;
     };
     let result = match event {
-        Event::Paste(text) => pane.send_text(text).await.map(|_| ()),
+        Event::Paste(text) => paste::send(&pane, &text).await,
         Event::Key(key) if accepts_key(&key) => {
             if key.code == KeyCode::Enter
                 && key

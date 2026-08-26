@@ -249,6 +249,12 @@ shortcuts go directly to that real terminal. When the session list has focus,
 by terminal forwarding. Mouse click and wheel focus/scroll the panel under the
 pointer.
 
+Clipboard pastes are forwarded as a single bracketed-paste block and split into
+UTF-8-safe transport chunks, so long prompts are not truncated. Providers that
+support compact paste previews can consequently show a label such as
+`[Pasted Content 13090 chars]`; that label is only a visual summary and the
+complete pasted text is still submitted to the model.
+
 ## Footer and resource information
 
 The footer stays visible in Control mode, split session mode and expanded
