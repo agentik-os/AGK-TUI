@@ -189,6 +189,7 @@ else
 fi
 
 install -d -m 0755 "$install_root/bin" "$install_root/scripts" "$install_root/config" "$install_root/rmux" \
+  "$install_root/client" \
   "$install_root/hermes/plugins/platforms" "$install_root/hermes/dashboard-themes" \
   "$install_root/agents" "$bin_dir"
 install -m 0755 "$agk_tui_binary" "$install_root/bin/agk-tui"
@@ -202,6 +203,8 @@ install -m 0755 "$repo_root/scripts/install-shared-hermes.sh" \
 install -m 0755 "$repo_root/scripts/topology.py" "$install_root/scripts/topology.py"
 install -m 0755 "$repo_root/scripts/composio_inventory.py" \
   "$install_root/scripts/composio_inventory.py"
+install -m 0755 "$repo_root/scripts/client_control.py" \
+  "$install_root/scripts/client_control.py"
 install -m 0755 "$repo_root/scripts/install-hermes-fleet-dashboard.sh" \
   "$install_root/scripts/install-hermes-fleet-dashboard.sh"
 install -m 0644 "$repo_root/config/topology.yaml" "$install_root/config/topology.yaml"
@@ -218,9 +221,14 @@ install -m 0644 "$repo_root/hermes/dashboard-themes/agentik-shadcn.yaml" \
 install -m 0644 "$repo_root/hermes/dashboard-themes/agentik-shadcn-light.yaml" \
   "$install_root/hermes/dashboard-themes/agentik-shadcn-light.yaml"
 cp -a "$repo_root/hermes/agents/master-os-builder" "$install_root/agents/"
+rm -rf "$install_root/client"
+cp -a "$repo_root/client" "$install_root/client"
 install -m 0644 "$repo_root/rmux/rmux.conf" "$install_root/rmux/rmux.conf"
 install -m 0755 "$repo_root/bin/agk" "$bin_dir/agk"
 install -m 0755 "$repo_root/bin/agk-terminal" "$bin_dir/agk-terminal"
+for client_launcher in client-init client-doctor client-status client-env provision-client; do
+  install -m 0755 "$repo_root/bin/$client_launcher" "$bin_dir/$client_launcher"
+done
 expose_agk_launcher
 
 # Make the Composio executable available to every profile without sharing any

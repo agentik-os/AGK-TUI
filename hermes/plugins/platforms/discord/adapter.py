@@ -137,8 +137,10 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 try:
     from .ffmpeg_utils import resolve_ffmpeg_executable
+    from .agk_client_reviews import register_agk_client_review_listener
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
+    from agk_client_reviews import register_agk_client_review_listener
 
 from gateway.config import Platform, PlatformConfig
 
@@ -1404,6 +1406,8 @@ class DiscordAdapter(BasePlatformAdapter):
             @self._client.event
             async def on_message(message: DiscordMessage):
                 await adapter_self._dispatch_discord_message(message)
+
+            register_agk_client_review_listener(self._client, adapter_self)
 
             @self._client.event
             async def on_message_edit(before: DiscordMessage, after: DiscordMessage):

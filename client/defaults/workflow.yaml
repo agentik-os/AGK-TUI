@@ -1,0 +1,49 @@
+schema_version: 1
+source_of_truth:
+  work: linear
+  code: github
+  design: figma
+  execution: hermes
+  human_decisions: discord
+  orchestration: agk
+invariants:
+  linear_issue_required: true
+  preserve_session_on_changes: true
+  engineering_approval_is_not_deploy_authorization: true
+states:
+  - backlog
+  - todo
+  - in_progress
+  - agent_review
+  - automated_qa
+  - ready_for_cto
+  - changes_requested
+  - cto_approved
+  - ready_to_deploy
+  - production
+  - verified
+  - done
+  - blocked
+transitions:
+  backlog: [todo]
+  todo: [in_progress, blocked]
+  in_progress: [agent_review, blocked]
+  agent_review: [automated_qa, in_progress, blocked]
+  automated_qa: [ready_for_cto, in_progress, blocked]
+  ready_for_cto: [changes_requested, cto_approved]
+  changes_requested: [in_progress]
+  cto_approved: [changes_requested, ready_to_deploy]
+  ready_to_deploy: [production, changes_requested]
+  production: [verified, blocked]
+  verified: [done, blocked]
+  done: []
+  blocked: [in_progress, todo]
+gates:
+  ready_for_cto:
+    requires: [pull_request, ci_passed, qa_passed, security_passed, staging_preview]
+  cto_approved:
+    requires: [engineering_approval_id]
+  ready_to_deploy:
+    requires: [production_authorization_id]
+  done:
+    requires: [production_health_verified, linear_marked_done]

@@ -21,11 +21,19 @@ bash -n \
   "$repo_root/install.sh" \
   "$repo_root/bin/agk" \
   "$repo_root/bin/agk-terminal" \
+  "$repo_root/bin/client-init" \
+  "$repo_root/bin/client-doctor" \
+  "$repo_root/bin/client-status" \
+  "$repo_root/bin/client-env" \
+  "$repo_root/bin/provision-client" \
   "$repo_root/scripts/doctor.sh" \
   "$repo_root/scripts/install-shared-hermes.sh" \
   "$repo_root/scripts/install-hermes-fleet-dashboard.sh" \
   "$repo_root/scripts/provider.sh" \
   "$repo_root/scripts/sync-hermes.sh"
+python3 -m py_compile \
+  "$repo_root/scripts/client_control.py" \
+  "$repo_root/hermes/plugins/platforms/discord/agk_client_reviews.py"
 
 npm --prefix "$fleet_dashboard_root" ci
 npm --prefix "$fleet_dashboard_root" test

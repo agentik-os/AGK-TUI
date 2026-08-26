@@ -25,6 +25,7 @@ reopen AGK from a phone and continue the same live conversation.
 - a profile-local MCP inventory, including redacted Composio connections;
 - global Rules synchronized to every supported provider;
 - optional Hermes gateways for Discord and headless operation;
+- a transactional client-organization control plane for Mission work;
 - on a VPS, a topology manager for Operator, Agentik, Mission and Private.
 
 Provider credentials are never stored in this repository and are never copied
@@ -414,6 +415,68 @@ sudo agk topology apply --yes
 Mission client runtimes can still be local, containerized, remote or external;
 that client topology is deliberately separate from the profile topology.
 
+## Client organizations and CTO gates
+
+Each Mission client is an isolated product organization, not just a folder or
+an agent prompt. Linear owns the work, GitHub owns code and CI evidence, Figma
+owns design, Hermes owns resumable execution, Discord carries human decisions,
+and AGK enforces the workflow and audit trail.
+
+```text
+Linear issue -> AGK work -> same Hermes session -> branch / PR
+             -> CI + QA + security -> staging -> CTO engineering approval
+             -> separate production authorization -> AGK Run -> health check
+             -> Linear done
+```
+
+Installation initializes the standard and an empty registry. It never creates
+a client or a remote resource by itself. A safe onboarding sequence is:
+
+```bash
+sudo -u mission -H agk client bootstrap --upgrade
+sudo -u mission -H agk client init foued --name "Foued Legal AI" \
+  --runtime hybrid --github-mode org --github-org foued \
+  --linear-workspace WORKSPACE_ID --linear-team TEAM_ID \
+  --discord-guild GUILD_ID --dry-run
+sudo -u mission -H agk client init foued --name "Foued Legal AI" \
+  --runtime hybrid --github-mode org --github-org foued \
+  --linear-workspace WORKSPACE_ID --linear-team TEAM_ID \
+  --discord-guild GUILD_ID
+sudo -u mission -H agk client integrations plan foued
+```
+
+Connect a distinct Composio account selector for every enabled client
+integration; AGK never falls back to a profile-wide default account:
+
+```bash
+sudo -u mission -H agk composio connect linear \
+  --alias client-foued-linear --no-browser
+sudo -u mission -H agk composio connect github \
+  --alias client-foued-github --no-browser
+sudo -u mission -H agk composio connect discordbot \
+  --alias client-foued-discordbot --no-browser
+sudo -u mission -H agk client integrations verify foued
+sudo -u mission -H agk client discord plan foued
+# Only after reviewing the plan:
+sudo -u mission -H agk client discord apply foued --yes
+sudo -u mission -H agk client activate foued --yes
+# Run the `next_command` printed by activate to configure this isolated profile.
+sudo -u mission -H agk client doctor foued --online
+```
+
+After mapping the client's Linear workflow-state IDs in
+`.client/integrations.yaml`, `agk client linear plan/apply` synchronizes an AGK
+work record and its idempotent journal comment. `agk client discord
+review-plan/review-apply` delivers the governed CTO card to the provisioned
+client channel.
+
+`agk client init` is local and transactional. Discord provisioning is a
+separate, explicit, idempotent apply with rollback of resources created by a
+failed attempt. Client credentials live outside the workspace at
+`~/.config/agk/clients/<client>/env` with mode `0600`. The exact workflow,
+commands, policies and recovery behavior are documented in
+[Client organizations](docs/CLIENT-ORGANIZATIONS.md).
+
 ## Commands
 
 ```bash
@@ -434,6 +497,10 @@ agk composio list
 agk rules
 agk hermes sync
 agk topology status
+agk client list
+agk client doctor CLIENT --online
+agk client work create CLIENT --issue FOU-142 --title "Feature" \
+  --role backend-engineer --repo ORG/REPO
 ```
 
 `agk purge` is intentionally different from `x`: purge permanently removes the
@@ -455,6 +522,8 @@ sudo agk-terminal hermes install-shared
 | `~/.agentik/control.db` | current profile | projects and mission objects |
 | `~/.agentik/agents/` | current profile | isolated specialist workspaces |
 | `~/.agentik/rules.yaml` | current profile | optional profile rule override |
+| `~/workspace/clients/` | Mission profile | isolated client workspaces and audit records |
+| `~/.config/agk/clients/` | Mission profile | client-local non-Composio secrets, mode `0600` |
 | `~/.hermes/` | current profile | Hermes config, state, skills and profiles |
 | `~/.composio/` | current profile | Composio authentication |
 | `~/.claude/`, `~/.codex/` | current profile | provider-local state |
@@ -509,6 +578,7 @@ The important repository surfaces are:
 
 ```text
 apps/agk-tui/       native Rust interface and RMUX SDK integration
+client/             client organization templates, workflow and policies
 scripts/            session, provider, topology and synchronization logic
 bin/                public agk and agk-terminal launchers
 hermes/             AGK plugins, dashboard assets and catalog agents

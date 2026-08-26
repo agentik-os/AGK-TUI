@@ -163,6 +163,18 @@ else
   done
 fi
 
+phase "Initialize the client-organization control plane without external writes"
+if [ "$dry_run" = true ]; then
+  echo "  + mission: agk client bootstrap --upgrade (0 clients provisioned)"
+else
+  sudo -u mission env \
+    HOME=/home/mission \
+    USER=mission \
+    AGK_TERMINAL_ROOT="$install_root" \
+    PATH="/home/mission/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+    /usr/local/bin/agk client bootstrap --upgrade
+fi
+
 if [ "$core_only" = false ]; then
   phase "Install optional provider binaries for every profile"
   if [ "$dry_run" = true ]; then

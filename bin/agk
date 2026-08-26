@@ -21,6 +21,13 @@ export AGK_TERMINAL_ROOT=$install_root
 export PATH="$install_root/bin:$HOME/.local/bin:$PATH"
 
 case "${1:-}" in
+  client)
+    shift
+    if [ -x "$install_root/venv/bin/python" ]; then
+      exec "$install_root/venv/bin/python" "$install_root/scripts/client_control.py" "$@"
+    fi
+    exec python3 "$install_root/scripts/client_control.py" "$@"
+    ;;
   provider|composio|hermes|topology|doctor)
     exec agk-terminal "$@"
     ;;
@@ -45,6 +52,7 @@ Sessions:
 
 Setup and health:
   agk doctor
+  agk client {bootstrap|init|list|show|doctor|integrations|linear|discord|work|run}
   agk provider {list|verify|install} [PROVIDER]
   agk composio {login|connect|connections|list|search|status} ...
   agk hermes {sync|install-shared|gateway}

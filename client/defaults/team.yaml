@@ -1,0 +1,71 @@
+schema_version: 1
+instantiation: on_demand
+orchestrator:
+  role: platform-lead
+  provider: hermes
+roles:
+  product-manager:
+    group: product
+    max_level: L1
+    responsibilities: [roadmap, specifications, issue-quality, acceptance-criteria]
+  tech-lead:
+    group: engineering
+    max_level: L2
+    responsibilities: [architecture, decomposition, code-review, engineering-arbitration]
+  product-engineer:
+    group: engineering
+    max_level: L2
+    responsibilities: [product-implementation, integration, pull-requests]
+  frontend-engineer:
+    group: engineering
+    max_level: L2
+    responsibilities: [frontend, accessibility, visual-integration]
+  backend-engineer:
+    group: engineering
+    max_level: L2
+    responsibilities: [backend, data-contracts, integrations]
+  qa-engineer:
+    group: quality
+    max_level: L2
+    responsibilities: [functional-tests, regression-tests, acceptance-evidence]
+  visual-qa:
+    group: quality
+    max_level: L2
+    responsibilities: [design-conformance, responsive-validation, visual-regressions]
+  designer:
+    group: design
+    max_level: L1
+    responsibilities: [ux, ui, figma, design-review]
+  platform-lead:
+    group: platform
+    max_level: L3
+    responsibilities: [infrastructure-plan, orchestration, risk-arbitration]
+  ci-cd-engineer:
+    group: platform
+    max_level: L2
+    responsibilities: [builds, pipelines, deployment-automation]
+  infrastructure-engineer:
+    group: platform
+    max_level: L2
+    responsibilities: [vps, containers, networking, dns-planning]
+  security-engineer:
+    group: platform
+    max_level: L2
+    responsibilities: [secrets, permissions, dependencies, vulnerability-review]
+  sre-observability:
+    group: platform
+    max_level: L3
+    responsibilities: [logs, metrics, health-checks, incidents, rollback-advice]
+  release-manager:
+    group: platform
+    max_level: L3
+    responsibilities: [release-evidence, staging, production, rollback]
+  finops:
+    group: platform
+    max_level: L1
+    responsibilities: [cloud-cost, budgets, resource-anomalies]
+provider_policy:
+  primary_orchestrator: hermes
+  coding: [codex, claude, opencode, hermes]
+  review: [hermes, codex, claude]
+  fallback_requires_record: true
