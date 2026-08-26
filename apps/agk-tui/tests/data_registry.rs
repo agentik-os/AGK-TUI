@@ -27,6 +27,22 @@ fn write(path: impl AsRef<Path>, contents: &str) {
     fs::write(path, contents).unwrap();
 }
 
+#[test]
+fn global_rules_are_loaded_with_provider_scope_and_safe_defaults() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(&temp);
+    write(
+        &paths.rules_config,
+        "rules:\n  - id: verify-runtime\n    title: Verify runtime\n    content: Test the real flow.\n    providers: ['*']\n  - id: codex-only\n    title: Codex only\n    content: Keep Codex focused.\n    providers: [codex]\n    enabled: false\n",
+    );
+    let snapshot = RegistryClient::new("operator", paths).load(&[]);
+    assert_eq!(snapshot.rules.len(), 2);
+    assert_eq!(snapshot.rules[0].providers, vec!["*"]);
+    assert!(snapshot.rules[0].enabled);
+    assert!(!snapshot.rules[1].enabled);
+    assert!(snapshot.rules[0].source.ends_with("rules.yaml"));
+}
+
 fn runtime_db(path: &Path, include_native_session: bool) -> Connection {
     parent(path);
     let connection = Connection::open(path).unwrap();

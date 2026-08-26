@@ -1,7 +1,7 @@
 use crate::{
     data::{
         AgentRecord, CapabilityRecord, ControlObject, OsPackage, ProviderRecord, RegistrySnapshot,
-        RuntimeRecord, SkillRecord,
+        RuleRecord, RuntimeRecord, SkillRecord,
     },
     system_info::FooterSnapshot,
     theme::{Preferences, Theme},
@@ -15,7 +15,7 @@ pub enum View {
     Os,
     Mcp,
     Skills,
-    System,
+    Rules,
     Settings,
     Help,
 }
@@ -28,7 +28,7 @@ impl View {
         Self::Os,
         Self::Mcp,
         Self::Skills,
-        Self::System,
+        Self::Rules,
         Self::Settings,
         Self::Help,
     ];
@@ -41,7 +41,7 @@ impl View {
             Self::Os => "OS",
             Self::Mcp => "MCP",
             Self::Skills => "Skills",
-            Self::System => "System",
+            Self::Rules => "Rules",
             Self::Settings => "Settings",
             Self::Help => "Help",
         }
@@ -55,7 +55,7 @@ impl View {
             Self::Os => "4",
             Self::Mcp => "5",
             Self::Skills => "6",
-            Self::System => "7",
+            Self::Rules => "7",
             Self::Settings => "8",
             Self::Help => "9",
         }
@@ -98,15 +98,17 @@ pub enum SettingsSection {
     Providers,
     Sessions,
     Runtime,
+    System,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Appearance,
         Self::Providers,
         Self::Sessions,
         Self::Runtime,
+        Self::System,
         Self::About,
     ];
 
@@ -116,6 +118,7 @@ impl SettingsSection {
             Self::Providers => "Providers",
             Self::Sessions => "Sessions",
             Self::Runtime => "Runtime",
+            Self::System => "System",
             Self::About => "About",
         }
     }
@@ -352,8 +355,9 @@ impl App {
             View::Os => self.filtered_os().count(),
             View::Mcp => self.filtered_mcp().count(),
             View::Skills => self.filtered_skills().count(),
+            View::Rules => self.filtered_rules().count(),
             View::Settings => SettingsSection::ALL.len(),
-            View::System | View::Help => 1,
+            View::Help => 1,
         }
     }
 
@@ -450,6 +454,10 @@ impl App {
         self.filtered_skills().nth(self.selected)
     }
 
+    pub fn current_rule(&self) -> Option<&RuleRecord> {
+        self.filtered_rules().nth(self.selected)
+    }
+
     pub fn current_provider(&self) -> Option<&ProviderRecord> {
         self.snapshot.providers.get(self.provider_selected)
     }
@@ -537,6 +545,20 @@ impl App {
             .filter(|item| matches_query(&self.query, &[&item.name, &item.source, &item.status]))
     }
 
+    pub fn filtered_rules(&self) -> impl Iterator<Item = &RuleRecord> {
+        self.snapshot.rules.iter().filter(|item| {
+            matches_query(
+                &self.query,
+                &[
+                    &item.id,
+                    &item.title,
+                    &item.content,
+                    &item.providers.join(" "),
+                ],
+            )
+        })
+    }
+
     pub fn current_key(&self) -> Option<String> {
         match self.view {
             View::Sessions => self
@@ -555,6 +577,7 @@ impl App {
             View::Skills => self
                 .current_skill()
                 .map(|item| format!("skill:{}", item.name)),
+            View::Rules => self.current_rule().map(|item| format!("rule:{}", item.id)),
             _ => None,
         }
     }
@@ -585,13 +608,17 @@ impl App {
                 .filtered_skills()
                 .map(|item| format!("skill:{}", item.name))
                 .collect(),
+            View::Rules => self
+                .filtered_rules()
+                .map(|item| format!("rule:{}", item.id))
+                .collect(),
             _ => Vec::new(),
         }
     }
 
     pub fn tab(&mut self, detail_available: bool) {
         self.focus = match (self.view, self.focus, detail_available) {
-            (View::System | View::Help, _, _) => Focus::Detail,
+            (View::Help, _, _) => Focus::Detail,
             (_, Focus::List, true) => Focus::Detail,
             _ => Focus::List,
         };
@@ -599,7 +626,7 @@ impl App {
 
     pub fn back_tab(&mut self, detail_available: bool) {
         self.focus = match (self.view, self.focus, detail_available) {
-            (View::System | View::Help, _, _) => Focus::Detail,
+            (View::Help, _, _) => Focus::Detail,
             (_, Focus::Detail, _) => Focus::List,
             (_, _, true) => Focus::Detail,
             _ => Focus::List,

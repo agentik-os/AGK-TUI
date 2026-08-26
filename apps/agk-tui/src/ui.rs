@@ -43,14 +43,18 @@ pub fn draw(frame: &mut Frame, app: &mut App, preview: SessionPreview<'_>) {
     let size = density(area.width, area.height);
     if app.mode == Mode::Terminal {
         let rows = Layout::vertical([
-            Constraint::Min(1),
+            Constraint::Length(nav_height(area.width)),
+            Constraint::Length(1),
+            Constraint::Min(3),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(area);
-        draw_terminal_workspace(frame, app, preview, rows[0], size, colors);
+        draw_nav(frame, app, rows[0], colors);
         draw_footer_separator(frame, rows[1], colors);
-        draw_footer(frame, app, rows[2], colors);
+        draw_terminal_workspace(frame, app, preview, rows[2], size, colors);
+        draw_footer_separator(frame, rows[3], colors);
+        draw_footer(frame, app, rows[4], colors);
         return;
     }
 
@@ -110,7 +114,17 @@ fn draw_terminal_workspace(
 
     let title = app
         .current_session()
-        .map(|runtime| format!(" {} · LIVE ", runtime.name))
+        .map(|runtime| {
+            if app.preview_scroll > 0 {
+                format!(" {} · PAUSED · -{} ", runtime.name, app.preview_scroll)
+            } else {
+                format!(
+                    " {} · {} · LIVE ",
+                    runtime.name,
+                    runtime.kind.to_ascii_uppercase()
+                )
+            }
+        })
         .unwrap_or_else(|| " SESSION · OFFLINE ".into());
     let block = panel(&title, app.focus == Focus::Detail, colors);
     let inner = block.inner(pane_area);
@@ -121,9 +135,13 @@ fn draw_terminal_workspace(
         SessionPreview::Live(pane) => frame.render_widget(PaneWidget::new(pane), inner),
         SessionPreview::History(lines) => {
             let visible = usize::from(inner.height);
-            let start = lines.len().saturating_sub(visible);
+            let max_scroll = lines.len().saturating_sub(visible).min(u16::MAX as usize) as u16;
+            app.preview_max_scroll = max_scroll;
+            app.preview_scroll = app.preview_scroll.min(max_scroll);
+            let end = lines.len().saturating_sub(usize::from(app.preview_scroll));
+            let start = end.saturating_sub(visible);
             frame.render_widget(
-                Paragraph::new(Text::from_iter(lines[start..].iter().map(|line| {
+                Paragraph::new(Text::from_iter(lines[start..end].iter().map(|line| {
                     Line::styled(line.clone(), Style::default().fg(colors.text))
                 }))),
                 inner,
@@ -145,7 +163,12 @@ fn draw_terminal_workspace(
 }
 
 fn draw_nav(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
-    let area = horizontal_area(area);
+    let area = horizontal_area(Rect::new(
+        area.x,
+        area.y.saturating_add(area.height.saturating_sub(1)),
+        area.width,
+        area.height.min(1),
+    ));
     let (start, end) = nav_window(app.view, area.width);
     let views = &View::ALL[start..end];
     let labels_width = views
@@ -177,18 +200,10 @@ fn draw_nav(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
         spans.push(Span::styled(
             nav_label(*view),
             Style::default()
-                .fg(if selected {
-                    colors.selection_text
-                } else {
-                    colors.text_muted
-                })
-                .bg(if selected {
-                    colors.selection_bg
-                } else {
-                    Color::Reset
-                })
+                .fg(if selected { colors.accent } else { colors.text })
+                .bg(Color::Reset)
                 .add_modifier(if selected {
-                    Modifier::BOLD
+                    Modifier::BOLD | Modifier::UNDERLINED
                 } else {
                     Modifier::empty()
                 }),
@@ -205,7 +220,7 @@ fn draw_nav(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
 }
 
 pub const fn nav_height(_width: u16) -> u16 {
-    1
+    2
 }
 
 fn nav_label_width(view: View) -> usize {
@@ -213,7 +228,7 @@ fn nav_label_width(view: View) -> usize {
 }
 
 fn nav_label(view: View) -> String {
-    format!("{}.{}", view.hotkey(), view.label().to_ascii_uppercase())
+    format!("{} {}", view.hotkey(), view.label().to_ascii_uppercase())
 }
 
 fn nav_window_width(start: usize, end: usize) -> usize {
@@ -271,7 +286,7 @@ fn draw_body(
         View::Os => draw_os(frame, app, area, size, colors),
         View::Mcp => draw_mcp(frame, app, area, size, colors),
         View::Skills => draw_skills(frame, app, area, size, colors),
-        View::System => draw_system(frame, app, area, colors),
+        View::Rules => draw_rules(frame, app, area, size, colors),
         View::Settings => draw_settings(frame, app, area, size, colors),
         View::Help => draw_help(frame, app, area, size, colors),
     }
@@ -279,17 +294,27 @@ fn draw_body(
 
 fn panes(app: &App, area: Rect, size: Density) -> (Rect, Rect) {
     let hidden = Rect::new(area.right(), area.y, 0, area.height);
-    // Compact and standard terminals remain single-column.  A 40/60 split at
-    // 80–100 columns made both the session names and every agent composer
-    // unusable.  The detail is still one Tab away and can be expanded on any
-    // terminal size.
-    if app.expanded || size != Density::Wide {
+    // Mobile stays single-column; standard and wide terminals use the dense
+    // Operator Grid split so the active work remains visible beside its list.
+    if app.expanded || size == Density::Compact {
         if app.focus == Focus::Detail {
             return (hidden, area);
         }
         return (area, hidden);
     }
-    let list_width = area.width.saturating_mul(2).saturating_div(5).clamp(38, 54);
+    let list_width = match size {
+        Density::Compact => unreachable!(),
+        Density::Standard => area
+            .width
+            .saturating_mul(34)
+            .saturating_div(100)
+            .clamp(24, 32),
+        Density::Wide => area
+            .width
+            .saturating_mul(30)
+            .saturating_div(100)
+            .clamp(32, 46),
+    };
     let columns = Layout::horizontal([Constraint::Length(list_width), Constraint::Min(1)])
         .spacing(1)
         .split(area);
@@ -318,7 +343,7 @@ fn terminal_panes(area: Rect, size: Density, expanded: bool) -> (Rect, Rect) {
 }
 
 pub fn terminal_preview_area(size: Size, expanded: bool) -> Rect {
-    let content = Rect::new(0, 0, size.width, size.height.saturating_sub(2));
+    let content = terminal_content_area(size);
     let (_, pane) = terminal_panes(content, density(size.width, size.height), expanded);
     Block::default()
         .borders(Borders::ALL)
@@ -327,10 +352,10 @@ pub fn terminal_preview_area(size: Size, expanded: bool) -> Rect {
 }
 
 pub fn terminal_focus_at(size: Size, expanded: bool, column: u16, row: u16) -> Option<Focus> {
-    if column >= size.width || row >= size.height.saturating_sub(2) {
+    let content = terminal_content_area(size);
+    if column >= size.width || !content.contains((column, row).into()) {
         return None;
     }
-    let content = Rect::new(0, 0, size.width, size.height.saturating_sub(2));
     let (list, pane) = terminal_panes(content, density(size.width, size.height), expanded);
     if list.contains((column, row).into()) {
         Some(Focus::List)
@@ -339,6 +364,16 @@ pub fn terminal_focus_at(size: Size, expanded: bool, column: u16, row: u16) -> O
     } else {
         None
     }
+}
+
+fn terminal_content_area(size: Size) -> Rect {
+    let header = nav_height(size.width).saturating_add(1);
+    Rect::new(
+        0,
+        header,
+        size.width,
+        size.height.saturating_sub(header.saturating_add(2)),
+    )
 }
 
 /// Keep boards away from the physical terminal edges without sacrificing the
@@ -368,7 +403,7 @@ pub fn focus_at(app: &App, size: Size, column: u16, row: u16) -> Option<Focus> {
     }
     let nav_height = nav_height(size.width);
     if row < nav_height {
-        let nav = horizontal_area(Rect::new(0, 0, size.width, nav_height));
+        let nav = horizontal_area(Rect::new(0, nav_height.saturating_sub(1), size.width, 1));
         return nav.contains((column, row).into()).then_some(Focus::Nav);
     }
     let header_height = nav_height.saturating_add(1);
@@ -377,7 +412,7 @@ pub fn focus_at(app: &App, size: Size, column: u16, row: u16) -> Option<Focus> {
     if !body.contains((column, row).into()) {
         return None;
     }
-    if matches!(app.view, View::System | View::Help) {
+    if matches!(app.view, View::Help) {
         return Some(Focus::Detail);
     }
     let density = density(size.width, size.height);
@@ -556,7 +591,7 @@ fn draw_sessions(
             ),
             SessionPreview::Unavailable if size != Density::Compact => frame.render_widget(
                 Paragraph::new(
-                    "No live pane snapshot\n\nEnter  Fullscreen terminal\nF / F11  Expand\nTab  Session list\nv  Toggle split preview",
+                    "No live pane snapshot\n\nEnter  Open terminal\nTab  Switch panels\nv  Toggle split preview",
                 )
                 .alignment(Alignment::Center)
                 .wrap(Wrap { trim: true })
@@ -917,6 +952,76 @@ fn draw_skills(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: 
     }
 }
 
+fn draw_rules(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Palette) {
+    let (list_area, detail_area) = panes(app, area, size);
+    if list_area.width > 0 {
+        let items = app
+            .filtered_rules()
+            .map(|rule| {
+                ListItem::new(vec![
+                    Line::from(vec![
+                        Span::styled(
+                            if rule.enabled { "● " } else { "○ " },
+                            Style::default().fg(if rule.enabled {
+                                colors.success
+                            } else {
+                                colors.text_muted
+                            }),
+                        ),
+                        Span::styled(
+                            rule.title.clone(),
+                            Style::default()
+                                .fg(colors.text)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]),
+                    Line::styled(
+                        format!("  {}", rule.id),
+                        Style::default().fg(colors.text_muted),
+                    ),
+                ])
+            })
+            .collect();
+        selectable(
+            frame,
+            list_area,
+            items,
+            app.selected,
+            app.focus == Focus::List,
+            &format!(" RULES · {} ", app.snapshot.rules.len()),
+            colors,
+        );
+    }
+    if detail_area.width > 0 {
+        let text = app.current_rule().map_or_else(
+            || Text::from("No global rules are installed."),
+            |rule| {
+                let applies = if rule.providers.iter().any(|provider| provider == "*") {
+                    "ALL PROVIDERS".into()
+                } else {
+                    rule.providers.join(" · ").to_ascii_uppercase()
+                };
+                Text::from(vec![
+                    field("Rule", &rule.title, colors),
+                    field("ID", &rule.id, colors),
+                    field("Enabled", if rule.enabled { "YES" } else { "NO" }, colors),
+                    field("Scope", &applies, colors),
+                    Line::raw(""),
+                    heading("CONTENT", colors),
+                    Line::raw(""),
+                    Line::styled(rule.content.clone(), Style::default().fg(colors.text)),
+                    Line::raw(""),
+                    Line::styled(
+                        "Installed rules are projected into Hermes, Claude Code, Codex, OpenCode and OpenRouter sessions.",
+                        Style::default().fg(colors.text_muted),
+                    ),
+                ])
+            },
+        );
+        detail(frame, detail_area, text, " RULE DETAIL ", app, colors);
+    }
+}
+
 fn draw_system(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
     let mut lines = vec![
         heading("HOST", colors),
@@ -953,6 +1058,7 @@ fn draw_system(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
             colors,
         ),
         field("Skills", &app.snapshot.skills.len().to_string(), colors),
+        field("Rules", &app.snapshot.rules.len().to_string(), colors),
         field(
             "Tokens",
             &if app.snapshot.model_usage.is_empty() {
@@ -1049,7 +1155,11 @@ fn draw_system(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
             .scroll((app.detail_scroll, 0))
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(colors.text).bg(colors.surface))
-            .block(panel(" SYSTEM & REGISTRY HEALTH ", true, colors)),
+            .block(panel(
+                " SYSTEM & REGISTRY HEALTH ",
+                app.focus == Focus::Detail,
+                colors,
+            )),
         area,
     );
 }
@@ -1139,6 +1249,7 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect, size: Density, colors
             app,
             colors,
         ),
+        SettingsSection::System => draw_system(frame, app, content_area, colors),
         SettingsSection::About => detail(
             frame,
             content_area,
@@ -1292,14 +1403,18 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Pa
         Line::raw(""),
         heading("SESSIONS", colors),
         help_key("Enter", "Open selected pane and type immediately", colors),
-        help_key("Tab · Tab", "Focus session list, then expand pane", colors),
+        help_key(
+            "Tab",
+            "Alternate only between session list and pane",
+            colors,
+        ),
+        help_key("Tab Tab", "Rapid double Tab hides the left panel", colors),
         help_key("Ctrl-g", "Return to the main AGK menu", colors),
         help_key(
             "Ctrl-r",
             "Forwarded to the active terminal provider",
             colors,
         ),
-        help_key("f / F11", "Expand or restore live preview", colors),
         help_key("v", "Toggle persistent split preview", colors),
         help_key(
             "n",
@@ -1591,7 +1706,7 @@ fn detail(
 fn panel<'a>(title: &'a str, focused: bool, colors: Palette) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .title(title)
         .padding(Padding::horizontal(1))
         .style(Style::default().bg(colors.surface))
@@ -1743,7 +1858,7 @@ mod tests {
     use super::*;
     use crate::data::{
         CapabilityRecord, CapabilityToolkitRecord, ModelUsageRecord, ProviderRecord,
-        RegistrySnapshot, RuntimeRecord,
+        RegistrySnapshot, RuleRecord, RuntimeRecord,
     };
     use crate::theme::Preferences;
     use ratatui::{Terminal, backend::TestBackend};
@@ -1891,11 +2006,41 @@ mod tests {
     }
 
     #[test]
+    fn rules_use_operator_grid_list_detail_and_show_global_scope() {
+        let mut app = test_app();
+        app.snapshot.rules = vec![RuleRecord {
+            id: "verify-runtime".into(),
+            title: "Verify the real runtime".into(),
+            content: "Test the complete user-visible flow.".into(),
+            providers: vec!["*".into()],
+            enabled: true,
+            source: "/etc/agk-terminal/rules.yaml".into(),
+        }];
+        app.set_view(View::Rules);
+        let output = render(app, 140, 32);
+        for expected in [
+            "RULES · 1",
+            "Verify the real runtime",
+            "ALL PROVIDERS",
+            "Test the complete user-visible flow.",
+        ] {
+            assert!(output.contains(expected), "missing {expected:?}");
+        }
+    }
+
+    #[test]
     fn help_documents_all_interaction_layers() {
         let mut app = test_app();
         app.set_view(View::Help);
         let output = render(app, 140, 48);
-        for value in ["Tab / Shift-Tab", "Ctrl-g", "Ctrl-p", "Esc", "F11", "Enter"] {
+        for value in [
+            "Tab / Shift-Tab",
+            "Tab Tab",
+            "Ctrl-g",
+            "Ctrl-p",
+            "Esc",
+            "Enter",
+        ] {
             assert!(output.contains(value), "missing {value:?}");
         }
     }
@@ -1913,7 +2058,7 @@ mod tests {
         assert!(output.contains("DISK 56%"));
         assert!(output.contains("● 1 LIVE"));
         assert!(!output.contains("MISSION CONTROL"));
-        assert!(!output.contains("1SES"));
+        assert!(output.contains("1 SESSIONS"));
     }
 
     #[test]
@@ -1921,7 +2066,12 @@ mod tests {
         let mut app = test_app();
         app.snapshot.model_usage = app.snapshot.runtimes[0].model_usage.clone();
         app.snapshot.token_total = 12_300;
-        app.set_view(View::System);
+        app.set_view(View::Settings);
+        app.settings_section = SettingsSection::ALL
+            .iter()
+            .position(|section| *section == SettingsSection::System)
+            .unwrap();
+        app.focus = Focus::Detail;
         let output = render(app, 140, 40);
         assert!(output.contains("MODEL USAGE"));
         assert!(output.contains("claude-sonnet-4-6"));
@@ -1971,11 +2121,11 @@ mod tests {
     }
 
     #[test]
-    fn standard_density_never_squeezes_list_and_preview_side_by_side() {
+    fn standard_density_uses_the_operator_grid_split() {
         let output = render(test_app(), 90, 24);
         assert!(output.contains("SESSIONS · 1"));
-        assert!(!output.contains("LIVE PREVIEW"));
-        assert!(output.contains("9.HELP"), "full navigation was clipped");
+        assert!(output.contains("moon · OFFLINE"));
+        assert!(output.contains("9 HELP"), "full navigation was clipped");
     }
 
     #[test]
@@ -1987,9 +2137,9 @@ mod tests {
             let label = nav_label(view);
             assert!(output.contains(&label), "missing selected {label:?}");
         }
-        assert_eq!(nav_height(20), 1);
-        assert_eq!(nav_height(45), 1);
-        assert_eq!(nav_height(120), 1);
+        assert_eq!(nav_height(20), 2);
+        assert_eq!(nav_height(45), 2);
+        assert_eq!(nav_height(120), 2);
         assert_eq!(nav_window(View::Sessions, 45).0, 0);
         assert_eq!(nav_window(View::Help, 45).1, View::ALL.len());
     }
@@ -2002,6 +2152,9 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &mut app, SessionPreview::Unavailable))
             .unwrap();
+        let active = &terminal.backend().buffer()[(1, 1)];
+        assert_eq!(active.bg, Color::Reset);
+        assert_eq!(active.fg, app.theme.palette().accent);
         let rows = terminal
             .backend()
             .buffer()
@@ -2010,16 +2163,16 @@ mod tests {
             .take(3)
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>();
-        assert!(rows[0].starts_with(" 1.SESSIONS"));
-        assert_eq!(rows[1], format!(" {} ", "─".repeat(58)));
-        assert!(rows[2].starts_with(" ╭"));
+        assert_eq!(rows[0], " ".repeat(60));
+        assert!(rows[1].starts_with(" 1 SESSIONS"));
+        assert_eq!(rows[2], format!(" {} ", "─".repeat(58)));
     }
 
     #[test]
     fn desktop_top_menu_uses_compact_two_space_gaps() {
         let output = render(test_app(), 120, 24);
-        assert!(output.contains("1.SESSIONS  2.PROJECTS"));
-        assert!(!output.contains("1.SESSIONS   2.PROJECTS"));
+        assert!(output.contains("1 SESSIONS  2 PROJECTS"));
+        assert!(!output.contains("1 SESSIONS   2 PROJECTS"));
     }
 
     #[test]
@@ -2044,7 +2197,8 @@ mod tests {
         let size = Size::new(90, 24);
         let mut app = test_app();
         assert_eq!(focus_at(&app, size, 0, 3), None);
-        assert_eq!(focus_at(&app, size, 1, 2), Some(Focus::List));
+        assert_eq!(focus_at(&app, size, 1, 1), Some(Focus::Nav));
+        assert_eq!(focus_at(&app, size, 1, 2), None);
         assert_eq!(focus_at(&app, size, 1, 3), Some(Focus::List));
 
         app.set_view(View::Settings);
@@ -2055,12 +2209,12 @@ mod tests {
     #[test]
     fn interactive_terminal_keeps_a_padded_sidebar_until_expanded() {
         let size = Size::new(60, 20);
-        assert_eq!(terminal_preview_area(size, false), Rect::new(24, 1, 33, 16));
-        assert_eq!(terminal_focus_at(size, false, 1, 2), Some(Focus::List));
-        assert_eq!(terminal_focus_at(size, false, 22, 2), Some(Focus::Detail));
+        assert_eq!(terminal_preview_area(size, false), Rect::new(24, 4, 33, 13));
+        assert_eq!(terminal_focus_at(size, false, 1, 4), Some(Focus::List));
+        assert_eq!(terminal_focus_at(size, false, 22, 4), Some(Focus::Detail));
 
-        assert_eq!(terminal_preview_area(size, true), Rect::new(3, 1, 54, 16));
-        assert_eq!(terminal_focus_at(size, true, 1, 2), Some(Focus::Detail));
+        assert_eq!(terminal_preview_area(size, true), Rect::new(3, 4, 54, 13));
+        assert_eq!(terminal_focus_at(size, true, 1, 4), Some(Focus::Detail));
     }
 
     #[test]
@@ -2124,6 +2278,33 @@ mod tests {
         assert!(output.contains("↑ 3 FROM LIVE"));
         assert!(output.contains("history-76"));
         assert!(!output.contains("history-79"));
+        assert!(app.preview_max_scroll > 0);
+    }
+
+    #[test]
+    fn terminal_workspace_history_uses_the_same_tail_relative_scroll() {
+        let mut app = test_app();
+        app.mode = Mode::Terminal;
+        app.focus = Focus::Detail;
+        app.preview_scroll = 4;
+        let history = (0..80)
+            .map(|line| format!("terminal-history-{line:02}"))
+            .collect::<Vec<_>>();
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &mut app, SessionPreview::History(&history)))
+            .unwrap();
+        let output = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(output.contains("PAUSED · -4"));
+        assert!(output.contains("terminal-history-75"));
+        assert!(!output.contains("terminal-history-79"));
         assert!(app.preview_max_scroll > 0);
     }
 

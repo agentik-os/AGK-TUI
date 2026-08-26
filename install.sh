@@ -195,6 +195,7 @@ install -m 0755 "$repo_root/scripts/agk_control.py" "$install_root/scripts/agk_c
 install -m 0755 "$repo_root/scripts/provider.sh" "$install_root/scripts/provider.sh"
 install -m 0755 "$repo_root/scripts/doctor.sh" "$install_root/scripts/doctor.sh"
 install -m 0755 "$repo_root/scripts/sync-hermes.sh" "$install_root/scripts/sync-hermes.sh"
+install -m 0755 "$repo_root/scripts/sync-rules.py" "$install_root/scripts/sync-rules.py"
 install -m 0755 "$repo_root/scripts/install-shared-hermes.sh" \
   "$install_root/scripts/install-shared-hermes.sh"
 install -m 0755 "$repo_root/scripts/topology.py" "$install_root/scripts/topology.py"
@@ -204,6 +205,7 @@ install -m 0755 "$repo_root/scripts/install-hermes-fleet-dashboard.sh" \
   "$install_root/scripts/install-hermes-fleet-dashboard.sh"
 install -m 0644 "$repo_root/config/topology.yaml" "$install_root/config/topology.yaml"
 install -m 0644 "$repo_root/config/providers.yaml" "$install_root/config/providers.yaml"
+install -m 0644 "$repo_root/config/rules.yaml" "$install_root/config/rules.yaml"
 install -m 0644 "$repo_root/config/hermes.env.example" "$install_root/config/hermes.env.example"
 rm -rf "$install_root/hermes/plugins/agentik_os" \
   "$install_root/hermes/plugins/platforms/discord"
@@ -237,6 +239,7 @@ if [ "$system_install" = true ]; then
   install -d -m 0755 /etc/agk-terminal
   install -m 0644 "$repo_root/config/topology.yaml" /etc/agk-terminal/topology.yaml
   install -m 0644 "$repo_root/config/providers.yaml" /etc/agk-terminal/providers.yaml
+  install -m 0644 "$repo_root/config/rules.yaml" /etc/agk-terminal/rules.yaml
   install -m 0644 "$repo_root/systemd/agk-topology-refresh.service" \
     /etc/systemd/system/agk-topology-refresh.service
   install -m 0644 "$repo_root/systemd/agk-topology-refresh.timer" \
@@ -274,6 +277,12 @@ run_for_target() {
       "$@"
   fi
 }
+
+rules_python=python3
+if [ -x "$install_root/venv/bin/python" ]; then
+  rules_python=$install_root/venv/bin/python
+fi
+run_for_target "$rules_python" "$install_root/scripts/sync-rules.py"
 
 if [ "$install_hermes" = true ]; then
   run_for_target "$install_root/scripts/provider.sh" install hermes

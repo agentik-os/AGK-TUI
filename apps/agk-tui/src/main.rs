@@ -39,6 +39,7 @@ const INPUT_DRAIN_BUDGET: Duration = Duration::from_millis(8);
 const PREVIEW_REFRESH_TIME: Duration = Duration::from_millis(100);
 const FOOTER_CONTEXT_REFRESH_TIME: Duration = Duration::from_millis(250);
 const SESSION_START_TIMEOUT: Duration = Duration::from_secs(8);
+const DOUBLE_TAB_TIME: Duration = Duration::from_millis(320);
 
 #[derive(Debug)]
 struct PendingSession {
@@ -151,6 +152,7 @@ async fn run(
     let mut status_since = Instant::now();
     let mut last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
     let mut last_footer_refresh = Instant::now() - FOOTER_CONTEXT_REFRESH_TIME;
+    let mut last_tab_at: Option<Instant> = None;
 
     'event_loop: loop {
         if app.status != observed_status {
@@ -221,9 +223,10 @@ async fn run(
         // keyboard input. Capture only a visible preview, and never rediscover
         // the same pane on every frame or keystroke.
         let input_pending = event::poll(Duration::ZERO)?;
+        let history_requested = app.preview_scroll > 0 && preview_cache.history.is_none();
         if preview_is_visible(app)
-            && !input_pending
-            && last_preview_refresh.elapsed() >= PREVIEW_REFRESH_TIME
+            && (history_requested
+                || (!input_pending && last_preview_refresh.elapsed() >= PREVIEW_REFRESH_TIME))
         {
             refresh_preview(rmux, app, &mut preview_cache).await;
             last_preview_refresh = Instant::now();
@@ -244,6 +247,9 @@ async fn run(
         }
 
         for event in queued_events {
+            if !matches!(&event, Event::Key(key) if accepts_key(key) && key.code == KeyCode::Tab) {
+                last_tab_at = None;
+            }
             if app.mode == Mode::Terminal {
                 match &event {
                     Event::Key(key) if accepts_key(key) && terminal_returns_to_control(key) => {
@@ -255,7 +261,18 @@ async fn run(
                         continue;
                     }
                     Event::Key(key) if accepts_key(key) && key.code == KeyCode::Tab => {
-                        terminal_tab(app);
+                        let double = register_tab(&mut last_tab_at, Instant::now());
+                        session_tab(app, true, double);
+                        preview_cache.clear();
+                        last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
+                        continue;
+                    }
+                    Event::Key(key)
+                        if accepts_key(key)
+                            && app.focus == Focus::Detail
+                            && terminal_scroll_key(app, key) =>
+                    {
+                        last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
                         continue;
                     }
                     Event::Key(key) if accepts_key(key) && app.focus == Focus::List => {
@@ -286,7 +303,24 @@ async fn run(
                                 preview_cache.clear();
                                 continue;
                             }
-                            Some(Focus::Detail) => app.focus = Focus::Detail,
+                            Some(Focus::Detail) => {
+                                app.focus = Focus::Detail;
+                                match mouse.kind {
+                                    MouseEventKind::ScrollUp => {
+                                        app.scroll_preview_up(3);
+                                        last_preview_refresh =
+                                            Instant::now() - PREVIEW_REFRESH_TIME;
+                                        continue;
+                                    }
+                                    MouseEventKind::ScrollDown => {
+                                        app.scroll_preview_down(3);
+                                        last_preview_refresh =
+                                            Instant::now() - PREVIEW_REFRESH_TIME;
+                                        continue;
+                                    }
+                                    _ => {}
+                                }
+                            }
                             Some(Focus::Nav) | None => continue,
                         }
                     }
@@ -303,9 +337,23 @@ async fn run(
             }
 
             let detail_available = detail_available(app);
+            let preview_scroll_before = app.preview_scroll;
             let action = match event {
                 Event::Mouse(mouse) => {
-                    handle_mouse(app, mouse, terminal.size()?);
+                    if handle_mouse(app, mouse, terminal.size()?) {
+                        last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
+                    }
+                    Action::None
+                }
+                Event::Key(key)
+                    if accepts_key(&key)
+                        && key.code == KeyCode::Tab
+                        && app.view == View::Sessions =>
+                {
+                    let double = register_tab(&mut last_tab_at, Instant::now());
+                    session_tab(app, detail_available, double);
+                    preview_cache.clear();
+                    last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
                     Action::None
                 }
                 Event::Key(key) if accepts_key(&key) => {
@@ -325,6 +373,9 @@ async fn run(
                 }
                 _ => Action::None,
             };
+            if app.preview_scroll != preview_scroll_before {
+                last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
+            }
             match action {
                 Action::None => {}
                 Action::Quit => break 'event_loop,
@@ -357,6 +408,7 @@ async fn run(
                     }
                 },
                 Action::EnterTerminal => {
+                    last_tab_at = None;
                     if app.selected_is_current_rmux_session() {
                         app.status = Some(
                             "This session is running AGK; recursive terminal mode is disabled"
@@ -860,12 +912,7 @@ async fn send_terminal_event(rmux: &Rmux, app: &App, cache: &mut PreviewCache, e
                 return;
             }
         }
-        Event::Mouse(mouse) => {
-            let Some(key) = terminal_mouse_key(&mouse.kind) else {
-                return;
-            };
-            pane.send_key(key).await.map(|_| ())
-        }
+        Event::Mouse(_) => return,
         _ => return,
     };
     if result.is_err() {
@@ -980,13 +1027,14 @@ where
         .or_else(|| env_var("TMUX_SESSION").and_then(nonempty))
 }
 
-fn handle_mouse(app: &mut App, mouse: MouseEvent, terminal_size: ratatui::layout::Size) {
+/// Returns true when the event changed the local RMUX history viewport.
+fn handle_mouse(app: &mut App, mouse: MouseEvent, terminal_size: ratatui::layout::Size) -> bool {
     if !matches!(
         mouse.kind,
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
     ) && !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
     {
-        return;
+        return false;
     }
     if let Some(focus) = ui::focus_at(app, terminal_size, mouse.column, mouse.row) {
         app.focus = focus;
@@ -1002,12 +1050,19 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent, terminal_size: ratatui::layout
                 app.select_next();
             }
         }
-        MouseEventKind::ScrollUp if app.view == View::Sessions => app.scroll_preview_up(3),
-        MouseEventKind::ScrollDown if app.view == View::Sessions => app.scroll_preview_down(3),
+        MouseEventKind::ScrollUp if app.view == View::Sessions => {
+            app.scroll_preview_up(3);
+            return true;
+        }
+        MouseEventKind::ScrollDown if app.view == View::Sessions => {
+            app.scroll_preview_down(3);
+            return true;
+        }
         MouseEventKind::ScrollUp => app.detail_scroll = app.detail_scroll.saturating_sub(3),
         MouseEventKind::ScrollDown => app.detail_scroll = app.detail_scroll.saturating_add(3),
         _ => {}
     }
+    false
 }
 
 fn accepts_key(key: &KeyEvent) -> bool {
@@ -1018,14 +1073,29 @@ fn terminal_returns_to_control(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
-fn terminal_tab(app: &mut App) {
-    if app.focus == Focus::Detail {
-        app.expanded = false;
-        app.focus = Focus::List;
-    } else {
+fn register_tab(last_tab_at: &mut Option<Instant>, now: Instant) -> bool {
+    let double =
+        last_tab_at.is_some_and(|previous| now.duration_since(previous) <= DOUBLE_TAB_TIME);
+    *last_tab_at = (!double).then_some(now);
+    double
+}
+
+fn session_tab(app: &mut App, detail_available: bool, double: bool) {
+    if double && detail_available {
         app.expanded = true;
         app.focus = Focus::Detail;
+        return;
     }
+    if app.expanded {
+        app.expanded = false;
+        app.focus = Focus::List;
+        return;
+    }
+    app.focus = if app.focus == Focus::List && detail_available {
+        Focus::Detail
+    } else {
+        Focus::List
+    };
 }
 
 fn terminal_sidebar_key(app: &mut App, key: &KeyEvent) -> bool {
@@ -1047,12 +1117,21 @@ fn terminal_sidebar_key(app: &mut App, key: &KeyEvent) -> bool {
     }
 }
 
-fn terminal_mouse_key(kind: &MouseEventKind) -> Option<&'static str> {
-    match kind {
-        MouseEventKind::ScrollUp => Some("PageUp"),
-        MouseEventKind::ScrollDown => Some("PageDown"),
-        _ => None,
+fn terminal_scroll_key(app: &mut App, key: &KeyEvent) -> bool {
+    let modified_vertical = key
+        .modifiers
+        .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+        && !key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::PageUp => app.scroll_preview_up(app.preview_height.max(8)),
+        KeyCode::PageDown => app.scroll_preview_down(app.preview_height.max(8)),
+        KeyCode::Home if key.modifiers.is_empty() => app.scroll_preview_home(),
+        KeyCode::End if key.modifiers.is_empty() => app.scroll_preview_live(),
+        KeyCode::Up if modified_vertical => app.scroll_preview_up(3),
+        KeyCode::Down if modified_vertical => app.scroll_preview_down(3),
+        _ => return false,
     }
+    true
 }
 
 fn detail_available(app: &App) -> bool {
@@ -1063,7 +1142,8 @@ fn detail_available(app: &App) -> bool {
         View::Os => app.current_os().is_some(),
         View::Mcp => app.current_mcp().is_some(),
         View::Skills => app.current_skill().is_some(),
-        View::System | View::Settings | View::Help => true,
+        View::Rules => app.current_rule().is_some(),
+        View::Settings | View::Help => true,
     }
 }
 
@@ -1170,22 +1250,46 @@ mod tests {
     }
 
     #[test]
-    fn terminal_tabs_focus_the_sidebar_then_expand_the_pane() {
+    fn terminal_single_tab_only_alternates_panels_and_double_tab_expands() {
         let mut app = App::new(Preferences::default());
         app.mode = Mode::Terminal;
         app.focus = Focus::Detail;
 
-        terminal_tab(&mut app);
+        session_tab(&mut app, true, false);
         assert_eq!(app.focus, Focus::List);
         assert!(!app.expanded);
 
-        terminal_tab(&mut app);
+        session_tab(&mut app, true, false);
+        assert_eq!(app.focus, Focus::Detail);
+        assert!(!app.expanded);
+
+        session_tab(&mut app, true, true);
         assert_eq!(app.focus, Focus::Detail);
         assert!(app.expanded);
 
-        terminal_tab(&mut app);
+        session_tab(&mut app, true, false);
         assert_eq!(app.focus, Focus::List);
         assert!(!app.expanded);
+    }
+
+    #[test]
+    fn only_two_rapid_consecutive_tabs_form_a_double_tab() {
+        let started = Instant::now();
+        let mut previous = None;
+        assert!(!register_tab(&mut previous, started));
+        assert!(register_tab(
+            &mut previous,
+            started + DOUBLE_TAB_TIME.saturating_sub(Duration::from_millis(1))
+        ));
+        assert!(previous.is_none());
+        assert!(!register_tab(
+            &mut previous,
+            started + DOUBLE_TAB_TIME + Duration::from_millis(10)
+        ));
+        assert!(!register_tab(
+            &mut previous,
+            started + DOUBLE_TAB_TIME.saturating_mul(3)
+        ));
     }
 
     #[test]
@@ -1211,19 +1315,23 @@ mod tests {
     }
 
     #[test]
-    fn terminal_mouse_wheel_maps_to_provider_scrollback_keys() {
-        assert_eq!(
-            terminal_mouse_key(&MouseEventKind::ScrollUp),
-            Some("PageUp")
-        );
-        assert_eq!(
-            terminal_mouse_key(&MouseEventKind::ScrollDown),
-            Some("PageDown")
-        );
-        assert_eq!(
-            terminal_mouse_key(&MouseEventKind::Down(MouseButton::Left)),
-            None
-        );
+    fn terminal_history_keys_move_the_local_mirror_not_the_provider() {
+        let mut app = App::new(Preferences::default());
+        app.preview_height = 20;
+        assert!(terminal_scroll_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)
+        ));
+        assert_eq!(app.preview_scroll, 20);
+        assert!(terminal_scroll_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Down, KeyModifiers::ALT)
+        ));
+        assert_eq!(app.preview_scroll, 17);
+        assert!(!terminal_scroll_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)
+        ));
     }
 
     #[test]

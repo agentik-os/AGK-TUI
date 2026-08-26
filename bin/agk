@@ -32,7 +32,7 @@ Interactive:
   agk
 
 Sessions:
-  agk {status|sessions|projects|agents|os|mcp|skills|system}
+  agk {status|sessions|projects|agents|os|mcp|skills|rules|system}
   agk new TYPE NAME [--cwd PATH] [--client ID] [--project ID]
   agk {open|resume|info|archive|restart} SESSION
   agk close SESSION --yes

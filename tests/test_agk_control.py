@@ -79,6 +79,7 @@ def test_default_resume_commands_use_documented_cli(monkeypatch):
     monkeypatch.setattr(agk.shutil, "which", lambda name: f"/verified/{name}")
     assert agk.default_command("hermes", "S-1") == ["/verified/hermes", "--resume", "S-1"]
     assert agk.default_command("claude", "C-1") == [
+        "/verified/env", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1",
         "/verified/claude", "--dangerously-skip-permissions", "--resume", "C-1"
     ]
     assert agk.default_command("codex", "X-1") == ["/verified/codex", "resume", "X-1"]

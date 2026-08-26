@@ -154,6 +154,24 @@ pub struct SkillRecord {
     pub status: String,
 }
 
+/// One operator rule projected into every supported provider runtime.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleRecord {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default)]
+    pub providers: Vec<String>,
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub source: String,
+}
+
+const fn enabled_by_default() -> bool {
+    true
+}
+
 /// Local provider readiness without exposing credentials or account data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderRecord {
@@ -188,6 +206,7 @@ pub struct RegistrySnapshot {
     pub os_packages: Vec<OsPackage>,
     pub mcp_servers: Vec<CapabilityRecord>,
     pub skills: Vec<SkillRecord>,
+    pub rules: Vec<RuleRecord>,
     pub providers: Vec<ProviderRecord>,
     pub profiles: Vec<ProfileRecord>,
     /// Sum of input + output tokens from unique attributed Hermes sessions.
@@ -219,6 +238,7 @@ pub struct RegistryPaths {
     pub hermes_skills: PathBuf,
     pub claude_skills: PathBuf,
     pub codex_skills: PathBuf,
+    pub rules_config: PathBuf,
     pub composio_auth: PathBuf,
     pub composio_inventory: PathBuf,
     pub topology_status: PathBuf,
@@ -254,6 +274,7 @@ impl RegistryPaths {
             hermes_skills: hermes.join("skills"),
             claude_skills: home.join(".claude/skills"),
             codex_skills: home.join(".codex/skills"),
+            rules_config: agentik.join("rules.yaml"),
             composio_auth: home.join(".composio/user_data.json"),
             composio_inventory: agentik.join("composio-connections.json"),
             topology_status: home.join(".agentik/topology-status.json"),
@@ -286,6 +307,22 @@ impl RegistryPaths {
         paths.hermes_config = hermes_home.join("config.yaml");
         paths.hermes_env = hermes_home.join(".env");
         paths.hermes_skills = hermes_home.join("skills");
+        paths.rules_config = env::var_os("AGK_RULES_CONFIG")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let user = home.join(".agentik/rules.yaml");
+                user.is_file().then_some(user)
+            })
+            .or_else(|| {
+                let system = PathBuf::from("/etc/agk-terminal/rules.yaml");
+                system.is_file().then_some(system)
+            })
+            .or_else(|| {
+                env::var_os("AGK_TERMINAL_ROOT")
+                    .map(PathBuf::from)
+                    .map(|root| root.join("config/rules.yaml"))
+            })
+            .unwrap_or_else(|| home.join(".local/lib/agk-terminal/config/rules.yaml"));
         paths.executable_paths = env::var_os("PATH")
             .map(|value| env::split_paths(&value).collect())
             .unwrap_or_default();
@@ -374,6 +411,13 @@ impl RegistryClient {
             Ok(records) => records,
             Err(error) => {
                 warn(&mut snapshot.warnings, "skill inventory", error);
+                Vec::new()
+            }
+        };
+        snapshot.rules = match self.load_rules() {
+            Ok(records) => records,
+            Err(error) => {
+                warn(&mut snapshot.warnings, "rules registry", error);
                 Vec::new()
             }
         };
@@ -1008,6 +1052,38 @@ impl RegistryClient {
         Ok(found.into_values().collect())
     }
 
+    fn load_rules(&self) -> Result<Vec<RuleRecord>> {
+        if !self.paths.rules_config.is_file() {
+            return Ok(Vec::new());
+        }
+        let contents = fs::read_to_string(&self.paths.rules_config)
+            .with_context(|| format!("cannot read {}", self.paths.rules_config.display()))?;
+        let document: RuleDocument = serde_yaml::from_str(&contents)
+            .with_context(|| format!("cannot parse {}", self.paths.rules_config.display()))?;
+        let source = self.paths.rules_config.to_string_lossy().into_owned();
+        let mut records = Vec::new();
+        let mut ids = HashSet::new();
+        for mut rule in document.rules {
+            rule.id = rule.id.trim().to_ascii_lowercase();
+            rule.title = rule.title.trim().to_owned();
+            rule.content = rule.content.trim().to_owned();
+            if !valid_kebab_id(&rule.id) || rule.title.is_empty() || rule.content.is_empty() {
+                bail!("rules registry contains an incomplete rule {}", rule.id);
+            }
+            if !ids.insert(rule.id.clone()) {
+                bail!("rules registry contains duplicate rule {}", rule.id);
+            }
+            if rule.providers.is_empty() {
+                rule.providers.push("*".into());
+            }
+            rule.providers.sort();
+            rule.providers.dedup();
+            rule.source.clone_from(&source);
+            records.push(rule);
+        }
+        Ok(records)
+    }
+
     fn data_environment(&self) -> String {
         if self.environment == "collective" {
             "mission".into()
@@ -1015,6 +1091,12 @@ impl RegistryClient {
             self.environment.clone()
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct RuleDocument {
+    #[serde(default)]
+    rules: Vec<RuleRecord>,
 }
 
 fn executable_in_paths(paths: &[PathBuf], name: &str) -> bool {

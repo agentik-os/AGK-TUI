@@ -19,6 +19,7 @@ pub enum Action {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PaletteCommand {
     Open(View),
+    OpenSettings(SettingsSection),
     NewSession,
     TogglePreview,
     Refresh,
@@ -32,7 +33,7 @@ pub struct PaletteItem {
     pub command: PaletteCommand,
 }
 
-const PALETTE_ITEMS: [PaletteItem; 13] = [
+const PALETTE_ITEMS: [PaletteItem; 14] = [
     PaletteItem {
         label: "Open Sessions",
         hint: "1",
@@ -64,14 +65,19 @@ const PALETTE_ITEMS: [PaletteItem; 13] = [
         command: PaletteCommand::Open(View::Skills),
     },
     PaletteItem {
-        label: "Open System",
+        label: "Open Rules",
         hint: "7",
-        command: PaletteCommand::Open(View::System),
+        command: PaletteCommand::Open(View::Rules),
     },
     PaletteItem {
         label: "Open Settings",
         hint: "8",
         command: PaletteCommand::Open(View::Settings),
+    },
+    PaletteItem {
+        label: "Open System Settings",
+        hint: "s",
+        command: PaletteCommand::OpenSettings(SettingsSection::System),
     },
     PaletteItem {
         label: "Open Help",
@@ -183,10 +189,10 @@ pub fn handle_key_for_layout(
         KeyCode::Char('4') => set_view(app, View::Os),
         KeyCode::Char('5') => set_view(app, View::Mcp),
         KeyCode::Char('6') => set_view(app, View::Skills),
-        KeyCode::Char('7') => set_view(app, View::System),
+        KeyCode::Char('7') => set_view(app, View::Rules),
         KeyCode::Char('8') => set_view(app, View::Settings),
         KeyCode::Char('9') => set_view(app, View::Help),
-        KeyCode::Char('s') => set_view(app, View::System),
+        KeyCode::Char('s') => open_settings(app, SettingsSection::System),
         KeyCode::Char(',') => set_view(app, View::Settings),
         KeyCode::Char('?') => set_view(app, View::Help),
         KeyCode::Char('/') => {
@@ -313,13 +319,6 @@ pub fn handle_key_for_layout(
         }
         KeyCode::Char('G') if app.view == View::Sessions && app.focus == Focus::Detail => {
             app.scroll_preview_live();
-            Action::None
-        }
-        KeyCode::Char('f') | KeyCode::F(11)
-            if app.view == View::Sessions && app.current_session().is_some() =>
-        {
-            app.focus = Focus::Detail;
-            app.expanded = !app.expanded;
             Action::None
         }
         KeyCode::Char('v') if app.view == View::Sessions => toggle_preview(app),
@@ -625,6 +624,7 @@ fn handle_overlay_key(app: &mut App, key: KeyEvent, compact: bool) -> Action {
 fn execute_palette(app: &mut App, command: PaletteCommand) -> Action {
     match command {
         PaletteCommand::Open(view) => set_view(app, view),
+        PaletteCommand::OpenSettings(section) => open_settings(app, section),
         PaletteCommand::NewSession => {
             app.overlay = Overlay::NewKind { selected: 0 };
             Action::None
@@ -637,6 +637,16 @@ fn execute_palette(app: &mut App, command: PaletteCommand) -> Action {
 
 fn set_view(app: &mut App, view: View) -> Action {
     app.set_view(view);
+    Action::None
+}
+
+fn open_settings(app: &mut App, section: SettingsSection) -> Action {
+    app.set_view(View::Settings);
+    app.settings_section = SettingsSection::ALL
+        .iter()
+        .position(|candidate| *candidate == section)
+        .unwrap_or_default();
+    app.focus = Focus::List;
     Action::None
 }
 
@@ -667,6 +677,7 @@ fn activate_settings(app: &mut App) -> Action {
         }
         SettingsSection::Sessions => toggle_preview(app),
         SettingsSection::Runtime => Action::Refresh,
+        SettingsSection::System => Action::Refresh,
         SettingsSection::About => Action::None,
     }
 }
@@ -779,7 +790,7 @@ mod tests {
             ('4', View::Os),
             ('5', View::Mcp),
             ('6', View::Skills),
-            ('7', View::System),
+            ('7', View::Rules),
             ('8', View::Settings),
             ('9', View::Help),
         ];
@@ -989,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn session_shortcuts_toggle_preview_expand_and_enter_terminal() {
+    fn session_shortcuts_toggle_preview_and_enter_terminal() {
         let mut app = app();
         add_session(&mut app);
         assert_eq!(
@@ -997,8 +1008,8 @@ mod tests {
             Action::PersistPreferences
         );
         assert!(!app.preferences.split_preview);
-        handle_key(&mut app, key(KeyCode::Char('f')), true);
-        assert!(app.expanded);
+        handle_key(&mut app, key(KeyCode::Tab), true);
+        assert!(!app.expanded);
         assert_eq!(app.focus, Focus::Detail);
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Enter), true),

@@ -73,6 +73,10 @@ check 'RMUX binary' rmux -V
 check 'RMUX daemon' rmux list-sessions
 check 'AGK TUI' test -x "$install_root/bin/agk-tui"
 check 'AGK controller' test -x "$install_root/scripts/agk_control.py"
+check 'Global rules registry' test -r "$install_root/config/rules.yaml"
+check 'Claude global rules' grep -Fq '<!-- AGK MANAGED RULES: START -->' "$HOME/.claude/CLAUDE.md"
+check 'Codex global rules' grep -Fq '<!-- AGK MANAGED RULES: START -->' "$HOME/.codex/AGENTS.md"
+check 'OpenCode global rules' grep -Fq '<!-- AGK MANAGED RULES: START -->' "$HOME/.config/opencode/AGENTS.md"
 check 'Hermes plugin' hermes plugins doctor --ci "$hermes_home/plugins/agentik_os"
 check 'AGK Discord plugin' hermes plugins doctor --ci "$hermes_home/plugins/platforms/discord"
 check 'Master OS Builder' test -f "$hermes_home/agents/master-os-builder/agent.yaml"

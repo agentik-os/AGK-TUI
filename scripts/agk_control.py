@@ -29,7 +29,7 @@ CANONICAL_USERS = {
 TYPES = {"hermes", "claude", "codex", "openrouter", "opencode", "shell", "agent", "workflow", "monitor"}
 STATES = {"running", "working", "idle", "waiting", "attention", "failed", "complete", "interrupted", "archived"}
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
-VIEWS = ("sessions", "projects", "agents", "os", "mcp", "skills", "system", "settings", "help")
+VIEWS = ("sessions", "projects", "agents", "os", "mcp", "skills", "rules", "settings", "help")
 TAB_DOUBLE_MS = 420
 ACTIVE_STATES = {"running", "working", "waiting", "attention"}
 STATUS_GLYPHS = {
@@ -59,6 +59,21 @@ def pane_widths(width: int, mode: str, fullscreen: bool = False) -> tuple[int, i
 def cycle_view(view: str, reverse: bool = False) -> str:
     index = VIEWS.index(view) if view in VIEWS else 0
     return VIEWS[(index + (-1 if reverse else 1)) % len(VIEWS)]
+
+
+def rules_inventory(home: Path) -> list[dict[str, object]]:
+    configured = os.environ.get("AGK_RULES_CONFIG")
+    candidates = [
+        Path(configured).expanduser() if configured else None,
+        home / ".agentik/rules.yaml",
+        Path("/etc/agk-terminal/rules.yaml"),
+        Path(os.environ.get("AGK_TERMINAL_ROOT", "/usr/local/lib/agk-terminal")) / "config/rules.yaml",
+    ]
+    path = next((candidate for candidate in candidates if candidate and candidate.is_file()), None)
+    if path is None:
+        return []
+    document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return [rule for rule in document.get("rules", []) if isinstance(rule, dict)]
 
 
 def format_age(timestamp: float, now: float | None = None) -> str:
@@ -456,9 +471,12 @@ class RuntimeRegistry:
 def default_command(kind: str, native_session: str | None = None) -> list[str]:
     executable = lambda name: shutil.which(name) or name
     openrouter_model = os.environ.get("AGK_OPENROUTER_MODEL", "stealth/ox-alpha")
+    claude = [executable("env"), "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1", executable("claude"), "--dangerously-skip-permissions"]
+    if native_session:
+        claude.extend(["--resume", native_session])
     commands = {
         "hermes": [executable("hermes"), "--resume", native_session] if native_session else [executable("hermes")],
-        "claude": [executable("claude"), "--dangerously-skip-permissions", "--resume", native_session] if native_session else [executable("claude"), "--dangerously-skip-permissions"],
+        "claude": claude,
         "codex": [executable("codex"), "resume", native_session] if native_session else [executable("codex")],
         "openrouter": [executable("hermes"), "--provider", "openrouter", "--model", openrouter_model],
         "opencode": [executable("opencode")],
@@ -675,8 +693,7 @@ def _safe_add(stdscr: "curses._CursesWindow", y: int, x: int, value: object,
 def tui(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
     curses.curs_set(0)
     selected, query, view = 0, "", "sessions"
-    views = {ord("1"): "sessions", ord("2"): "projects", ord("3"): "agents",
-             ord("4"): "os", ord("5"): "mcp", ord("6"): "skills", ord("s"): "system"}
+    views = {ord(str(index + 1)): view for index, view in enumerate(VIEWS)}
     while True:
         registry.reconcile()
         session_rows = filtered(registry.rows(), query)
@@ -687,12 +704,9 @@ def tui(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
         elif view == "sessions":
             rows = session_rows
         elif view in {"mcp", "skills"}:
-            capabilities = mcp_inventory(registry.env) if view == "mcp" else skill_inventory(registry.env)
-            if not capabilities:
-                _safe_add(stdscr, 5, 0, f"No {view.upper()} entries configured in this environment", width - 1)
-            for idx, item in enumerate(capabilities[:visible]):
-                detail = item.get("transport") or item.get("source") or ""
-                _safe_add(stdscr, 5 + idx, 0, f"● {item['name']:<32} {detail:<10} {item['status']}", width - 1)
+            rows = mcp_inventory(registry.env) if view == "mcp" else skill_inventory(registry.env)
+        elif view == "rules":
+            rows = rules_inventory(registry.env.home)
         else:
             rows = []
         selected = max(0, min(selected, max(0, len(rows) - 1)))
@@ -700,7 +714,7 @@ def tui(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
         height, width = stdscr.getmaxyx()
         header = f" AGK · {registry.env.name.upper()} · CONTROL MODE "
         stdscr.addnstr(0, 0, header + " " * max(1, width - len(header) - 10) + "● ONLINE", width - 1, curses.A_BOLD)
-        stdscr.addnstr(1, 0, " 1 Session  2 Projects  3 Agents  4 OS  5 MCP  6 Skills  ──  s System  , Settings  ? Help ", width - 1)
+        stdscr.addnstr(1, 0, " 1 SESSIONS  2 PROJECTS  3 AGENTS  4 OS  5 MCP  6 SKILLS  7 RULES  8 SETTINGS  9 HELP ", width - 1)
         stdscr.addnstr(3, 0, view.upper() + (f"  / {query}" if query else ""), width - 1, curses.A_BOLD)
         if view in {"sessions", "agents"}:
             for idx, row in enumerate(rows[: max(0, height - 9)]):
@@ -717,9 +731,25 @@ def tui(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
         elif view == "os":
             stdscr.addnstr(5, 0, "No Operative Systems installed. Registry is ready; packages are never invented.", width - 1)
         elif view in {"mcp", "skills"}:
-            stdscr.addnstr(5, 0, f"{view.upper()} capabilities are managed by Hermes in the current isolated environment.", width - 1)
-        elif view == "system":
-            stdscr.addnstr(5, 0, f"Machine AGK Core · Environment {registry.env.name.upper()} · RMUX {run('rmux','-V').stdout.strip()}", width - 1)
+            visible = max(0, height - 9)
+            for idx, item in enumerate(rows[:visible]):
+                detail = item.get("transport") or item.get("source") or ""
+                stdscr.addnstr(
+                    5 + idx,
+                    0,
+                    f"● {item['name']:<32} {detail:<10} {item['status']}",
+                    width - 1,
+                )
+            if not rows:
+                stdscr.addnstr(
+                    5,
+                    0,
+                    f"No {view.upper()} entries configured in this environment",
+                    width - 1,
+                )
+        elif view == "rules":
+            for idx, rule in enumerate(rows[: max(0, height - 9)]):
+                stdscr.addnstr(5 + idx, 0, f"● {rule.get('title') or rule.get('id')} · ALL PROVIDERS", width - 1)
         footer = "↑↓/jk Navigate  Enter Open  n New  / Search  Ctrl-p Palette  R Restart  f Fork  A Archive  K Kill  q Quit"
         stdscr.addnstr(height - 2, 0, footer, width - 1)
         stdscr.refresh()
@@ -791,8 +821,7 @@ def tui_v2(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
     focus, fullscreen, scroll, follow, last_tab = "list", False, 0, True, 0.0
     split_enabled, selected_ids = True, set()
     mcp_refresh_needed, mcp_error = True, ""
-    hotkeys = {ord("1"): "sessions", ord("2"): "projects", ord("3"): "agents", ord("4"): "os",
-               ord("5"): "mcp", ord("6"): "skills", ord("s"): "system", ord(","): "settings", ord("?"): "help"}
+    hotkeys = {ord(str(index + 1)): view for index, view in enumerate(VIEWS)}
     while True:
         registry.reconcile(); sessions = filtered(registry.rows(), query)
         if view == "projects": rows: list[dict[str, object] | sqlite3.Row] = canonical_projects(registry.env)
@@ -811,6 +840,7 @@ def tui_v2(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
                 mcp_items = mcp_inventory(registry.env)
             rows = mcp_display_rows(mcp_items)
         elif view == "skills": rows = skill_inventory(registry.env)
+        elif view == "rules": rows = rules_inventory(registry.env.home)
         else: rows = []
         if wanted and rows:
             selected = next((i for i, r in enumerate(rows) if str(r.get("id") if isinstance(r, dict) else r["id"]) == wanted), selected); wanted = None
@@ -824,8 +854,8 @@ def tui_v2(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
         if fullscreen and focus == "list": left, right = width, 0
         _safe_add(stdscr, 0, 0, f" AGK · {registry.env.name.upper()} · CONTROL", width - 1, curses.A_BOLD)
         _safe_add(stdscr, 0, max(30, width - 11), "● ONLINE", 10, curses.A_BOLD)
-        nav = " 1 Session  2 Projects  3 Agents │ 4 OS  5 MCP  6 Skills │ s System  , Settings  ? Help"
-        _safe_add(stdscr, 1, 0, nav if mode != "compact" else " 1 Session  2 Projects  3 Agents  ···", width - 1)
+        nav = " 1 SESSIONS  2 PROJECTS  3 AGENTS  4 OS  5 MCP  6 SKILLS  7 RULES  8 SETTINGS  9 HELP"
+        _safe_add(stdscr, 1, 0, nav, width - 1)
         crumb = registry.env.name.upper()
         if current is not None and not isinstance(current, dict): crumb += f" › {current['client'] or '—'} › {current['project'] or '—'} › {current['name']}"
         _safe_add(stdscr, 2, 0, crumb, width - 1, curses.A_DIM); _safe_add(stdscr, 4, 0, view.upper() + (f"  / {query}" if query else ""), max(1, left - 1), curses.A_BOLD)
@@ -858,8 +888,17 @@ def tui_v2(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
                           list_limit, curses.A_REVERSE if idx == selected and focus == "list" else 0)
             if not rows:
                 _safe_add(stdscr, 5, 0, f"No {view.upper()} capabilities configured", width - 1)
+        elif view == "rules":
+            for screen_i, row in enumerate(rows[start:start + visible]):
+                idx = start + screen_i
+                scope = "ALL PROVIDERS" if "*" in (row.get("providers") or ["*"]) else ", ".join(row.get("providers") or [])
+                _safe_add(
+                    stdscr, 5 + screen_i, 0,
+                    f"{'▶' if idx == selected else ' '} {'●' if row.get('enabled', True) else '○'} {row.get('title') or row.get('id')} · {scope}",
+                    list_limit, curses.A_REVERSE if idx == selected and focus == "list" else 0,
+                )
         else:
-            messages = {"os": "Zero Operative Systems installed · registry ready · no package is invented", "mcp": "MCP inventory is scoped to this Hermes environment", "skills": "Skills are capabilities; OS remain separate methodologies", "system": f"AGK Core · {registry.env.name.upper()} · {run('rmux','-V').stdout.strip()}", "settings": "Persistent Control Mode · RMUX runtime · secrets never displayed", "help": "Tab focus · Tab Tab expand · Enter attach · Ctrl-b d detach · q leaves Control only"}
+            messages = {"os": "Zero Operative Systems installed · registry ready · no package is invented", "mcp": "MCP inventory is scoped to this Hermes environment", "skills": "Skills are capabilities; OS remain separate methodologies", "settings": f"Appearance · Providers · Sessions · Runtime · System ({run('rmux','-V').stdout.strip()}) · About", "help": "Tab switches panels · rapid Tab Tab hides left · Enter opens · q leaves Control only"}
             _safe_add(stdscr, 5, 0, messages.get(view, ""), width - 1)
         max_scroll = 0
         if right and current is not None and not isinstance(current, dict) and view in {"sessions", "agents"}:
@@ -896,8 +935,7 @@ def tui_v2(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
         elif key in (9, curses.KEY_BTAB):
             now = time.monotonic()
             if key == 9 and (now - last_tab) * 1000 < TAB_DOUBLE_MS: fullscreen, last_tab = not fullscreen, 0.0
-            elif mode == "wide" and view in {"sessions", "agents", "projects", "os", "settings"}: focus, last_tab = ("detail" if focus == "list" else "list"), now
-            else: view, selected, focus, fullscreen, last_tab = cycle_view(view, key == curses.KEY_BTAB), 0, "list", False, now
+            else: focus, last_tab = ("detail" if focus == "list" else "list"), now
         elif key in (curses.KEY_DOWN, ord("j")) and rows:
             if focus == "detail" and right: scroll, follow = min(max_scroll, scroll + 1), scroll + 1 >= max_scroll
             else: selected = min(len(rows) - 1, selected + 1)
@@ -1028,7 +1066,7 @@ def main() -> int:
     rename = sub.add_parser("rename"); rename.add_argument("target"); rename.add_argument("name")
     fork = sub.add_parser("fork"); fork.add_argument("target"); fork.add_argument("name")
     sub.add_parser("reconcile")
-    sub.add_parser("projects"); sub.add_parser("agents"); sub.add_parser("os"); sub.add_parser("mcp"); sub.add_parser("skills"); sub.add_parser("system")
+    sub.add_parser("projects"); sub.add_parser("agents"); sub.add_parser("os"); sub.add_parser("mcp"); sub.add_parser("skills"); sub.add_parser("rules"); sub.add_parser("system")
     args = parser.parse_args()
     env = Environment.current(); registry = RuntimeRegistry(env); registry.reconcile()
     if args.command is None:
@@ -1124,6 +1162,12 @@ def main() -> int:
     if args.command == "skills":
         items = skill_inventory(env); print(f"SKILLS · {env.name.upper()} · {len(items)} installed")
         for item in items: print(f"{item['status']:<10} {item['name']} · {item['source']}")
+        return 0
+    if args.command == "rules":
+        items = rules_inventory(env.home); print(f"RULES · {env.name.upper()} · {len(items)} installed")
+        for item in items:
+            scope = "ALL PROVIDERS" if "*" in (item.get("providers") or ["*"]) else ", ".join(item.get("providers") or [])
+            print(f"{'ON' if item.get('enabled', True) else 'OFF':<4} {item.get('title') or item.get('id')} · {scope}")
         return 0
     if args.command == "system":
         print(f"SYSTEM · {env.name.upper()} · {run('rmux','-V').stdout.strip()}"); return 0

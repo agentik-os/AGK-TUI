@@ -49,4 +49,9 @@ done
 hermes plugins enable --no-allow-tool-override agentik-os >/dev/null
 hermes plugins enable --no-allow-tool-override platforms/discord >/dev/null
 hermes skills list --source builtin >/dev/null
+rules_python=python3
+if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+  rules_python=$install_root/venv/bin/python
+fi
+"$rules_python" "$install_root/scripts/sync-rules.py" >/dev/null
 echo "Hermes extensions synchronized in $hermes_home"

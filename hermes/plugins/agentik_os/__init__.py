@@ -9,6 +9,7 @@ from __future__ import annotations
 from .commands import AgentikCommandService
 from .runtime_tool import RUNTIME_TOOL_SCHEMA, handle_runtime, runtime_available
 from .agent_registry import AGENT_TOOL_SCHEMA, AgentCommandService, agent_router_prompt, handle_agent
+from .rules import rules_prompt
 
 
 def register(ctx) -> None:
@@ -50,4 +51,10 @@ def register(ctx) -> None:
         agent_router_prompt,
         position="after_memory",
         max_chars=1400,
+    )
+    ctx.register_system_prompt_section(
+        "agentik.global-rules",
+        rules_prompt,
+        position="after_memory",
+        max_chars=4000,
     )

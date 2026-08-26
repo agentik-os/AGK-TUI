@@ -13,6 +13,7 @@ The repository installs:
 - the Agentik OS Hermes plugin, Discord control-center override and Master OS
   Builder catalog agent;
 - Composio discovery commands without copying credentials into the repo;
+- one global Rules registry projected into every supported provider;
 - optional user services for Hermes gateways and headless control.
 
 ## Install
@@ -117,6 +118,7 @@ agk                         # native RMUX session control
 agk doctor                  # full local readiness report
 agk provider list           # installed/configured state
 agk provider install claude
+agk rules                   # list global rules and provider scope
 agk composio login          # authenticates only the current Linux profile
 agk composio connect github # logs in first when needed, then links GitHub
 agk composio list           # refresh connected toolkit inventory
@@ -131,11 +133,12 @@ redacted connected-toolkit list and connection states. Refresh it with
 `agk composio list` after changing connections.
 
 In the session menu, `Enter` focuses the selected provider immediately and
-`x` closes it in one keystroke. `Tab` returns from the provider to the session
-list; the persistent footer keeps the active session/project context and the
-TKN, RAM, CPU, DISK and LIVE counters visible.
+`x` closes it in one keystroke. A single `Tab` only alternates between the
+session list and provider pane; a rapid double `Tab` hides the left panel.
+The persistent top menu and footer remain visible, including the active
+session/project context and the TKN, RAM, CPU, DISK and LIVE counters.
 
-TKN is attributed to the currently selected Hermes model. The System view
+TKN is attributed to the currently selected Hermes model. Settings > System
 shows every model/provider pair separately, including input/output, cache,
 reasoning and API-call counters. AGK displays `—` instead of inventing a value
 for a provider session that has no authoritative linked usage record.
