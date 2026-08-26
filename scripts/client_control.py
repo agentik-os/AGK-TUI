@@ -247,6 +247,11 @@ def bootstrap(layout: Layout, *, upgrade: bool) -> None:
             {"schema_version": SCHEMA_VERSION, "clients": []},
             0o600,
         )
+    elif upgrade:
+        with registry_lock(layout):
+            registry = load_registry(layout)
+            registry["schema_version"] = SCHEMA_VERSION
+            atomic_yaml(layout.registry, registry, 0o600)
 
 
 def render_template(source: Path, replacements: dict[str, str]) -> str:

@@ -83,6 +83,18 @@ def test_bootstrap_is_safe_with_no_real_client(layout):
     assert client_control.show_doctor(layout, None, online=False) == 0
 
 
+def test_bootstrap_upgrade_migrates_an_existing_registry_without_clients(layout):
+    layout.system.mkdir(parents=True)
+    client_control.atomic_yaml(layout.registry, {"clients": []})
+
+    client_control.bootstrap(layout, upgrade=True)
+
+    assert client_control.yaml_document(layout.registry) == {
+        "schema_version": client_control.SCHEMA_VERSION,
+        "clients": [],
+    }
+
+
 def test_dry_run_makes_no_files_or_external_calls(layout, monkeypatch):
     monkeypatch.setattr(
         client_control.subprocess,
