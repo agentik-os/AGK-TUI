@@ -72,7 +72,7 @@ def test_manifest_matches_the_official_dashboard_plugin_contract():
 
     assert manifest["name"] == "agentik-os"
     assert manifest["label"] == "OS & Agents"
-    assert manifest["version"] == "0.4.1"
+    assert manifest["version"] == "0.5.0"
     assert manifest["tab"] == {"path": "/os-agents", "position": "after:skills"}
     assert manifest["entry"] == "dist/index.js"
     assert manifest["css"] == "dist/style.css"
@@ -155,9 +155,10 @@ def test_dashboard_uses_a_responsive_master_detail_panel_layout():
         assert contract in bundle
 
     assert 'className: "agk-os-tabs"' not in bundle
-    assert "grid-template-columns: minmax(15.5rem, 18rem) minmax(0, 1fr)" in styles
-    assert "--agk-panel-radius: 1rem" in styles
-    assert "--agk-card-radius: 0.875rem" in styles
+    assert "grid-template-columns: minmax(15rem, 17rem) minmax(0, 1fr)" in styles
+    assert "--agk-panel-radius: 0.75rem" in styles
+    assert "--agk-card-radius: 0.625rem" in styles
+    assert "--agk-control-radius: 0.5rem" in styles
     assert "gap: var(--agk-panel-gap)" in styles
     assert styles.count("border-radius: var(--agk-panel-radius)") >= 2
     assert "border-radius: var(--agk-card-radius)" in styles
@@ -182,6 +183,9 @@ def test_agentik_shadcn_theme_is_official_local_and_reproducible():
     assert light_theme["colorOverrides"]["card"] == "#ffffff"
     assert light_theme["colorOverrides"]["border"] == "#dfdfdc"
     assert theme["customCSS"].replace("color-scheme: dark", "color-scheme: light") == light_theme["customCSS"]
+    assert "--agk-ui-panel-radius: 0.75rem" in theme["customCSS"]
+    assert '[class*="font-mondwest"]' in theme["customCSS"]
+    assert "#app-sidebar nav a" in theme["customCSS"]
 
     for theme_path in (THEME, LIGHT_THEME):
         serialized = theme_path.read_text(encoding="utf-8").lower()

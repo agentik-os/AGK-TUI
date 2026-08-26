@@ -209,6 +209,24 @@ def test_shell_respects_responsive_and_reduced_motion_preferences():
     assert re.search(r"transition-duration\s*:\s*0\.01ms", styles)
 
 
+def test_fleet_shell_uses_a_rounded_linear_first_dashboard_frame():
+    styles = (FRONTEND_SRC / "styles.css").read_text(encoding="utf-8")
+    html = (FRONTEND / "index.html").read_text(encoding="utf-8")
+
+    assert "--panel-radius: 0.75rem" in styles
+    assert re.search(
+        r"\.dashboard-stage\s*\{[^}]*padding\s*:\s*10px 12px 12px",
+        styles,
+        flags=re.DOTALL,
+    )
+    assert re.search(
+        r"\.dashboard-frame\s*\{[^}]*border-radius\s*:\s*var\(--panel-radius\)",
+        styles,
+        flags=re.DOTALL,
+    )
+    assert 'name="color-scheme" content="dark light"' in html
+
+
 def test_compiled_typescript_server_proxies_all_prefixes_to_loopback():
     source = _server_source()
 

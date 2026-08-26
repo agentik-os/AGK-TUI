@@ -7,26 +7,27 @@
   color-scheme: dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --background: #09090b;
+  --background: #0b0b0d;
   --foreground: #fafafa;
-  --card: #0f0f12;
+  --card: #111113;
   --card-foreground: #fafafa;
-  --popover: #18181b;
+  --popover: #171719;
   --popover-foreground: #fafafa;
   --primary: #fafafa;
   --primary-foreground: #18181b;
-  --secondary: #27272a;
+  --secondary: #202023;
   --secondary-foreground: #fafafa;
-  --muted-surface: #18181b;
+  --muted-surface: #18181a;
   --muted-foreground: #a1a1aa;
-  --accent-surface: #27272a;
+  --accent-surface: #242427;
   --accent-foreground: #fafafa;
-  --border: #27272a;
-  --input: #27272a;
+  --border: #2a2a2e;
+  --input: #343439;
   --ring: #d4d4d8;
   --brand-accent: #a1a1aa;
   --success: #22c55e;
   --radius: 0.625rem;
+  --panel-radius: 0.75rem;
   --bg: var(--background);
   --surface: var(--card);
   --surface-raised: var(--popover);
@@ -43,7 +44,7 @@
   color: #1f1f1e;
   background: #f5f5f3;
   color-scheme: light;
-  --background: #f5f5f3;
+  --background: #f2f2f0;
   --foreground: #1f1f1e;
   --card: #ffffff;
   --card-foreground: #1f1f1e;
@@ -53,11 +54,11 @@
   --primary-foreground: #ffffff;
   --secondary: #efefed;
   --secondary-foreground: #1f1f1e;
-  --muted-surface: #f0f0ee;
+  --muted-surface: #eeeeec;
   --muted-foreground: #737370;
   --accent-surface: #e9e9e6;
   --accent-foreground: #1f1f1e;
-  --border: #dfdfdc;
+  --border: #ddddda;
   --input: #d2d2ce;
   --ring: #8a8a86;
   --brand-accent: #6f6f6b;
@@ -90,7 +91,7 @@ button {
 
 .fleet-shell {
   display: grid;
-  grid-template-rows: 50px minmax(0, 1fr);
+  grid-template-rows: 52px minmax(0, 1fr);
   min-height: 100dvh;
   background: var(--bg);
 }
@@ -101,11 +102,11 @@ button {
   display: grid;
   grid-template-columns: auto minmax(250px, 360px) minmax(0, 1fr);
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   min-width: 0;
-  padding: 0 10px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--border);
-  background: var(--card);
+  background: var(--background);
 }
 
 .brand {
@@ -121,11 +122,11 @@ button {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius) - 2px);
+  border: 0;
+  border-radius: var(--radius);
   background: var(--muted-surface);
 }
 
@@ -169,11 +170,11 @@ button {
   gap: 9px;
   width: 100%;
   min-width: 0;
-  height: 38px;
+  height: 36px;
   padding: 4px 9px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--background);
+  background: var(--card);
   text-align: left;
   cursor: pointer;
   transition:
@@ -184,7 +185,7 @@ button {
 .organisation-trigger:hover,
 .organisation-trigger[aria-expanded="true"] {
   border-color: var(--line-strong);
-  background: var(--muted-surface);
+  background: var(--surface-raised);
 }
 
 .organisation-trigger[aria-expanded="true"] {
@@ -264,7 +265,7 @@ button {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  height: 30px;
+  height: 28px;
   border: 0;
   border-radius: calc(var(--radius) - 2px);
   color: var(--text-secondary);
@@ -334,12 +335,12 @@ button {
 
 .organisation-menu {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 7px);
   left: 0;
   width: min(370px, calc(100vw - 28px));
   overflow: hidden;
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
+  border-radius: var(--panel-radius);
   background: var(--popover);
   transform-origin: top left;
   animation: menu-in 130ms ease-out;
@@ -473,7 +474,7 @@ kbd {
   position: relative;
   min-width: 0;
   min-height: 0;
-  padding: 0;
+  padding: 10px 12px 12px;
   overflow: hidden;
   background: var(--bg);
 }
@@ -484,8 +485,8 @@ kbd {
   display: block;
   width: 100%;
   height: 100%;
-  border: 0;
-  border-radius: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--panel-radius);
   opacity: 0;
   background: var(--surface);
   transition: opacity 180ms ease;
@@ -498,13 +499,13 @@ kbd {
 .dashboard-loading {
   position: absolute;
   z-index: 3;
-  inset: 0;
+  inset: 10px 12px 12px;
   display: grid;
   place-content: center;
   justify-items: center;
   gap: 13px;
-  border: 0;
-  border-radius: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--panel-radius);
   background: var(--surface);
   color: var(--muted);
   font-size: 10px;
@@ -566,14 +567,14 @@ kbd {
   }
 
   .brand-icon-shell {
-    width: 30px;
-    height: 30px;
+    width: 28px;
+    height: 28px;
   }
 
   .organisation-trigger {
     grid-template-columns: 7px minmax(0, 1fr) 14px;
     gap: 8px;
-    height: 40px;
+    height: 36px;
     padding: 4px 9px;
   }
 
@@ -596,11 +597,19 @@ kbd {
 
   .organisation-menu {
     position: fixed;
-    top: 50px;
+    top: 52px;
     right: 8px;
     left: 8px;
     width: auto;
     transform-origin: top center;
+  }
+
+  .dashboard-stage {
+    padding: 6px;
+  }
+
+  .dashboard-loading {
+    inset: 6px;
   }
 
 }
@@ -619,6 +628,22 @@ kbd {
   .organisation-menu {
     right: 6px;
     left: 6px;
+  }
+
+  .dashboard-stage {
+    padding: 0;
+  }
+
+  .dashboard-frame,
+  .dashboard-loading {
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 0;
+  }
+
+  .dashboard-loading {
+    inset: 0;
   }
 }
 
