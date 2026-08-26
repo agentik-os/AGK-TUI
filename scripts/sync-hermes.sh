@@ -25,7 +25,8 @@ resolve_executable() {
 
 hermes_bin=$(resolve_executable "$(command -v hermes)")
 
-mkdir -p "$hermes_home/plugins" "$hermes_home/agents"
+mkdir -p "$hermes_home/plugins" "$hermes_home/agents" \
+  "$hermes_home/dashboard-themes"
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$hermes_bin" "$HOME/.local/bin/hermes"
 hermes config migrate >/dev/null
@@ -42,6 +43,10 @@ rm -rf "$agent_target.new"
 cp -a "$agent_source" "$agent_target.new"
 rm -rf "$agent_target"
 mv "$agent_target.new" "$agent_target"
+
+install -m 0644 \
+  "$install_root/hermes/dashboard-themes/agentik-shadcn.yaml" \
+  "$hermes_home/dashboard-themes/agentik-shadcn.yaml"
 
 for plugin_path in agentik_os platforms/discord; do
   hermes plugins doctor --ci "$hermes_home/plugins/$plugin_path" >/dev/null

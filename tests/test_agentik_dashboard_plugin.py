@@ -11,6 +11,8 @@ import types
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD = ROOT / "hermes" / "plugins" / "agentik_os" / "dashboard"
@@ -18,6 +20,7 @@ MANIFEST = DASHBOARD / "manifest.json"
 BUNDLE = DASHBOARD / "dist" / "index.js"
 STYLES = DASHBOARD / "dist" / "style.css"
 PLUGIN_API = DASHBOARD / "plugin_api.py"
+THEME = ROOT / "hermes" / "dashboard-themes" / "agentik-shadcn.yaml"
 
 
 class RecordingRouter:
@@ -68,7 +71,7 @@ def test_manifest_matches_the_official_dashboard_plugin_contract():
 
     assert manifest["name"] == "agentik-os"
     assert manifest["label"] == "OS & Agents"
-    assert manifest["version"] == "0.2.0"
+    assert manifest["version"] == "0.3.0"
     assert manifest["tab"] == {"path": "/os-agents", "position": "after:skills"}
     assert manifest["entry"] == "dist/index.js"
     assert manifest["css"] == "dist/style.css"
@@ -87,6 +90,19 @@ def test_bundle_registers_with_the_official_sdk_and_catalog_endpoint():
     assert "window.__HERMES_PLUGINS__" in source
     assert "/api/plugins/agentik-os/catalog" in source
     assert "fetchJSON" in source
+    for component in (
+        "Card",
+        "CardHeader",
+        "CardTitle",
+        "CardContent",
+        "Badge",
+        "Button",
+        "Separator",
+        "Tabs",
+        "TabsList",
+        "TabsTrigger",
+    ):
+        assert component in source
     assert re.search(
         r"\.register\(\s*['\"]agentik-os['\"]\s*,",
         source,
@@ -103,6 +119,9 @@ def test_css_is_scoped_and_has_no_external_hosts():
     assert "http://" not in lowered
     assert "https://" not in lowered
     assert "//" not in lowered
+    assert "gradient" not in lowered
+    assert "backdrop-filter" not in lowered
+    assert "box-shadow" not in lowered
 
     selector_groups = re.findall(r"([^{}]+)\{", without_comments)
     checked = 0
@@ -117,6 +136,29 @@ def test_css_is_scoped_and_has_no_external_hosts():
             assert selector.startswith(".agk-os-hub"), selector
             checked += 1
     assert checked > 0
+
+
+def test_agentik_shadcn_theme_is_official_local_and_reproducible():
+    theme = yaml.safe_load(THEME.read_text(encoding="utf-8"))
+
+    assert theme["name"] == "agentik-shadcn"
+    assert theme["layout"] == {"radius": "0.625rem", "density": "compact"}
+    assert theme["layoutVariant"] == "standard"
+    assert theme["palette"]["noiseOpacity"] == 0
+    assert theme["colorOverrides"]["card"] == "#18181b"
+    assert theme["colorOverrides"]["border"] == "#27272a"
+    assert "fontUrl" not in theme["typography"]
+
+    serialized = THEME.read_text(encoding="utf-8").lower()
+    assert "http://" not in serialized
+    assert "https://" not in serialized
+    assert "gradient" not in serialized
+    assert "backdrop-filter" not in serialized
+
+    installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+    sync = (ROOT / "scripts" / "sync-hermes.sh").read_text(encoding="utf-8")
+    for source in (installer, sync):
+        assert "hermes/dashboard-themes/agentik-shadcn.yaml" in source
 
 
 def test_api_source_keeps_the_canonical_os_dependencies_field():

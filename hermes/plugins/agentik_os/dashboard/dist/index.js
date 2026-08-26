@@ -12,6 +12,17 @@
   const useEffect = hooks.useEffect;
   const useCallback = hooks.useCallback;
   const useRef = hooks.useRef;
+  const components = SDK.components || {};
+  const Card = components.Card;
+  const CardHeader = components.CardHeader;
+  const CardTitle = components.CardTitle;
+  const CardContent = components.CardContent;
+  const Badge = components.Badge;
+  const Button = components.Button;
+  const Separator = components.Separator;
+  const Tabs = components.Tabs;
+  const TabsList = components.TabsList;
+  const TabsTrigger = components.TabsTrigger;
   const timeAgo = SDK.utils && SDK.utils.timeAgo
     ? SDK.utils.timeAgo
     : function () { return "Recently"; };
@@ -114,7 +125,14 @@
 
   function StatusPill(props) {
     const tone = props.tone || "neutral";
-    return h("span", { className: "agk-os-status agk-os-status--" + tone },
+    const badgeTone = tone === "success" || tone === "live"
+      ? "success"
+      : tone === "warning"
+        ? "warning"
+        : tone === "accent"
+          ? "secondary"
+          : "outline";
+    return h(Badge, { tone: badgeTone, className: "agk-os-status agk-os-status--" + tone },
       props.dot === false ? null : h("span", { className: "agk-os-status__dot", "aria-hidden": "true" }),
       props.children
     );
@@ -128,29 +146,33 @@
     const rest = values.length - visible.length;
     return h("div", { className: "agk-os-tags", "aria-label": props.label || "Tags" },
       visible.map(function (value) {
-        return h("span", { className: "agk-os-tag", key: String(value) }, String(value));
+        return h(Badge, { tone: "outline", className: "agk-os-tag", key: String(value) }, String(value));
       }),
-      rest > 0 ? h("span", { className: "agk-os-tag agk-os-tag--more" }, "+" + rest) : null
+      rest > 0 ? h(Badge, { tone: "secondary", className: "agk-os-tag agk-os-tag--more" }, "+" + rest) : null
     );
   }
 
   function SummaryCard(props) {
-    return h("article", { className: "agk-os-summary" },
-      h("div", { className: "agk-os-summary__icon" }, h(Icon, { name: props.icon })),
-      h("div", { className: "agk-os-summary__body" },
-        h("span", { className: "agk-os-summary__label" }, props.label),
-        h("strong", { className: "agk-os-summary__value" }, String(props.value)),
-        h("span", { className: "agk-os-summary__detail" }, props.detail)
+    return h(Card, { className: "agk-os-summary-card" },
+      h(CardContent, { className: "agk-os-summary-card__content" },
+        h("div", { className: "agk-os-summary-card__top" },
+          h("span", { className: "agk-os-summary-card__label" }, props.label),
+          h(Icon, { name: props.icon })
+        ),
+        h("strong", { className: "agk-os-summary-card__value" }, String(props.value)),
+        h("span", { className: "agk-os-summary-card__detail" }, props.detail)
       )
     );
   }
 
   function EmptyState(props) {
-    return h("div", { className: "agk-os-empty" },
-      h("div", { className: "agk-os-empty__icon" }, h(Icon, { name: props.icon })),
-      h("div", null,
-        h("h3", null, props.title),
-        h("p", null, props.description)
+    return h(Card, { className: "agk-os-empty" },
+      h(CardContent, { className: "agk-os-empty__content" },
+        h("div", { className: "agk-os-empty__icon" }, h(Icon, { name: props.icon })),
+        h("div", null,
+          h("h3", null, props.title),
+          h("p", null, props.description)
+        )
       )
     );
   }
@@ -165,30 +187,35 @@
       + asList(item.knowledge).length
       + asList(item.evals).length;
 
-    return h("article", { className: "agk-os-package-card" },
-      h("div", { className: "agk-os-card__top" },
-        h("div", { className: "agk-os-card__mark" }, h(Icon, { name: "package" })),
-        h(StatusPill, { tone: item.allowed_here ? "success" : "neutral" },
-          item.allowed_here ? "Available here" : "Installed elsewhere"
+    return h(Card, { className: "agk-os-package-card" },
+      h(CardHeader, { className: "agk-os-package-card__header" },
+        h("div", { className: "agk-os-card__heading" },
+          h("div", { className: "agk-os-card__title-row" },
+            h(Icon, { name: "package" }),
+            h(CardTitle, null, item.name || item.id || "Unnamed OS")
+          ),
+          h(StatusPill, { tone: item.allowed_here ? "success" : "neutral" },
+            item.allowed_here ? "Available here" : "Installed elsewhere"
+          )
+        ),
+        h("div", { className: "agk-os-card__identity" },
+          h("code", { className: "agk-os-code" }, String(item.id || "unknown")),
+          item.version ? h(Badge, { tone: "secondary", className: "agk-os-version" }, "v" + item.version) : null
         )
       ),
-      h("div", { className: "agk-os-card__heading" },
-        h("div", null,
-          h("h3", null, item.name || item.id || "Unnamed OS"),
-          h("p", { className: "agk-os-code" }, String(item.id || "unknown"))
+      h(CardContent, { className: "agk-os-package-card__content" },
+        item.description ? h("p", { className: "agk-os-card__description" }, item.description) : null,
+        h("div", { className: "agk-os-card__metric" },
+          h("span", null, "Validated components"),
+          h("strong", null, String(componentCount))
         ),
-        item.version ? h("span", { className: "agk-os-version" }, "v" + item.version) : null
-      ),
-      item.description ? h("p", { className: "agk-os-card__description" }, item.description) : null,
-      h("div", { className: "agk-os-card__metric" },
-        h("span", null, "Validated components"),
-        h("strong", null, String(componentCount))
-      ),
-      h(TagList, { values: item.capabilities, label: "Capabilities", limit: 4 }),
-      h("div", { className: "agk-os-card__footer" },
-        h("span", null, asList(item.scope).length + " scopes"),
-        h("span", null, asList(item.agents).length + " agents"),
-        h("span", null, asList(item.workflows).length + " workflows")
+        h(TagList, { values: item.capabilities, label: "Capabilities", limit: 4 }),
+        h(Separator, { className: "agk-os-card__separator" }),
+        h("div", { className: "agk-os-card__footer" },
+          h("span", null, asList(item.scope).length + " scopes"),
+          h("span", null, asList(item.agents).length + " agents"),
+          h("span", null, asList(item.workflows).length + " workflows")
+        )
       )
     );
   }
@@ -221,10 +248,13 @@
     const sessions = asList(agent.sessions);
     const definitionReady = Boolean(agent.prompt_present && agent.definition_hash);
 
-    return h("article", { className: "agk-os-agent-card" },
-      h("div", { className: "agk-os-agent-card__main" },
-        h("div", { className: "agk-os-card__top" },
-          h("div", { className: "agk-os-card__mark agk-os-card__mark--agent" }, h(Icon, { name: "agent" })),
+    return h(Card, { className: "agk-os-agent-card" },
+      h(CardHeader, { className: "agk-os-agent-card__header" },
+        h("div", { className: "agk-os-card__heading" },
+          h("div", { className: "agk-os-card__title-row" },
+            h(Icon, { name: "agent" }),
+            h(CardTitle, null, agent.name || agent.id || "Unnamed agent")
+          ),
           h("div", { className: "agk-os-card__statuses" },
             h(StatusPill, { tone: definitionReady ? "success" : "warning" },
               definitionReady ? "Definition valid" : "Definition incomplete"
@@ -234,28 +264,27 @@
             )
           )
         ),
-        h("div", { className: "agk-os-card__heading" },
-          h("div", null,
-            h("h3", null, agent.name || agent.id || "Unnamed agent"),
-            h("p", { className: "agk-os-code" }, String(agent.id || "unknown"))
-          ),
-          agent.version ? h("span", { className: "agk-os-version" }, "v" + agent.version) : null
-        ),
+        h("div", { className: "agk-os-card__identity" },
+          h("code", { className: "agk-os-code" }, String(agent.id || "unknown")),
+          agent.version ? h(Badge, { tone: "secondary", className: "agk-os-version" }, "v" + agent.version) : null
+        )
+      ),
+      h(CardContent, { className: "agk-os-agent-card__content" },
         agent.description ? h("p", { className: "agk-os-card__description" }, agent.description) : null,
         h("dl", { className: "agk-os-agent-meta" },
           h("div", null, h("dt", null, "Runtime"), h("dd", null, String(agent.runtime || "Hermes"))),
           h("div", null, h("dt", null, "Distribution"), h("dd", null, String(agent.distribution || "local"))),
           h("div", null, h("dt", null, "Linked sessions"), h("dd", null, String(sessions.length)))
         ),
-        h(TagList, { values: agent.scope, label: "Agent scopes", limit: 6 })
-      ),
-      h("div", { className: "agk-os-agent-card__sessions" },
+        h(TagList, { values: agent.scope, label: "Agent scopes", limit: 6 }),
+        h(Separator, { className: "agk-os-card__separator" }),
+        h("div", { className: "agk-os-agent-card__sessions" },
         h("div", { className: "agk-os-subhead" },
           h("div", null,
-            h("span", { className: "agk-os-eyebrow" }, "Runtime layer"),
+            h("span", { className: "agk-os-label" }, "Runtime layer"),
             h("h4", null, "Linked runtime sessions")
           ),
-          h("span", { className: "agk-os-count" }, String(sessions.length))
+          h(Badge, { tone: "secondary", className: "agk-os-count" }, String(sessions.length))
         ),
         sessions.length
           ? h("ul", { className: "agk-os-session-list" }, sessions.map(function (session, index) {
@@ -265,15 +294,114 @@
               h(Icon, { name: "activity" }),
               h("p", null, "No linked runtime session. The agent definition remains installed independently.")
             )
+        )
       )
+    );
+  }
+
+  function OverviewPanel(props) {
+    const data = props.data;
+    const agents = data.agents;
+    const registryReady = props.registryReady;
+    const definitionsReady = props.definitionsReady;
+
+    return h("div", { className: "agk-os-overview", role: "tabpanel", id: "agk-os-panel-overview", "aria-labelledby": "agk-os-tab-overview" },
+      h(Card, { className: "agk-os-overview-card" },
+        h(CardHeader, null,
+          h("div", { className: "agk-os-overview-card__heading" },
+            h(CardTitle, null, "Registry health"),
+            h(StatusPill, { tone: registryReady ? "success" : "warning" },
+              registryReady ? "Healthy" : "Needs review"
+            )
+          )
+        ),
+        h(CardContent, { className: "agk-os-overview-card__content" },
+          h("p", null, registryReady
+            ? "The canonical registry is available and validated for this profile."
+            : "The catalog is visible, but registry health is not fully confirmed."),
+          h("dl", { className: "agk-os-overview-list" },
+            h("div", null, h("dt", null, "Environment"), h("dd", null, data.environment)),
+            h("div", null, h("dt", null, "Validated systems"), h("dd", null, String(data.registry.package_count))),
+            h("div", null, h("dt", null, "Invalid packages hidden"), h("dd", null, String(data.registry.invalid_count)))
+          )
+        )
+      ),
+      h(Card, { className: "agk-os-overview-card" },
+        h(CardHeader, null,
+          h("div", { className: "agk-os-overview-card__heading" },
+            h(CardTitle, null, "Hermes agents"),
+            h(StatusPill, { tone: definitionsReady === agents.length ? "success" : "warning" },
+              definitionsReady + " of " + agents.length + " definitions valid"
+            )
+          )
+        ),
+        h(CardContent, { className: "agk-os-overview-card__content" },
+          h("p", null, "Definitions, profile availability, and linked runtime sessions stay independently observable."),
+          h("dl", { className: "agk-os-overview-list" },
+            h("div", null, h("dt", null, "Installed agents"), h("dd", null, String(data.sync.agent_count || agents.length))),
+            h("div", null, h("dt", null, "Valid definitions"), h("dd", null, String(definitionsReady))),
+            h("div", null, h("dt", null, "Active sessions"), h("dd", null, String(data.sync.active_session_count)))
+          )
+        )
+      )
+    );
+  }
+
+  function SystemsPanel(props) {
+    const packages = props.packages;
+    return h("section", { className: "agk-os-tab-panel", role: "tabpanel", id: "agk-os-panel-systems", "aria-labelledby": "agk-os-tab-systems" },
+      h("div", { className: "agk-os-section__heading" },
+        h("div", null,
+          h("span", { className: "agk-os-label" }, "Registry"),
+          h("h2", null, "Operative Systems")
+        ),
+        h("div", { className: "agk-os-section__note" },
+          h(Icon, { name: props.registryReady ? "check" : "alert" }),
+          h("span", null, props.registryReady ? "Validated packages only" : "Registry health is not confirmed")
+        )
+      ),
+      packages.length
+        ? h("div", { className: "agk-os-package-grid" }, packages.map(function (item, index) {
+            return h(PackageCard, { item: item, key: item.id || index });
+          }))
+        : h(EmptyState, {
+            icon: "package",
+            title: "No validated OS package is installed",
+            description: "Drafts and historical folders stay hidden until they pass validation in the canonical registry.",
+          })
+    );
+  }
+
+  function AgentsPanel(props) {
+    const agents = props.agents;
+    return h("section", { className: "agk-os-tab-panel", role: "tabpanel", id: "agk-os-panel-agents", "aria-labelledby": "agk-os-tab-agents" },
+      h("div", { className: "agk-os-section__heading" },
+        h("div", null,
+          h("span", { className: "agk-os-label" }, "Hermes definitions"),
+          h("h2", null, "Installed Agents")
+        ),
+        h("div", { className: "agk-os-section__note" },
+          h(Icon, { name: "agent" }),
+          h("span", null, "Definitions and sessions stay separate")
+        )
+      ),
+      agents.length
+        ? h("div", { className: "agk-os-agent-list" }, agents.map(function (agent, index) {
+            return h(AgentCard, { agent: agent, key: agent.id || index });
+          }))
+        : h(EmptyState, {
+            icon: "agent",
+            title: "No installed agent definition was found",
+            description: "Run the AGK Hermes sync for this profile, then refresh this page.",
+          })
     );
   }
 
   function LoadingPage() {
     return h("div", { className: "agk-os-hub", "aria-busy": "true", "aria-live": "polite" },
-      h("div", { className: "agk-os-skeleton agk-os-skeleton--hero" }),
+      h("div", { className: "agk-os-skeleton agk-os-skeleton--header" }),
       h("div", { className: "agk-os-summary-grid" }, [0, 1, 2, 3].map(function (index) {
-        return h("div", { className: "agk-os-skeleton agk-os-skeleton--card", key: index });
+        return h(Card, { className: "agk-os-skeleton agk-os-skeleton--card", key: index });
       })),
       h("span", { className: "agk-os-sr-only" }, "Loading OS and agent catalog")
     );
@@ -281,16 +409,18 @@
 
   function ErrorPage(props) {
     return h("div", { className: "agk-os-hub" },
-      h("div", { className: "agk-os-error", role: "alert" },
-        h("div", { className: "agk-os-error__icon" }, h(Icon, { name: "alert" })),
-        h("div", { className: "agk-os-error__copy" },
-          h("span", { className: "agk-os-eyebrow" }, "Catalog unavailable"),
-          h("h2", null, "Hermes could not load OS and agent state"),
-          h("p", null, props.message)
-        ),
-        h("button", { className: "agk-os-button", type: "button", onClick: props.onRetry },
-          h(Icon, { name: "refresh" }),
-          "Try again"
+      h(Card, { className: "agk-os-error", role: "alert" },
+        h(CardContent, { className: "agk-os-error__content" },
+          h("div", { className: "agk-os-error__icon" }, h(Icon, { name: "alert" })),
+          h("div", { className: "agk-os-error__copy" },
+            h("span", { className: "agk-os-label" }, "Catalog unavailable"),
+            h("h2", null, "Hermes could not load OS and agent state"),
+            h("p", null, props.message)
+          ),
+          h(Button, { className: "agk-os-button", type: "button", size: "sm", outlined: true, onClick: props.onRetry },
+            h(Icon, { name: "refresh" }),
+            "Try again"
+          )
         )
       )
     );
@@ -354,20 +484,20 @@
     }).length;
 
     return h("main", { className: "agk-os-hub" },
-      h("header", { className: "agk-os-hero" },
-        h("div", { className: "agk-os-hero__copy" },
+      h("header", { className: "agk-os-page-header" },
+        h("div", { className: "agk-os-page-heading" },
           h("div", { className: "agk-os-kicker" },
-            h("span", { className: "agk-os-kicker__signal", "aria-hidden": "true" }),
             h("span", null, "Agentik control layer"),
-            h("span", { className: "agk-os-kicker__divider", "aria-hidden": "true" }),
-            h("span", { className: "agk-os-environment" }, data.environment)
+            h(Badge, { tone: "outline", className: "agk-os-environment" }, data.environment)
           ),
-          h("h1", null, "Operative Systems & Agents"),
-          h("p", null, "One verified view of the OS packages Hermes can use, the agent definitions installed in this profile, and the runtime sessions linked to them.")
+          h("h1", null, "OS and Agents"),
+          h("p", null, "Inspect the validated systems, installed Hermes definitions, and linked runtime sessions for this profile.")
         ),
-        h("button", {
-          className: "agk-os-button agk-os-button--quiet",
+        h(Button, {
+          className: "agk-os-button agk-os-refresh-button",
           type: "button",
+          size: "sm",
+          outlined: true,
           onClick: function () { loadCatalog(true); },
           disabled: refreshing,
           "aria-label": "Refresh OS and agent catalog",
@@ -380,7 +510,7 @@
       error ? h("div", { className: "agk-os-inline-alert", role: "status" },
         h(Icon, { name: "alert" }),
         h("span", null, "Refresh failed. Showing the last loaded response."),
-        h("button", { type: "button", onClick: function () { loadCatalog(true); } }, "Retry")
+        h(Button, { type: "button", size: "sm", ghost: true, onClick: function () { loadCatalog(true); } }, "Retry")
       ) : null,
 
       h("section", { className: "agk-os-summary-grid", "aria-label": "Catalog summary" },
@@ -410,49 +540,44 @@
         })
       ),
 
-      h("section", { className: "agk-os-section", "aria-labelledby": "agk-os-packages-title" },
-        h("div", { className: "agk-os-section__heading" },
-          h("div", null,
-            h("span", { className: "agk-os-eyebrow" }, "Registry"),
-            h("h2", { id: "agk-os-packages-title" }, "Operative Systems")
+      h(Tabs, { className: "agk-os-tabs", defaultValue: "overview" }, function (activeTab, setActiveTab) {
+        return h(React.Fragment, null,
+          h(TabsList, { className: "agk-os-tabs__list", role: "tablist", "aria-label": "OS and agent catalog views" },
+            h(TabsTrigger, {
+              id: "agk-os-tab-overview",
+              value: "overview",
+              active: activeTab === "overview",
+              role: "tab",
+              "aria-selected": activeTab === "overview",
+              "aria-controls": "agk-os-panel-overview",
+              onClick: function () { setActiveTab("overview"); },
+            }, "Overview"),
+            h(TabsTrigger, {
+              id: "agk-os-tab-systems",
+              value: "systems",
+              active: activeTab === "systems",
+              role: "tab",
+              "aria-selected": activeTab === "systems",
+              "aria-controls": "agk-os-panel-systems",
+              onClick: function () { setActiveTab("systems"); },
+            }, "Systems", h("span", { className: "agk-os-tab-count" }, String(packages.length))),
+            h(TabsTrigger, {
+              id: "agk-os-tab-agents",
+              value: "agents",
+              active: activeTab === "agents",
+              role: "tab",
+              "aria-selected": activeTab === "agents",
+              "aria-controls": "agk-os-panel-agents",
+              onClick: function () { setActiveTab("agents"); },
+            }, "Agents", h("span", { className: "agk-os-tab-count" }, String(agents.length)))
           ),
-          h("div", { className: "agk-os-section__note" },
-            h(Icon, { name: registryReady ? "check" : "alert" }),
-            h("span", null, registryReady ? "Only validated packages are displayed" : "Registry health is not confirmed")
-          )
-        ),
-        packages.length
-          ? h("div", { className: "agk-os-package-grid" }, packages.map(function (item, index) {
-              return h(PackageCard, { item: item, key: item.id || index });
-            }))
-          : h(EmptyState, {
-              icon: "package",
-              title: "No validated OS package is installed",
-              description: "Drafts and historical folders stay hidden until they pass registry validation and are installed into the canonical registry.",
-            })
-      ),
-
-      h("section", { className: "agk-os-section", "aria-labelledby": "agk-os-agents-title" },
-        h("div", { className: "agk-os-section__heading" },
-          h("div", null,
-            h("span", { className: "agk-os-eyebrow" }, "Hermes definitions"),
-            h("h2", { id: "agk-os-agents-title" }, "Installed Agents")
-          ),
-          h("div", { className: "agk-os-section__note" },
-            h(Icon, { name: "agent" }),
-            h("span", null, "Definitions and sessions remain separate")
-          )
-        ),
-        agents.length
-          ? h("div", { className: "agk-os-agent-list" }, agents.map(function (agent, index) {
-              return h(AgentCard, { agent: agent, key: agent.id || index });
-            }))
-          : h(EmptyState, {
-              icon: "agent",
-              title: "No installed agent definition was found",
-              description: "Run the AGK Hermes sync for this profile, then refresh this page.",
-            })
-      )
+          activeTab === "systems"
+            ? h(SystemsPanel, { packages: packages, registryReady: registryReady })
+            : activeTab === "agents"
+              ? h(AgentsPanel, { agents: agents })
+              : h(OverviewPanel, { data: data, registryReady: registryReady, definitionsReady: definitionsReady })
+        );
+      })
     );
   }
 

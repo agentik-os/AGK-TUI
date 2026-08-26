@@ -189,7 +189,8 @@ else
 fi
 
 install -d -m 0755 "$install_root/bin" "$install_root/scripts" "$install_root/config" "$install_root/rmux" \
-  "$install_root/hermes/plugins/platforms" "$install_root/agents" "$bin_dir"
+  "$install_root/hermes/plugins/platforms" "$install_root/hermes/dashboard-themes" \
+  "$install_root/agents" "$bin_dir"
 install -m 0755 "$agk_tui_binary" "$install_root/bin/agk-tui"
 install -m 0755 "$repo_root/scripts/agk_control.py" "$install_root/scripts/agk_control.py"
 install -m 0755 "$repo_root/scripts/provider.sh" "$install_root/scripts/provider.sh"
@@ -212,6 +213,8 @@ rm -rf "$install_root/hermes/plugins/agentik_os" \
 cp -a "$repo_root/hermes/plugins/agentik_os" "$install_root/hermes/plugins/"
 cp -a "$repo_root/hermes/plugins/platforms/discord" \
   "$install_root/hermes/plugins/platforms/"
+install -m 0644 "$repo_root/hermes/dashboard-themes/agentik-shadcn.yaml" \
+  "$install_root/hermes/dashboard-themes/agentik-shadcn.yaml"
 cp -a "$repo_root/hermes/agents/master-os-builder" "$install_root/agents/"
 install -m 0644 "$repo_root/rmux/rmux.conf" "$install_root/rmux/rmux.conf"
 install -m 0755 "$repo_root/bin/agk" "$bin_dir/agk"
