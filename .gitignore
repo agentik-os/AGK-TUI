@@ -1,0 +1,11 @@
+/target/
+/apps/agk-tui/target/
+*.pyc
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+*.log
+*.env
+!config/*.env.example
+dist/

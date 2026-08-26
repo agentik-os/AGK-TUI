@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+install_root=${AGK_TERMINAL_ROOT:-/usr/local/lib/agk-terminal}
+export AGK_TERMINAL_ROOT=$install_root
+export PATH="$install_root/bin:$HOME/.local/bin:$PATH"
+
+case "${1:-}" in
+  provider|composio|hermes|topology|doctor)
+    exec agk-terminal "$@"
+    ;;
+  help|-h|--help)
+    cat <<'EOF'
+AGK-TUI · RMUX control plane
+
+Interactive:
+  agk
+
+Sessions:
+  agk {status|sessions|projects|agents|os|mcp|skills|system}
+  agk new TYPE NAME [--cwd PATH] [--client ID] [--project ID]
+  agk {open|resume|info|archive|restart} SESSION
+  agk close SESSION --yes
+  agk kill SESSION --yes
+  agk purge SESSION --yes
+  agk rename SESSION NAME
+  agk fork SESSION NAME
+  agk reconcile
+
+Setup and health:
+  agk doctor
+  agk provider {list|verify|install} [PROVIDER]
+  agk composio {login|connect|connections|list|search|status} ...
+  agk hermes {sync|install-shared|gateway}
+  agk topology {detect|status|resolve|apply|refresh}
+EOF
+    exit 0
+    ;;
+esac
+
+if [ "$#" -eq 0 ] && [ -x "$install_root/bin/agk-tui" ]; then
+  exec "$install_root/bin/agk-tui"
+fi
+if [ -x "$install_root/venv/bin/python" ]; then
+  exec "$install_root/venv/bin/python" "$install_root/scripts/agk_control.py" "$@"
+fi
+exec "$install_root/scripts/agk_control.py" "$@"
