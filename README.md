@@ -1,98 +1,336 @@
 # AGK-TUI
 
-AGK-TUI is a clean RMUX control plane for durable AI terminal sessions.
-It keeps orchestration independent from any provider while treating the
-official [NousResearch Hermes Agent](https://github.com/NousResearch/hermes-agent)
-as the primary synchronized agent runtime.
+AGK-TUI is a native terminal control plane for persistent AI work. It gives
+Hermes, Codex, Claude Code, OpenCode, OpenRouter and ordinary shells one
+consistent interface while [RMUX](https://github.com/Helvesec/rmux) keeps each
+process alive behind it.
 
-The repository installs:
+The official [NousResearch Hermes Agent](https://github.com/NousResearch/hermes-agent)
+is the primary agent runtime. AGK does not replace a provider's terminal UI:
+it starts the real provider inside RMUX, displays it in a stable two-panel
+workspace, forwards input directly and keeps orchestration metadata separate
+from provider state.
 
-- RMUX and its required helper layout;
-- the native `agk` TUI and persistent session registry;
-- Hermes, Claude Code, Codex, OpenCode and Hermes/OpenRouter launch adapters;
-- the Agentik OS Hermes plugin, Discord control-center override and Master OS
-  Builder catalog agent;
-- Composio discovery commands without copying credentials into the repo;
-- one global Rules registry projected into every supported provider;
-- optional user services for Hermes gateways and headless control.
+In practical terms, you can start work on a VPS from a laptop, disconnect,
+reopen AGK from a phone and continue the same live conversation.
+
+## What AGK installs
+
+- the native `agk` TUI;
+- a verified RMUX client and the required layout integration;
+- a durable session registry in `~/.agentik`;
+- the official shared Hermes codebase plus profile-local Hermes state;
+- adapters for Hermes, Hermes/OpenRouter, Codex, Claude Code and OpenCode;
+- Agentik OS packages and specialized catalog agents;
+- a profile-local MCP inventory, including redacted Composio connections;
+- global Rules synchronized to every supported provider;
+- optional Hermes gateways for Discord and headless operation;
+- on a VPS, a topology manager for Operator, Agentik, Mission and Private.
+
+Provider credentials are never stored in this repository and are never copied
+between profiles.
+
+## The interface at a glance
+
+AGK has one horizontal menu, one working board and one permanent footer. There
+is no decorative terminal background: your real terminal colors remain the
+canvas unless you explicitly select a full-canvas theme.
+
+### Desktop layout
+
+```text
+
+  1 SESSIONS  2 PROJECTS  3 AGENTS  4 OS  5 MCP  6 SKILLS  7 RULES  8 SETTINGS
+  ───────────────────────────────────────────────────────────────────────────
+  ┌─ SESSIONS ─────────────────┐ ┌─ LIVE PROVIDER ──────────────────────────┐
+  │ ● mission-research         │ │                                          │
+  │   HERMES · mission · 2m    │ │  The real Hermes/Codex/Claude terminal   │
+  │                            │ │  fills all available vertical space.      │
+  │ ○ agentik-product          │ │                                          │
+  │   CODEX · agentik · 1h     │ │  Input stays at the provider's own        │
+  │                            │ │  bottom prompt.                           │
+  └────────────────────────────┘ └──────────────────────────────────────────┘
+  ───────────────────────────────────────────────────────────────────────────
+  AGK · mission · research · main     TKN 24.8K · RAM 31% · CPU 8% · DISK 42% · ● 2 LIVE
+```
+
+Opening a session does not collapse its left panel. The same session name,
+provider, environment, status and activity information stays visible. The
+provider pane owns text input as soon as it receives focus; there is no second
+confirmation step.
+
+### Phone and narrow-terminal layout
+
+```text
+
+  3 AGENTS  4 OS  5 MCP  6 SKILLS
+  ────────────────────────────────
+  ┌─ OS REGISTRY ────────────────┐
+  │ ● Research OS                │
+  │ ● Content OS                 │
+  │ ○ Client Operations OS       │
+  └──────────────────────────────┘
+  ────────────────────────────────
+  AGK · mission     TKN 24.8K RAM 31% CPU 8% DISK 42% ● 2 LIVE
+```
+
+The top menu always remains one line. On a narrow display it shows a moving
+window around the selected item; `←` and `→` still reach every menu. Content
+uses one panel at a time, selected with `Tab`. Main-menu numbers remain active
+on mobile, while provider creation is intentionally done through `n` and its
+arrow-driven picker so number keys never have two meanings.
+
+Any SSH client on iOS or Android can run AGK. Connect to the VPS, run `agk`,
+and use portrait or landscape mode as preferred; landscape gives the provider
+more columns. A terminal width around 45 columns is enough for the compact
+layout. Prefer SSH over a private network or VPN and key-based authentication
+instead of exposing password login publicly.
+
+## How the pieces fit together
+
+```text
+                         AGK-TUI
+                            │
+          ┌─────────────────┼──────────────────┐
+          │                 │                  │
+     Agentik state       RMUX daemon      Hermes registries
+   projects, profiles    live processes   agents, OS, skills,
+   rules, sessions       and scrollback   MCP and model usage
+          │                 │                  │
+          └─────────────────┼──────────────────┘
+                            │
+          Hermes · Codex · Claude Code · OpenCode · Shell
+```
+
+The ownership contract is deliberately simple:
+
+- RMUX owns live terminal processes, pane state and scrollback.
+- AGK owns durable orchestration metadata and the unified interface.
+- Hermes owns agent behavior, profiles, skills, gateways and MCP loading.
+- Each provider owns its own terminal UI, account and conversation format.
+
+Closing AGK never stops the work behind it. Starting `agk` again reconnects to
+the current RMUX state and reconciles it with the durable registry.
+
+## Menus
+
+### 1 Sessions
+
+Sessions are real persistent provider terminals. `Enter` opens the selected
+session and focuses its text input immediately. The left list stays visible;
+a rapid `Tab Tab` is the only shortcut that intentionally hides it.
+
+Press `n` to create a session, choose a provider with `↑`/`↓`, press `Enter`,
+type a canonical name and press `Enter` once. AGK waits until the new RMUX pane
+is actually live and then opens it directly.
+
+Supported session kinds are:
+
+- Hermes;
+- Codex;
+- Claude Code;
+- OpenCode;
+- Hermes with OpenRouter;
+- a normal login shell.
+
+On desktop, `1` through `5` are optional direct provider shortcuts only while
+the Sessions content panel owns focus. On compact/mobile layouts, numbers are
+reserved exclusively for the main menu.
+
+`x` closes the selected session immediately without a confirmation dialog. It
+stops its RMUX process and archives the AGK record so history remains
+recoverable. AGK refuses only the unsafe case where the selected RMUX session
+is the one currently hosting AGK itself. `r` opens the rename field.
+
+### 2 Projects
+
+Projects displays the current profile's canonical control objects and their
+paths, parent relationships and status. Selecting a project also gives the
+footer the correct Git repository and branch context.
+
+### 3 Agents
+
+Agents lists installed specialized-agent manifests, their Hermes profile,
+linked OS packages and durable runtime status. `Enter` starts or resumes the
+canonical `{profile}-{agent-id}` RMUX session and opens its conversation.
+Every agent gets its own workspace under
+`~/.agentik/agents/<agent-id>/workspace` and a frozen copy of its installed
+instructions.
+
+### 4 OS
+
+An Agentik Operative System is a versioned package of agents, skills,
+workflows, tools, commands, knowledge and evaluations. It is not another
+Linux operating system.
+
+Each installed OS resolves to a responsible catalog agent. An explicit
+versioned agent binding such as `research-os@1.2.0` wins; older packages can
+name an agent directly, with the Master OS Builder retained as the lifecycle
+fallback. The detail panel shows the resolved owner, Hermes profile and RMUX
+session.
+
+Pressing `Enter` on an OS opens a conversation with that responsible agent.
+AGK creates or repairs the agent's isolated workspace, validates its profile
+and scope, starts/resumes its Hermes session and focuses the chat directly.
+
+### 5 MCP
+
+MCP shows redacted capability identities from the current Hermes profile.
+Hermes MCP definitions are parent entries. Composio is another parent entry;
+its detail panel lists connected toolkits and connection counts without API
+keys, account identifiers or command secrets.
+
+Composio authentication is profile-local. Logging in as `operator` does not
+authenticate `mission`:
+
+```bash
+sudo -u mission -H /usr/local/bin/agk composio login
+sudo -u mission -H /usr/local/bin/agk composio connect github --no-browser
+sudo -u mission -H /usr/local/bin/agk composio list
+sudo -u mission -H /usr/local/bin/agk composio list github
+```
+
+The `connect` command starts login automatically when required. Refresh the
+inventory with `agk composio list` or `F5` after changing a connection.
+
+### 6 Skills
+
+Skills combines the installed Hermes, Claude and Codex skill identities while
+preserving their source. AGK reads identity and status for presentation; the
+provider remains responsible for loading and executing the actual skill.
+
+### 7 Rules
+
+Rules is the operator policy registry. The left panel lists each rule and the
+right panel shows its full content, enabled state, provider scope and source.
+Rules target all supported providers by default and are synchronized into each
+provider's native instruction location during installation and updates.
+
+### 8 Settings
+
+Settings contains:
+
+- Appearance: built-in dark/light themes, full black, full white and custom
+  RGB colors. Selection previews live; `Enter` persists and `Esc` reverts.
+- Providers: installed/configured status and foreground install or repair.
+- Sessions: persistent split-preview preference.
+- Runtime: registry refresh cadence.
+- System: per-model token accounting, host metrics and profile health.
+- Help: the complete keyboard reference inside the Settings submenu.
+- About: the runtime ownership contract and version context.
+
+## Keyboard model
+
+The navigation has no intermediate menu mode:
+
+| Key | Action |
+| --- | --- |
+| `←` / `→` | Change the main top menu from any content list |
+| `1` … `8` | Open a main menu directly |
+| `↑` / `↓` | Select content, or scroll the focused detail |
+| `Enter` | Open/activate the selected item |
+| `Tab` | Alternate only between left list and right panel |
+| rapid `Tab Tab` | Hide the session list and expand the provider |
+| `Ctrl-g` | Return from provider input to the Sessions list |
+| `n` | New session picker |
+| `x` | Close selected session immediately |
+| `r` | Rename selected session; refresh elsewhere |
+| `/` | Search the current registry |
+| `Ctrl-p` | Command palette |
+| `Ctrl-r` | Reload AGK from Control mode |
+| `F5` | Refresh registries and live state |
+| `PgUp` / `PgDn` | Browse RMUX history in a focused session pane |
+| `Home` / `End`, `g` / `G` | Oldest available history / live tail |
+| `q` | Leave AGK; provider sessions continue in RMUX |
+
+When the provider pane has focus, ordinary text, cursor, editing and provider
+shortcuts go directly to that real terminal. When the session list has focus,
+`n`, `x`, `r`, `q` and `Ctrl-r` remain AGK controls instead of being swallowed
+by terminal forwarding. Mouse click and wheel focus/scroll the panel under the
+pointer.
+
+## Footer and resource information
+
+The footer stays visible in Control mode, split session mode and expanded
+session mode. It uses one line and adapts the amount of context to the terminal
+width:
+
+```text
+AGK · profile · session · project · branch   MODEL · TKN · RAM · CPU · DISK · LIVE
+```
+
+`TKN` is authoritative input plus output usage attributed to the selected
+Hermes session/model. Settings > System keeps model/provider rows separate and
+also shows cache reads/writes, reasoning tokens and API-call counts. AGK shows
+`—` when it cannot link a provider session to authoritative usage; it never
+invents a token count.
 
 ## Install
 
-### Fresh Debian/Ubuntu VPS
+### Fresh Debian or Ubuntu VPS
 
-Run the complete installation with one command:
+Run the complete bootstrap:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/agentik-os/AGK-TUI/main/install | sudo bash
 ```
 
-To inspect the complete plan without changing the host:
+Inspect the plan first without changing the host:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/agentik-os/AGK-TUI/main/install | bash -s -- --dry-run
 ```
 
-Add `--core-only` after `bash -s --` to skip the optional Claude Code, Codex
-and OpenCode binaries. Pin a release, tag or commit with `--ref REF`.
+Add `--core-only` after `bash -s --` to omit optional Claude Code, Codex and
+OpenCode binaries. Pin a release, tag or commit with `--ref REF` when you need
+a reproducible installation.
 
-The equivalent installation from a local clone remains available:
+The equivalent local workflow is:
 
 ```bash
+git clone https://github.com/agentik-os/AGK-TUI.git
+cd AGK-TUI
 sudo ./bootstrap-vps.sh --dry-run
 sudo ./bootstrap-vps.sh
 ```
 
-The bootstrap installs host prerequisites, creates or preserves the
-`operator`, `agentik`, `mission`, and `private` Linux users, installs Rust,
-RMUX, one shared official Hermes checkout, AGK-TUI, Composio per profile,
-the optional Claude/Codex/OpenCode binaries, canonical workspaces and the
-TopologyManager timer. `--core-only` skips the optional provider binaries and
-`--skip-packages` is available for a pre-provisioned Debian/Ubuntu image.
-The default RMUX package is the published `0.10.0` release; an already-running
-newer daemon is preserved only when its client passes a real wire-protocol
-`list-sessions` check.
+The VPS bootstrap installs prerequisites, Rust, RMUX, AGK-TUI, the one shared
+official Hermes checkout, Composio per profile, optional providers, canonical
+workspaces and the TopologyManager timer. Existing users and their files are
+preserved. A verified RMUX client is installed before AGK starts, preventing a
+stale client from talking an incompatible wire protocol to the daemon.
 
 ### macOS
 
-On Apple Silicon or Intel, run the same online installer as your normal user,
-without `sudo`:
+Run the installer as your normal user, without `sudo`:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/agentik-os/AGK-TUI/main/install | bash
 ```
 
-The macOS bootstrap is single-user and installs into `~/.local`. It verifies
-the official RMUX archive checksum, installs a private Python runtime with uv,
-builds the native TUI, synchronizes the Hermes extensions, and installs
-Hermes, Composio, Claude Code, Codex and OpenCode without logging into any
-account. It never creates Linux users or services. Command Line Tools are the
-only Apple prerequisite; if they are missing, the installer opens Apple's
-standard installation dialog and asks you to rerun it afterward.
+Apple Silicon and Intel are supported. The macOS bootstrap is single-user,
+installs into `~/.local`, verifies the RMUX archive checksum, creates a private
+Python runtime with `uv`, builds the native Rust TUI and installs provider
+binaries without logging into their accounts. Apple Command Line Tools are the
+only host prerequisite.
 
-Use `--core-only` to omit Claude Code, Codex and OpenCode, or install from a
-clone with `./bootstrap-macos.sh`. After installation, open a new Terminal and
-run `agk`.
-
-Credentials are deliberately never copied. After bootstrap, authenticate only
-the profiles that need each service:
+After installation, open a new Terminal. If an existing shell has not picked
+up the launcher yet:
 
 ```bash
-sudo -u mission -H hermes portal
-sudo -u mission -H agk composio connect github --no-browser
+export PATH="$HOME/.local/bin:$PATH"
+exec "$SHELL" -l
+agk doctor
+agk
 ```
 
-Use `config/hermes.env.example` as the non-secret checklist for a profile.
-Install the Hermes gateway only after its Discord token and policy are
-configured:
+Use `--core-only` to omit optional providers, or run
+`./bootstrap-macos.sh` from a clone.
 
-```bash
-sudo -u mission -H agk hermes gateway install --force --start-now
-```
-
-### Existing host or single profile
+### Existing Linux/macOS profile
 
 ```bash
 git clone https://github.com/agentik-os/AGK-TUI.git
@@ -100,93 +338,196 @@ cd AGK-TUI
 ./install.sh
 ```
 
-For a shared binary installation while keeping Hermes data owned by one
-non-root identity:
+For a shared Linux binary installation owned at runtime by one non-root
+identity:
 
 ```bash
 sudo ./install.sh --system --user "$USER"
 ```
 
-The default installation keeps user data in `~/.hermes`, `~/.agentik`,
-`~/.claude`, `~/.codex`, `~/.config/opencode`, and `~/.composio`. It never
-stores provider tokens in the repository.
+### After installation
 
-Useful commands:
+Authenticate only the profiles that need a service:
 
 ```bash
-agk                         # native RMUX session control
-agk doctor                  # full local readiness report
-agk provider list           # installed/configured state
+sudo -u mission -H hermes portal
+sudo -u mission -H agk composio connect github --no-browser
+sudo -u mission -H agk provider install claude
+sudo -u mission -H agk provider install codex
+```
+
+Use `config/hermes.env.example` as the non-secret gateway checklist. Install a
+Hermes gateway only after its Discord token and policy are configured:
+
+```bash
+sudo -u mission -H agk hermes gateway install --force --start-now
+```
+
+`agentik-os.com` is a public Agentik availability endpoint, not a Hermes login
+service. Hermes account and Tool Gateway authentication remain on Nous Portal,
+independently for every profile.
+
+## Multi-user VPS architecture
+
+A full VPS keeps four Linux security boundaries behind one product model:
+
+```text
+profile_id       TopologyManager       Linux boundary       Runtime
+operator   ───▶  operator       ───▶  /home/operator  ───▶ Hermes + RMUX
+agentik    ───▶  agentik        ───▶  /home/agentik   ───▶ Hermes + RMUX
+mission    ───▶  mission        ───▶  /home/mission   ───▶ Hermes + RMUX
+private    ───▶  private        ───▶  /home/private   ───▶ Hermes + RMUX
+```
+
+The product uses `profile_id`; only TopologyManager maps it to a Linux user.
+Discord/gateway bindings also target a profile ID rather than hard-coding a
+username. This gives one control-plane experience without sharing credentials,
+Hermes state, Composio sessions or RMUX sockets between profiles.
+
+Canonical workspaces are:
+
+```text
+/home/operator/workspace/  infrastructure security deployments monitoring automation deposit docs
+/home/agentik/workspace/   projects products missions research content growth community knowledge artifacts
+/home/mission/workspace/   clients/<client>/{projects,missions,knowledge,artifacts,infrastructure,automation}
+/home/private/workspace/   projects journal goals learning research knowledge artifacts
+```
+
+One official Hermes codebase is shared at `/opt/agentik/hermes/current`.
+Runtime state is not shared: every profile keeps its own `~/.hermes`, RMUX
+daemon/socket, sessions, plugins, MCP credentials and gateway configuration.
+
+Useful topology commands:
+
+```bash
+agk topology detect
+agk topology status
+sudo agk topology apply --yes
+```
+
+Mission client runtimes can still be local, containerized, remote or external;
+that client topology is deliberately separate from the profile topology.
+
+## Commands
+
+```bash
+agk                              # open the native TUI
+agk status                       # concise runtime status
+agk doctor                       # local readiness report
+agk sessions                     # durable session registry
+agk new hermes research-chat     # create a named provider session
+agk specialist start AGENT_ID    # start/resume a catalog agent conversation
+agk open SESSION                 # attach from the CLI
+agk close SESSION --yes          # stop and archive
+agk purge SESSION --yes          # stop and delete AGK metadata permanently
+agk provider list
+agk provider verify
 agk provider install claude
-agk rules                   # list global rules and provider scope
-agk composio login          # authenticates only the current Linux profile
-agk composio connect github # logs in first when needed, then links GitHub
-agk composio list           # refresh connected toolkit inventory
-agk composio list github    # list GitHub tools
+agk mcp
+agk composio list
+agk rules
 agk hermes sync
 agk topology status
 ```
 
-The TUI's `MCP` view lists every Hermes MCP definition as a parent entry.
-Composio is another parent entry; selecting it shows the current profile's
-redacted connected-toolkit list and connection states. Refresh it with
-`agk composio list` after changing connections.
+`agk purge` is intentionally different from `x`: purge permanently removes the
+selected AGK registry record after stopping RMUX. Normal close keeps the
+archived metadata.
 
-In the session menu, `Enter` focuses the selected provider immediately and
-`x` closes it in one keystroke. A single `Tab` only alternates between the
-session list and provider pane; focusing the provider accepts text immediately,
-without another `Enter`. A rapid double `Tab` hides the left panel.
-The persistent top menu and footer remain visible, including the active
-session/project context and the TKN, RAM, CPU, DISK and LIVE counters.
-
-TKN is attributed to the currently selected Hermes model. Settings > System
-shows every model/provider pair separately, including input/output, cache,
-reasoning and API-call counters. AGK displays `—` instead of inventing a value
-for a provider session that has no authoritative linked usage record.
-
-For an exact, irreversible cleanup of one archived AGK registry record and its
-RMUX process, use `agk purge --yes SESSION`. Normal `x` uses the recoverable
-`agk close` path instead: it stops RMUX and archives the provider history.
-
-On a system install, TopologyManager detects and preserves the four Linux
-runtime boundaries while exposing only stable product profile IDs:
-`operator`, `agentik`, `mission`, and `private`. It creates missing canonical
-workspace directories, writes a non-secret `~/.agentik/profile.yaml` manifest
-for each profile, and points `/opt/agentik/hermes/current` at the one official
-shared Hermes checkout. Existing extra directories and old recovery releases
-are never deleted by this operation.
-
-Composio authentication follows the same boundary: logging in as `operator`
-does not authenticate `mission`. Run the command as the intended profile; the
-`connect` command starts that profile's login automatically when required:
-
-```bash
-sudo -u mission -H /usr/local/bin/agk composio connect github
-```
-
-To reinstall or update the shared official Hermes runtime with a recovery
-snapshot first:
+To reinstall/update official shared Hermes, with a timestamped recovery
+snapshot before launcher or service changes:
 
 ```bash
 sudo agk-terminal hermes install-shared
 ```
 
-The command creates a timestamped recovery snapshot before changing launchers
-or services and preserves every live-session dependency.
+## State and security boundaries
 
-`agentik-os.com` is checked as the public Agentik OS availability endpoint.
-It is not a Hermes authentication endpoint: official Hermes account and Tool
-Gateway authentication remains on Nous Portal, independently for each Linux
-profile.
+| Path | Owner | Purpose |
+| --- | --- | --- |
+| `~/.agentik/runtime.db` | current profile | durable AGK sessions/events |
+| `~/.agentik/control.db` | current profile | projects and mission objects |
+| `~/.agentik/agents/` | current profile | isolated specialist workspaces |
+| `~/.agentik/rules.yaml` | current profile | optional profile rule override |
+| `~/.hermes/` | current profile | Hermes config, state, skills and profiles |
+| `~/.composio/` | current profile | Composio authentication |
+| `~/.claude/`, `~/.codex/` | current profile | provider-local state |
+| `~/.config/opencode/` | current profile | OpenCode configuration |
+| `/etc/agk-terminal/` | root | system topology and non-secret defaults |
+| `/opt/agentik/hermes/current` | root/shared | official Hermes code symlink |
 
-Run the complete local quality gate with `./scripts/test.sh`.
+The TUI reads redacted capability and health data. It does not display MCP
+headers, environment secrets, provider tokens or Composio account identifiers.
+
+## Troubleshooting
+
+Start with:
+
+```bash
+command -v agk
+command -v rmux
+agk doctor
+agk provider verify
+agk topology status
+```
+
+If `agk` is not found after a macOS/user installation, add
+`$HOME/.local/bin` to `PATH` and start a new login shell as shown above.
+
+If RMUX reports an unsupported wire version, an old client is still earlier in
+`PATH` or an old daemon is still active. Re-run the current AGK installer; it
+performs a real `list-sessions` protocol check, preserves an incompatible
+user-local executable as `.agk-incompatible`, and exposes the verified client.
+Then confirm `command -v rmux` and `rmux -V` in the same login shell.
+
+If a provider appears installed but a session exits immediately, run:
+
+```bash
+agk provider verify
+agk doctor
+agk info SESSION
+rmux capture-pane -p -t SESSION -S -200
+```
+
+If Composio says one user is logged in but another is not, authenticate as the
+same Linux profile that runs AGK. This is expected isolation, not shared global
+login state.
+
+If `x` or `n` appears inactive, make sure the session list owns focus (`Tab`).
+In current releases those keys are explicitly routed to AGK from the visible
+sidebar even while the right provider pane is live.
+
+## Development
+
+The important repository surfaces are:
+
+```text
+apps/agk-tui/       native Rust interface and RMUX SDK integration
+scripts/            session, provider, topology and synchronization logic
+bin/                public agk and agk-terminal launchers
+hermes/             AGK plugins, dashboard assets and catalog agents
+config/             non-secret topology, providers and Rules defaults
+tests/              orchestration, installation and security contracts
+docs/               deeper architecture and Hermes runtime documentation
+```
+
+Run the complete quality gate:
+
+```bash
+./scripts/test.sh
+```
+
+The gate checks Rust formatting and Clippy, runs native and Python tests,
+validates shell scripts, then tests and builds the optional fleet dashboard.
 
 ## Design contract
 
-RMUX owns live process/session state. AGK owns durable orchestration metadata.
-Official Hermes owns agent behavior, skills, gateways and MCP loading.
-AGK-specific behavior is delivered as user plugins and catalog assets, never
-by modifying Hermes core.
+AGK-specific behavior is delivered as plugins, catalog assets and adapters;
+the official Hermes core remains replaceable and updateable. Installations and
+topology refreshes preserve existing user homes. The registry never fabricates
+projects, OS packages, model usage or provider readiness when no authoritative
+source exists.
 
-See [Architecture](docs/ARCHITECTURE.md) and
+For deeper implementation detail, read
+[Architecture](docs/ARCHITECTURE.md) and
 [shared Hermes runtime](docs/HERMES.md).

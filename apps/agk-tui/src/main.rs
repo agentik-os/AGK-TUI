@@ -270,6 +270,7 @@ async fn run(
         }
 
         for event in queued_events {
+            let mut terminal_action = None;
             if !matches!(&event, Event::Key(key) if accepts_key(key) && key.code == KeyCode::Tab) {
                 last_tab_at = None;
             }
@@ -299,6 +300,29 @@ async fn run(
                     {
                         preview_refresh_requested = true;
                         continue;
+                    }
+                    Event::Key(key)
+                        if accepts_key(key)
+                            && app.focus == Focus::List
+                            && terminal_sidebar_control_key(key) =>
+                    {
+                        // The visible sidebar remains the Sessions control
+                        // surface while a provider owns the right pane. Route
+                        // its actions through the normal dispatcher so n/x/r
+                        // cannot be swallowed by terminal input handling.
+                        app.mode = Mode::Control;
+                        app.view = View::Sessions;
+                        app.expanded = false;
+                        let size = terminal.size()?;
+                        let detail_available = app.current_session().is_some();
+                        terminal_action = Some(input::handle_key_for_layout(
+                            app,
+                            *key,
+                            detail_available,
+                            density(size.width, size.height) == Density::Compact,
+                        ));
+                        preview_cache.clear();
+                        preview_refresh_requested = true;
                     }
                     Event::Key(key)
                         if accepts_key(key)
@@ -372,59 +396,65 @@ async fn run(
                     }
                     _ => {}
                 }
-                if app.focus == Focus::Detail {
+                if terminal_action.is_none() && app.focus == Focus::Detail {
                     if app.preview_scroll > 0 {
                         app.scroll_preview_live();
                         preview_refresh_requested = true;
                     }
-                    send_terminal_event(rmux, app, &mut preview_cache, event).await;
+                    send_terminal_event(rmux, app, &mut preview_cache, event.clone()).await;
                 }
-                continue;
+                if terminal_action.is_none() {
+                    continue;
+                }
             }
 
             let detail_available = detail_available(app);
             let preview_scroll_before = app.preview_scroll;
             let selected_session_before = app.selected_session_name().map(str::to_owned);
-            let action = match event {
-                Event::Mouse(mouse) => {
-                    let outcome = handle_mouse(app, mouse, terminal.size()?);
-                    if outcome.preview_scrolled {
+            let action = if let Some(action) = terminal_action {
+                action
+            } else {
+                match event {
+                    Event::Mouse(mouse) => {
+                        let outcome = handle_mouse(app, mouse, terminal.size()?);
+                        if outcome.preview_scrolled {
+                            preview_refresh_requested = true;
+                        }
+                        if outcome.activate_session {
+                            Action::EnterTerminal
+                        } else {
+                            Action::None
+                        }
+                    }
+                    Event::Key(key)
+                        if accepts_key(&key)
+                            && key.code == KeyCode::Tab
+                            && app.view == View::Sessions =>
+                    {
+                        let double = register_tab(&mut last_tab_at, Instant::now());
+                        if session_tab(app, detail_available, double) {
+                            Action::EnterTerminal
+                        } else {
+                            Action::None
+                        }
+                    }
+                    Event::Key(key) if accepts_key(&key) => {
+                        let size = terminal.size()?;
+                        input::handle_key_for_layout(
+                            app,
+                            key,
+                            detail_available,
+                            density(size.width, size.height) == Density::Compact,
+                        )
+                    }
+                    Event::Paste(text) => input::handle_paste(app, &text),
+                    Event::Resize(_, _) => {
+                        preview_cache.invalidate_layout();
                         preview_refresh_requested = true;
-                    }
-                    if outcome.activate_session {
-                        Action::EnterTerminal
-                    } else {
                         Action::None
                     }
+                    _ => Action::None,
                 }
-                Event::Key(key)
-                    if accepts_key(&key)
-                        && key.code == KeyCode::Tab
-                        && app.view == View::Sessions =>
-                {
-                    let double = register_tab(&mut last_tab_at, Instant::now());
-                    if session_tab(app, detail_available, double) {
-                        Action::EnterTerminal
-                    } else {
-                        Action::None
-                    }
-                }
-                Event::Key(key) if accepts_key(&key) => {
-                    let size = terminal.size()?;
-                    input::handle_key_for_layout(
-                        app,
-                        key,
-                        detail_available,
-                        density(size.width, size.height) == Density::Compact,
-                    )
-                }
-                Event::Paste(text) => input::handle_paste(app, &text),
-                Event::Resize(_, _) => {
-                    preview_cache.invalidate_layout();
-                    preview_refresh_requested = true;
-                    Action::None
-                }
-                _ => Action::None,
             };
             if app.preview_scroll != preview_scroll_before {
                 preview_refresh_requested = true;
@@ -486,6 +516,16 @@ async fn run(
                     Err(error) => {
                         app.status = Some(format!("Session creation failed: {error:#}"));
                         app.overlay = Overlay::NewName { kind, value: name };
+                    }
+                },
+                Action::OpenAgent { id, session } => match open_agent(&id) {
+                    Ok(message) => {
+                        app.status = Some(format!("{message} · opening agent terminal…"));
+                        pending_session = Some(PendingSession::created(session));
+                        refresh_requested = true;
+                    }
+                    Err(error) => {
+                        app.status = Some(format!("Agent launch failed: {error:#}"));
                     }
                 },
                 Action::RenameSession { target, name } => match rename_session(&target, &name) {
@@ -850,6 +890,22 @@ fn create_session(kind: &str, name: &str) -> Result<String> {
     })
 }
 
+fn open_agent(id: &str) -> Result<String> {
+    let output = Command::new("agk")
+        .args(["specialist", "start", id])
+        .output()
+        .context("run `agk specialist start`")?;
+    if !output.status.success() {
+        anyhow::bail!(command_error(&output));
+    }
+    let message = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok(if message.is_empty() {
+        format!("Opened {id}")
+    } else {
+        message
+    })
+}
+
 fn resolve_pending_session(
     app: &mut App,
     pending: &PendingSession,
@@ -1150,6 +1206,11 @@ fn terminal_returns_to_control(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char('g') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
+fn terminal_sidebar_control_key(key: &KeyEvent) -> bool {
+    (key.modifiers.is_empty() && matches!(key.code, KeyCode::Char('n' | 'x' | 'r' | 'q')))
+        || (key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('r'))
+}
+
 fn enter_selected_terminal(app: &mut App) -> bool {
     if app.selected_is_current_rmux_session() {
         app.status =
@@ -1254,7 +1315,7 @@ fn detail_available(app: &App) -> bool {
         View::Mcp => app.current_mcp().is_some(),
         View::Skills => app.current_skill().is_some(),
         View::Rules => app.current_rule().is_some(),
-        View::Settings | View::Help => true,
+        View::Settings => true,
     }
 }
 
@@ -1475,6 +1536,24 @@ mod tests {
         ));
         assert_eq!(app.focus, Focus::Detail);
         assert!(!app.expanded);
+    }
+
+    #[test]
+    fn terminal_sidebar_routes_session_actions_out_of_provider_input() {
+        for character in ['n', 'x', 'r', 'q'] {
+            assert!(terminal_sidebar_control_key(&KeyEvent::new(
+                KeyCode::Char(character),
+                KeyModifiers::NONE,
+            )));
+        }
+        assert!(terminal_sidebar_control_key(&KeyEvent::new(
+            KeyCode::Char('r'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(!terminal_sidebar_control_key(&KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        )));
     }
 
     #[test]

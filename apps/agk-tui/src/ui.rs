@@ -279,7 +279,6 @@ fn draw_body(
         View::Skills => draw_skills(frame, app, area, size, colors),
         View::Rules => draw_rules(frame, app, area, size, colors),
         View::Settings => draw_settings(frame, app, area, size, colors),
-        View::Help => draw_help(frame, app, area, size, colors),
     }
 }
 
@@ -404,9 +403,6 @@ pub fn focus_at(app: &App, size: Size, column: u16, row: u16) -> Option<Focus> {
     let body = board_area(Rect::new(0, header_height, size.width, body_height));
     if !body.contains((column, row).into()) {
         return None;
-    }
-    if matches!(app.view, View::Help) {
-        return Some(Focus::Detail);
     }
     let density = density(size.width, size.height);
     let (mut list, mut detail) = if app.view == View::Settings {
@@ -713,6 +709,12 @@ fn draw_agents(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: 
                     field("Status", &agent.status, colors),
                     field("Runtime", &agent.runtime, colors),
                     field(
+                        "Profile",
+                        agent.profile.as_deref().unwrap_or("default"),
+                        colors,
+                    ),
+                    field("OS", &join(&agent.os), colors),
+                    field(
                         "Session",
                         if agent.runtime_name.is_empty() {
                             "—"
@@ -781,6 +783,14 @@ fn draw_os(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Pale
         );
     }
     if detail_area.width > 0 {
+        let owner = app.current_os_agent();
+        let owner_name = owner.map(|agent| agent.name.as_str()).unwrap_or("—");
+        let owner_profile = owner
+            .and_then(|agent| agent.profile.as_deref())
+            .unwrap_or("default");
+        let owner_session = owner
+            .map(|agent| agent.runtime_name.as_str())
+            .unwrap_or("—");
         let text = app.current_os().map_or_else(
             || Text::from(vec![
                 Line::raw("No Operative System package is installed yet."),
@@ -799,12 +809,20 @@ fn draw_os(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Pale
                     field("Assigned", &join(&package.assignments), colors),
                     field("Scope", &join(&package.scope), colors),
                     field("Agents", &join(&package.agents), colors),
+                    field("Owner", owner_name, colors),
+                    field("Profile", owner_profile, colors),
+                    field("Session", owner_session, colors),
                     field("Skills", &join(&package.skills), colors),
                     field("Workflows", &join(&package.workflows), colors),
                     Line::raw(""),
                     Line::styled(
                         package.description.clone(),
                         Style::default().fg(colors.text),
+                    ),
+                    Line::raw(""),
+                    Line::styled(
+                        "Enter opens a conversation with the responsible agent.",
+                        Style::default().fg(colors.text_muted),
                     ),
                 ])
             },
@@ -1250,6 +1268,7 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect, size: Density, colors
             colors,
         ),
         SettingsSection::System => draw_system(frame, app, content_area, colors),
+        SettingsSection::Help => draw_help(frame, app, content_area, size, colors),
         SettingsSection::About => detail(
             frame,
             content_area,
@@ -1420,7 +1439,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Pa
     let mut lines = vec![
         heading("NAVIGATION", colors),
         help_key("←/→", "Always change the top menu", colors),
-        help_key("1–9", "Open a numbered top menu", colors),
+        help_key("1–8", "Open a numbered top menu", colors),
         help_key("↑/↓  k/j", "Choose content or scroll detail", colors),
         help_key("Enter", "Open or activate the selected content", colors),
         help_key(
@@ -2146,7 +2165,12 @@ mod tests {
     #[test]
     fn help_documents_all_interaction_layers() {
         let mut app = test_app();
-        app.set_view(View::Help);
+        app.set_view(View::Settings);
+        app.settings_section = SettingsSection::ALL
+            .iter()
+            .position(|section| *section == SettingsSection::Help)
+            .unwrap();
+        app.focus = Focus::Detail;
         let output = render(app, 140, 48);
         for value in [
             "Tab / Shift-Tab",
@@ -2206,7 +2230,8 @@ mod tests {
                 .map(|cell| cell.symbol())
                 .collect::<String>();
             assert!(top_menu.contains("1 SESSIONS"));
-            assert!(top_menu.contains("9 HELP"));
+            assert!(top_menu.contains("8 SETTINGS"));
+            assert!(!top_menu.contains("9 HELP"));
         }
     }
 
@@ -2274,7 +2299,7 @@ mod tests {
         let output = render(test_app(), 90, 24);
         assert!(output.contains("SESSIONS · 1"));
         assert!(output.contains("moon · OFFLINE"));
-        assert!(output.contains("9 HELP"), "full navigation was clipped");
+        assert!(output.contains("8 SETTINGS"), "full navigation was clipped");
     }
 
     #[test]
@@ -2290,7 +2315,7 @@ mod tests {
         assert_eq!(nav_height(45), 2);
         assert_eq!(nav_height(120), 2);
         assert_eq!(nav_window(View::Sessions, 45).0, 0);
-        assert_eq!(nav_window(View::Help, 45).1, View::ALL.len());
+        assert_eq!(nav_window(View::Settings, 45).1, View::ALL.len());
     }
 
     #[test]

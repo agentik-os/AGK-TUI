@@ -34,6 +34,7 @@ Interactive:
 Sessions:
   agk {status|sessions|projects|agents|os|mcp|skills|rules|system}
   agk new TYPE NAME [--cwd PATH] [--client ID] [--project ID]
+  agk specialist start AGENT_ID
   agk {open|resume|info|archive|restart} SESSION
   agk close SESSION --yes
   agk kill SESSION --yes

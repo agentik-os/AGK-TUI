@@ -93,6 +93,10 @@ pub struct AgentRecord {
     pub description: String,
     pub scope: Vec<String>,
     pub runtime: String,
+    /// Optional isolated Hermes profile declared by the agent catalog.
+    pub profile: Option<String>,
+    /// Versioned OS references owned by this specialized agent.
+    pub os: Vec<String>,
     pub catalog_path: String,
     pub runtime_name: String,
     pub runtime_id: Option<String>,
@@ -728,6 +732,8 @@ impl RegistryClient {
                 name: manifest.name,
                 version: manifest.version,
                 description: manifest.description,
+                profile: manifest.profile,
+                os: manifest.os,
                 available: manifest
                     .scope
                     .iter()
@@ -1187,6 +1193,10 @@ struct AgentManifest {
     scope: Vec<String>,
     #[serde(default = "default_agent_runtime")]
     runtime: String,
+    #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
+    os: Vec<String>,
     #[serde(default = "default_agent_prompt")]
     prompt: String,
 }

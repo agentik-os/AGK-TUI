@@ -17,11 +17,10 @@ pub enum View {
     Skills,
     Rules,
     Settings,
-    Help,
 }
 
 impl View {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 8] = [
         Self::Sessions,
         Self::Projects,
         Self::Agents,
@@ -30,7 +29,6 @@ impl View {
         Self::Skills,
         Self::Rules,
         Self::Settings,
-        Self::Help,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -43,7 +41,6 @@ impl View {
             Self::Skills => "Skills",
             Self::Rules => "Rules",
             Self::Settings => "Settings",
-            Self::Help => "Help",
         }
     }
 
@@ -57,7 +54,6 @@ impl View {
             Self::Skills => "6",
             Self::Rules => "7",
             Self::Settings => "8",
-            Self::Help => "9",
         }
     }
 }
@@ -99,16 +95,18 @@ pub enum SettingsSection {
     Sessions,
     Runtime,
     System,
+    Help,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Appearance,
         Self::Providers,
         Self::Sessions,
         Self::Runtime,
         Self::System,
+        Self::Help,
         Self::About,
     ];
 
@@ -119,6 +117,7 @@ impl SettingsSection {
             Self::Sessions => "Sessions",
             Self::Runtime => "Runtime",
             Self::System => "System",
+            Self::Help => "Help",
             Self::About => "About",
         }
     }
@@ -310,11 +309,7 @@ impl App {
         self.preview_scroll = 0;
         self.preview_max_scroll = 0;
         self.expanded = false;
-        self.focus = if view == View::Help {
-            Focus::Detail
-        } else {
-            Focus::List
-        };
+        self.focus = Focus::List;
     }
 
     pub fn next_view(&mut self) {
@@ -364,7 +359,6 @@ impl App {
             View::Skills => self.filtered_skills().count(),
             View::Rules => self.filtered_rules().count(),
             View::Settings => SettingsSection::ALL.len(),
-            View::Help => 1,
         }
     }
 
@@ -451,6 +445,37 @@ impl App {
 
     pub fn current_os(&self) -> Option<&OsPackage> {
         self.filtered_os().nth(self.selected)
+    }
+
+    /// Resolve the catalog agent responsible for the selected OS. Explicit
+    /// versioned `os` bindings win, then manifest agent IDs, with the bundled
+    /// OS lifecycle agent as a compatibility owner for older packages.
+    pub fn current_os_agent(&self) -> Option<&AgentRecord> {
+        let package = self.current_os()?;
+        let versioned = format!("{}@{}", package.id, package.version);
+        self.snapshot
+            .agents
+            .iter()
+            .find(|agent| {
+                agent
+                    .os
+                    .iter()
+                    .any(|reference| reference == &versioned || reference == &package.id)
+            })
+            .or_else(|| {
+                self.snapshot.agents.iter().find(|agent| {
+                    package
+                        .agents
+                        .iter()
+                        .any(|owner| owner == &agent.id || owner.replace('_', "-") == agent.id)
+                })
+            })
+            .or_else(|| {
+                self.snapshot
+                    .agents
+                    .iter()
+                    .find(|agent| agent.id == "master-os-builder")
+            })
     }
 
     pub fn current_mcp(&self) -> Option<&CapabilityRecord> {
@@ -625,7 +650,6 @@ impl App {
 
     pub fn tab(&mut self, detail_available: bool) {
         self.focus = match (self.view, self.focus, detail_available) {
-            (View::Help, _, _) => Focus::Detail,
             (_, Focus::List, true) => Focus::Detail,
             _ => Focus::List,
         };
@@ -633,7 +657,6 @@ impl App {
 
     pub fn back_tab(&mut self, detail_available: bool) {
         self.focus = match (self.view, self.focus, detail_available) {
-            (View::Help, _, _) => Focus::Detail,
             (_, Focus::Detail, _) => Focus::List,
             (_, _, true) => Focus::Detail,
             _ => Focus::List,
@@ -734,6 +757,46 @@ mod tests {
         }
     }
 
+    fn agent(id: &str, os: &[&str]) -> AgentRecord {
+        AgentRecord {
+            id: id.into(),
+            name: id.into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            scope: vec!["mission".into()],
+            runtime: "hermes".into(),
+            profile: Some("mission-os".into()),
+            os: os.iter().map(|value| (*value).into()).collect(),
+            catalog_path: "/catalog".into(),
+            runtime_name: format!("mission-{id}"),
+            runtime_id: None,
+            status: "available".into(),
+            live: false,
+            available: true,
+        }
+    }
+
+    fn os_package(id: &str, version: &str) -> OsPackage {
+        OsPackage {
+            id: id.into(),
+            name: id.into(),
+            version: version.into(),
+            description: String::new(),
+            scope: vec!["mission".into()],
+            dependencies: Vec::new(),
+            capabilities: Vec::new(),
+            skills: Vec::new(),
+            workflows: Vec::new(),
+            agents: Vec::new(),
+            tools: Vec::new(),
+            commands: Vec::new(),
+            knowledge: Vec::new(),
+            evals: Vec::new(),
+            assignments: vec!["profile:mission".into()],
+            available: true,
+        }
+    }
+
     #[test]
     fn responsive_breakpoints_are_deterministic() {
         assert_eq!(density(60, 30), Density::Compact);
@@ -817,5 +880,23 @@ mod tests {
         app.scroll_preview_up(4);
         app.scroll_preview_live();
         assert_eq!(app.preview_scroll, 0);
+    }
+
+    #[test]
+    fn selected_os_resolves_its_explicit_profile_agent_before_fallbacks() {
+        let mut app = app();
+        app.set_snapshot(RegistrySnapshot {
+            agents: vec![
+                agent("master-os-builder", &[]),
+                agent("mission-specialist", &["mission-os@2.1.0"]),
+            ],
+            os_packages: vec![os_package("mission-os", "2.1.0")],
+            ..RegistrySnapshot::default()
+        });
+        app.set_view(View::Os);
+
+        let owner = app.current_os_agent().expect("OS owner");
+        assert_eq!(owner.id, "mission-specialist");
+        assert_eq!(owner.profile.as_deref(), Some("mission-os"));
     }
 }

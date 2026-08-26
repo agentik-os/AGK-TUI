@@ -29,7 +29,7 @@ CANONICAL_USERS = {
 TYPES = {"hermes", "claude", "codex", "openrouter", "opencode", "shell", "agent", "workflow", "monitor"}
 STATES = {"running", "working", "idle", "waiting", "attention", "failed", "complete", "interrupted", "archived"}
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
-VIEWS = ("sessions", "projects", "agents", "os", "mcp", "skills", "rules", "settings", "help")
+VIEWS = ("sessions", "projects", "agents", "os", "mcp", "skills", "rules", "settings")
 TAB_DOUBLE_MS = 420
 ACTIVE_STATES = {"running", "working", "waiting", "attention"}
 STATUS_GLYPHS = {
@@ -189,6 +189,95 @@ def os_registry_path() -> Path:
     if system.is_dir():
         return system
     return Path.home() / ".local/share/agk/os-registry"
+
+
+def agent_catalog_path(home: Path) -> Path:
+    """Resolve the catalog used by both the native TUI and specialist starts."""
+    override = os.environ.get("AGK_AGENT_CATALOG")
+    if override:
+        return Path(override).expanduser()
+    install_root = Path(os.environ.get(
+        "AGK_TERMINAL_ROOT", Path(__file__).resolve().parents[1]
+    ))
+    candidates = [
+        install_root / "agents",
+        install_root / "hermes" / "agents",
+        home / ".hermes" / "agents",
+        home / ".local" / "share" / "agk" / "agents",
+    ]
+    return next(
+        (candidate for candidate in candidates if candidate.is_dir()),
+        candidates[0],
+    )
+
+
+def specialist_definition(env: Environment, agent_id: str) -> dict[str, object]:
+    if not NAME_RE.fullmatch(agent_id):
+        raise ValueError("specialist id must use the canonical name grammar")
+    root = agent_catalog_path(env.home).resolve()
+    manifest = (root / agent_id / "agent.yaml").resolve()
+    if root not in manifest.parents or not manifest.is_file():
+        raise ValueError(f"unknown specialist agent: {agent_id}")
+    try:
+        document = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError, yaml.YAMLError) as error:
+        raise RuntimeError(f"specialist manifest is unreadable: {agent_id}") from error
+    if not isinstance(document, dict) or document.get("id") != agent_id:
+        raise RuntimeError(f"specialist manifest identity mismatch: {agent_id}")
+    scope = document.get("scope") or []
+    if not isinstance(scope, list) or any(not isinstance(item, str) for item in scope):
+        raise RuntimeError(f"specialist scope is invalid: {agent_id}")
+    if env.name != "operator" and env.name not in scope:
+        raise PermissionError(f"specialist {agent_id} is not allowed in {env.name}")
+    prompt_value = str(document.get("prompt") or "prompt.md")
+    prompt = (manifest.parent / prompt_value).resolve()
+    if manifest.parent not in prompt.parents or not prompt.is_file():
+        raise RuntimeError(f"specialist prompt is missing: {agent_id}")
+    document["manifest_path"] = manifest
+    document["prompt_path"] = prompt
+    return document
+
+
+def prepare_specialist_workspace(env: Environment, definition: dict[str, object]) -> Path:
+    agent_id = str(definition["id"])
+    workspace = env.home / ".agentik" / "agents" / agent_id / "workspace"
+    workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
+    shutil.copyfile(Path(definition["prompt_path"]), workspace / "AGENTS.md")
+    metadata = {
+        "id": agent_id,
+        "version": str(definition.get("version") or ""),
+        "profile": definition.get("profile"),
+        "os": definition.get("os") or [],
+    }
+    (workspace / ".agentik-agent.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return workspace
+
+
+def specialist_command(
+    env: Environment, definition: dict[str, object], workspace: Path
+) -> list[str]:
+    profile = str(definition.get("profile") or "").strip()
+    launcher_value = str(definition.get("launcher") or "").strip()
+    if launcher_value:
+        launcher = Path(launcher_value).expanduser().resolve()
+        home = env.home.resolve()
+        if home not in launcher.parents or not launcher.is_file() or not os.access(launcher, os.X_OK):
+            raise RuntimeError(
+                "specialist launcher must be executable inside the current profile home"
+            )
+        return [str(launcher), "--in", str(workspace)]
+    hermes = shutil.which("hermes") or "hermes"
+    if profile:
+        if not NAME_RE.fullmatch(profile):
+            raise RuntimeError("specialist Hermes profile id is invalid")
+        profile_home = env.home / ".hermes" / "profiles" / profile
+        if not profile_home.is_dir():
+            raise RuntimeError(f"specialist Hermes profile is not installed: {profile}")
+        return [hermes, "-p", profile, "--in", str(workspace)]
+    return [hermes, "--in", str(workspace)]
 
 
 class RmuxRuntime:
@@ -413,6 +502,54 @@ class RuntimeRegistry:
         self.event(updated, "runtime.frontend_restarted", {"native_session": row["native_session"]})
         return updated
 
+    def ensure_specialist(
+        self, *, name: str, cwd: Path, command: list[str]
+    ) -> tuple[sqlite3.Row, bool]:
+        """Create or repair the one canonical runtime for a catalog agent."""
+        row = self.get(name)
+        if row is None:
+            return (
+                self.create(
+                    name=name,
+                    kind="hermes",
+                    cwd=cwd,
+                    command=command,
+                ),
+                True,
+            )
+        try:
+            current_command = json.loads(row["command_json"] or "[]")
+        except (TypeError, ValueError):
+            current_command = []
+        current_cwd = str(Path(row["cwd"]).resolve())
+        desired_cwd = str(cwd.resolve())
+        if self.runtime.has_session(row["rmux_session"]):
+            if current_command != command or current_cwd != desired_cwd:
+                self.runtime.respawn(row["rmux_session"], desired_cwd, command)
+        else:
+            self.runtime.create(
+                row["rmux_session"], "hermes", cwd, self.env.name, command
+            )
+        now = time.time()
+        self.db.execute(
+            """
+            UPDATE runtime_sessions
+               SET type='hermes', cwd=?, status='running', archived_at=NULL,
+                   command_json=?, exit_code=NULL, last_activity=?
+             WHERE id=?
+            """,
+            (desired_cwd, json.dumps(command), now, row["id"]),
+        )
+        self.db.commit()
+        updated = self.get(row["id"])
+        assert updated is not None
+        self.event(
+            updated,
+            "runtime.specialist_opened",
+            {"command_changed": current_command != command},
+        )
+        return updated, False
+
     def fork(self, row: sqlite3.Row, name: str) -> sqlite3.Row:
         native = row["native_session"]
         if row["type"] == "codex" and native:
@@ -485,6 +622,16 @@ def default_command(kind: str, native_session: str | None = None) -> list[str]:
     if kind not in commands:
         raise ValueError(f"{kind} requires an explicit orchestrator command")
     return commands[kind]
+
+
+def start_specialist(
+    env: Environment, registry: RuntimeRegistry, agent_id: str
+) -> tuple[sqlite3.Row, bool]:
+    definition = specialist_definition(env, agent_id)
+    workspace = prepare_specialist_workspace(env, definition)
+    command = specialist_command(env, definition, workspace)
+    session = f"{env.name}-{agent_id}"
+    return registry.ensure_specialist(name=session, cwd=workspace, command=command)
 
 
 def filtered(rows: list[sqlite3.Row], query: str) -> list[sqlite3.Row]:
@@ -714,7 +861,7 @@ def tui(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
         height, width = stdscr.getmaxyx()
         header = f" AGK · {registry.env.name.upper()} · CONTROL MODE "
         stdscr.addnstr(0, 0, header + " " * max(1, width - len(header) - 10) + "● ONLINE", width - 1, curses.A_BOLD)
-        stdscr.addnstr(1, 0, " 1 SESSIONS  2 PROJECTS  3 AGENTS  4 OS  5 MCP  6 SKILLS  7 RULES  8 SETTINGS  9 HELP ", width - 1)
+        stdscr.addnstr(1, 0, " 1 SESSIONS  2 PROJECTS  3 AGENTS  4 OS  5 MCP  6 SKILLS  7 RULES  8 SETTINGS ", width - 1)
         stdscr.addnstr(3, 0, view.upper() + (f"  / {query}" if query else ""), width - 1, curses.A_BOLD)
         if view in {"sessions", "agents"}:
             for idx, row in enumerate(rows[: max(0, height - 9)]):
@@ -854,7 +1001,7 @@ def tui_v2(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
         if fullscreen and focus == "list": left, right = width, 0
         _safe_add(stdscr, 0, 0, f" AGK · {registry.env.name.upper()} · CONTROL", width - 1, curses.A_BOLD)
         _safe_add(stdscr, 0, max(30, width - 11), "● ONLINE", 10, curses.A_BOLD)
-        nav = " 1 SESSIONS  2 PROJECTS  3 AGENTS  4 OS  5 MCP  6 SKILLS  7 RULES  8 SETTINGS  9 HELP"
+        nav = " 1 SESSIONS  2 PROJECTS  3 AGENTS  4 OS  5 MCP  6 SKILLS  7 RULES  8 SETTINGS"
         _safe_add(stdscr, 1, 0, nav, width - 1)
         crumb = registry.env.name.upper()
         if current is not None and not isinstance(current, dict): crumb += f" › {current['client'] or '—'} › {current['project'] or '—'} › {current['name']}"
@@ -898,7 +1045,7 @@ def tui_v2(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
                     list_limit, curses.A_REVERSE if idx == selected and focus == "list" else 0,
                 )
         else:
-            messages = {"os": "Zero Operative Systems installed · registry ready · no package is invented", "mcp": "MCP inventory is scoped to this Hermes environment", "skills": "Skills are capabilities; OS remain separate methodologies", "settings": f"Appearance · Providers · Sessions · Runtime · System ({run('rmux','-V').stdout.strip()}) · About", "help": "Tab switches panels · rapid Tab Tab hides left · Enter opens · q leaves Control only"}
+            messages = {"os": "Zero Operative Systems installed · registry ready · no package is invented", "mcp": "MCP inventory is scoped to this Hermes environment", "skills": "Skills are capabilities; OS remain separate methodologies", "settings": f"Appearance · Providers · Sessions · Runtime · System ({run('rmux','-V').stdout.strip()}) · Help · About"}
             _safe_add(stdscr, 5, 0, messages.get(view, ""), width - 1)
         max_scroll = 0
         if right and current is not None and not isinstance(current, dict) and view in {"sessions", "agents"}:
@@ -1054,6 +1201,9 @@ def main() -> int:
     resume = sub.add_parser("resume"); resume.add_argument("target", nargs="?")
     open_p = sub.add_parser("open"); open_p.add_argument("target")
     agent = sub.add_parser("agent"); agent.add_argument("type", choices=("hermes", "claude", "codex")); agent.add_argument("name", nargs="?")
+    specialist = sub.add_parser("specialist")
+    specialist.add_argument("action", choices=("start",))
+    specialist.add_argument("id")
     for action in ("info", "archive", "restart"):
         item = sub.add_parser(action); item.add_argument("target")
     for action in ("kill", "close"):
@@ -1088,6 +1238,15 @@ def main() -> int:
         name = args.name or f"{env.name}-{args.type}-{time.strftime('%Y%m%d-%H%M%S')}"
         row = registry.create(name=name, kind=args.type, cwd=env.projects if env.projects.exists() else env.home, command=default_command(args.type))
         print(f"Started {row['id']} · {row['name']}"); return 0
+    if args.command == "specialist":
+        try:
+            row, created = start_specialist(env, registry, args.id)
+        except (OSError, RuntimeError, ValueError, PermissionError) as error:
+            print(f"Specialist start failed: {error}", file=sys.stderr)
+            return 1
+        verb = "Started" if created else "Opened"
+        print(f"{verb} {args.id} · {row['name']}")
+        return 0
     if args.command in {"resume", "open"}:
         target = getattr(args, "target", None)
         row = registry.get(target) if target else (registry.rows()[0] if registry.rows() else None)

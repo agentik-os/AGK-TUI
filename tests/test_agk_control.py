@@ -93,6 +93,73 @@ def test_openrouter_sessions_pin_the_supported_model(monkeypatch):
     ]
 
 
+def test_specialist_start_binds_catalog_profile_and_durable_rmux(tmp_path, monkeypatch):
+    catalog = tmp_path / "catalog"
+    definition = catalog / "kitchen-agent"
+    definition.mkdir(parents=True)
+    (definition / "agent.yaml").write_text(
+        "id: kitchen-agent\n"
+        "name: Kitchen Agent\n"
+        "version: 1.2.3\n"
+        "scope: [mission]\n"
+        "profile: kitchen\n"
+        "os: [kitchen-os@1.0.0]\n"
+        "prompt: prompt.md\n",
+        encoding="utf-8",
+    )
+    (definition / "prompt.md").write_text("Run the kitchen OS.\n", encoding="utf-8")
+    (tmp_path / ".hermes/profiles/kitchen").mkdir(parents=True)
+    monkeypatch.setenv("AGK_AGENT_CATALOG", str(catalog))
+    monkeypatch.setattr(agk.shutil, "which", lambda name: f"/verified/{name}")
+
+    class Runtime:
+        def __init__(self):
+            self.created = []
+
+        def has_session(self, _name):
+            return False
+
+        def create(self, name, kind, cwd, environment, command):
+            self.created.append((name, kind, cwd, environment, command))
+
+    runtime = Runtime()
+    env = agk.Environment("mission", tmp_path, tmp_path / "workspace/clients")
+    registry = agk.RuntimeRegistry(env, runtime=runtime)
+
+    row, created = agk.start_specialist(env, registry, "kitchen-agent")
+
+    workspace = tmp_path / ".agentik/agents/kitchen-agent/workspace"
+    assert created is True
+    assert row["name"] == "mission-kitchen-agent"
+    assert agk.json.loads(row["command_json"]) == [
+        "/verified/hermes", "-p", "kitchen", "--in", str(workspace)
+    ]
+    assert runtime.created[0][0] == "mission-kitchen-agent"
+    assert (workspace / "AGENTS.md").read_text(encoding="utf-8") == "Run the kitchen OS.\n"
+    assert agk.json.loads(
+        (workspace / ".agentik-agent.json").read_text(encoding="utf-8")
+    )["os"] == ["kitchen-os@1.0.0"]
+
+
+def test_specialist_scope_is_enforced_outside_operator(tmp_path, monkeypatch):
+    definition = tmp_path / "catalog/operator-agent"
+    definition.mkdir(parents=True)
+    (definition / "agent.yaml").write_text(
+        "id: operator-agent\nscope: [operator]\nprompt: prompt.md\n",
+        encoding="utf-8",
+    )
+    (definition / "prompt.md").write_text("Operate.\n", encoding="utf-8")
+    monkeypatch.setenv("AGK_AGENT_CATALOG", str(tmp_path / "catalog"))
+    env = agk.Environment("private", tmp_path, tmp_path / "workspace/projects")
+
+    try:
+        agk.specialist_definition(env, "operator-agent")
+    except PermissionError as error:
+        assert "not allowed in private" in str(error)
+    else:
+        raise AssertionError("cross-profile specialist launch was accepted")
+
+
 def test_claude_workspace_trust_is_persisted_without_losing_existing_state(tmp_path):
     config = tmp_path / ".claude.json"
     config.write_text(
@@ -232,7 +299,7 @@ def test_responsive_layout_and_navigation_model():
     assert left >= 38 and right > left
     assert agk.pane_widths(80, "standard") == (80, 0)
     assert agk.cycle_view("sessions") == "projects"
-    assert agk.cycle_view("sessions", reverse=True) == "help"
+    assert agk.cycle_view("sessions", reverse=True) == "settings"
 
 
 def test_public_single_user_environment_config(tmp_path, monkeypatch):

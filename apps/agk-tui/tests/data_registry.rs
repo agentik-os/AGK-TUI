@@ -621,7 +621,7 @@ fn agent_catalog_validates_prompts_scopes_and_runtime_status() {
     let paths = paths(&temp);
     write(
         paths.agent_catalog.join("builder/agent.yaml"),
-        "id: master-builder\nname: Master Builder\nversion: 1.2.3\ndescription: Builds systems\nscope: [mission]\nruntime: hermes\nprompt: prompt.md\n",
+        "id: master-builder\nname: Master Builder\nversion: 1.2.3\ndescription: Builds systems\nscope: [mission]\nruntime: hermes\nprofile: research\nos: [research-os@1.0.0]\nprompt: prompt.md\n",
     );
     write(
         paths.agent_catalog.join("builder/prompt.md"),
@@ -677,6 +677,8 @@ fn agent_catalog_validates_prompts_scopes_and_runtime_status() {
     assert_eq!(builder.status, "running");
     assert!(builder.live);
     assert!(builder.available);
+    assert_eq!(builder.profile.as_deref(), Some("research"));
+    assert_eq!(builder.os, ["research-os@1.0.0"]);
     assert_eq!(builder.runtime_id.as_deref(), Some("RT-AGENT"));
     let private = snapshot
         .agents

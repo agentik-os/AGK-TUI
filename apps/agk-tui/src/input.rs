@@ -14,6 +14,7 @@ pub enum Action {
     PersistPreferences,
     EnterTerminal,
     InstallProvider { id: String },
+    OpenAgent { id: String, session: String },
     CreateSession { kind: SessionKind, name: String },
     RenameSession { target: SessionTarget, name: String },
     CloseSession { target: SessionTarget },
@@ -84,8 +85,8 @@ const PALETTE_ITEMS: [PaletteItem; 14] = [
     },
     PaletteItem {
         label: "Open Help",
-        hint: "9",
-        command: PaletteCommand::Open(View::Help),
+        hint: "?",
+        command: PaletteCommand::OpenSettings(SettingsSection::Help),
     },
     PaletteItem {
         label: "New session",
@@ -194,10 +195,9 @@ pub fn handle_key_for_layout(
         KeyCode::Char('6') => set_view(app, View::Skills),
         KeyCode::Char('7') => set_view(app, View::Rules),
         KeyCode::Char('8') => set_view(app, View::Settings),
-        KeyCode::Char('9') => set_view(app, View::Help),
         KeyCode::Char('s') => open_settings(app, SettingsSection::System),
         KeyCode::Char(',') => set_view(app, View::Settings),
-        KeyCode::Char('?') => set_view(app, View::Help),
+        KeyCode::Char('?') => open_settings(app, SettingsSection::Help),
         KeyCode::Char('/') => {
             app.overlay = Overlay::Search {
                 value: app.query.clone(),
@@ -356,16 +356,10 @@ pub fn handle_key_for_layout(
             }
         }
         KeyCode::Enter if app.view == View::Agents => {
-            let runtime = app.current_agent().map(|agent| agent.runtime_name.clone());
-            if runtime
-                .as_deref()
-                .is_some_and(|name| app.select_session_by_name(name))
-            {
-                app.status = Some("Opened linked runtime".into());
-            } else {
-                app.focus = Focus::Detail;
-            }
-            Action::None
+            open_agent_conversation(app, app.current_agent().map(|agent| agent.id.clone()))
+        }
+        KeyCode::Enter if app.view == View::Os => {
+            open_agent_conversation(app, app.current_os_agent().map(|agent| agent.id.clone()))
         }
         KeyCode::Enter => {
             app.focus = Focus::Detail;
@@ -821,6 +815,7 @@ fn activate_settings(app: &mut App) -> Action {
         SettingsSection::Sessions => toggle_preview(app),
         SettingsSection::Runtime => Action::Refresh,
         SettingsSection::System => Action::Refresh,
+        SettingsSection::Help => Action::None,
         SettingsSection::About => Action::None,
     }
 }
@@ -873,6 +868,34 @@ fn open_custom_theme_editor(app: &mut App) -> Action {
     Action::None
 }
 
+fn open_agent_conversation(app: &mut App, agent_id: Option<String>) -> Action {
+    let Some(agent_id) = agent_id else {
+        app.status = Some("No responsible catalog agent is assigned".into());
+        app.focus = Focus::Detail;
+        return Action::None;
+    };
+    let Some(agent) = app
+        .snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.id == agent_id)
+    else {
+        app.status = Some("The responsible catalog agent is unavailable".into());
+        return Action::None;
+    };
+    let session = agent.runtime_name.clone();
+    let live = agent.live;
+    if live && app.select_session_by_name(&session) {
+        app.status = Some(format!("Opened {}", agent_id));
+        Action::EnterTerminal
+    } else {
+        Action::OpenAgent {
+            id: agent_id,
+            session,
+        }
+    }
+}
+
 fn cycle_refresh(app: &mut App, forwards: bool) {
     const VALUES: [u64; 4] = [250, 500, 1_000, 2_000];
     let index = VALUES
@@ -900,7 +923,7 @@ fn printable(modifiers: KeyModifiers) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::{ProviderRecord, RegistrySnapshot, RuntimeRecord};
+    use crate::data::{AgentRecord, OsPackage, ProviderRecord, RegistrySnapshot, RuntimeRecord};
     use crate::theme::Preferences;
 
     fn app() -> App {
@@ -936,6 +959,46 @@ mod tests {
         });
     }
 
+    fn add_os_agent(app: &mut App) {
+        app.set_snapshot(RegistrySnapshot {
+            agents: vec![AgentRecord {
+                id: "research-agent".into(),
+                name: "Research Agent".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                scope: vec!["operator".into()],
+                runtime: "hermes".into(),
+                profile: Some("research".into()),
+                os: vec!["research-os@1.0.0".into()],
+                catalog_path: "/catalog/research-agent".into(),
+                runtime_name: "operator-research-agent".into(),
+                runtime_id: None,
+                status: "not-started".into(),
+                live: false,
+                available: true,
+            }],
+            os_packages: vec![OsPackage {
+                id: "research-os".into(),
+                name: "Research OS".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                scope: vec!["operator".into()],
+                dependencies: Vec::new(),
+                capabilities: Vec::new(),
+                skills: Vec::new(),
+                workflows: Vec::new(),
+                agents: Vec::new(),
+                tools: Vec::new(),
+                commands: Vec::new(),
+                knowledge: Vec::new(),
+                evals: Vec::new(),
+                assignments: vec!["profile:operator".into()],
+                available: true,
+            }],
+            ..RegistrySnapshot::default()
+        });
+    }
+
     #[test]
     fn every_advertised_view_shortcut_opens_its_view() {
         let cases = [
@@ -947,7 +1010,6 @@ mod tests {
             ('6', View::Skills),
             ('7', View::Rules),
             ('8', View::Settings),
-            ('9', View::Help),
         ];
         for (character, view) in cases {
             let mut app = app();
@@ -1318,14 +1380,29 @@ mod tests {
 
         app.set_view(View::Sessions);
         handle_key(&mut app, key(KeyCode::Left), true);
-        assert_eq!(app.view, View::Help);
-        assert_eq!(app.focus, Focus::Detail);
+        assert_eq!(app.view, View::Settings);
+        assert_eq!(app.focus, Focus::List);
 
         app.set_view(View::Settings);
         app.focus = Focus::Detail;
         handle_key(&mut app, key(KeyCode::Right), true);
-        assert_eq!(app.view, View::Help);
-        assert_eq!(app.focus, Focus::Detail);
+        assert_eq!(app.view, View::Sessions);
+        assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn os_enter_starts_the_responsible_profile_agent_without_a_middle_step() {
+        let mut app = app();
+        add_os_agent(&mut app);
+        app.set_view(View::Os);
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter), true),
+            Action::OpenAgent {
+                id: "research-agent".into(),
+                session: "operator-research-agent".into(),
+            }
+        );
     }
 
     #[test]
