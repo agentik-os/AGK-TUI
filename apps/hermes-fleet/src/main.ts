@@ -21,22 +21,96 @@ const app = appElement;
 app.innerHTML = `
   <main class="fleet-shell">
     <header class="topbar">
-      <a class="brand" href="/" aria-label="AGK Hermes Fleet, accueil">
-        <span class="brand-mark" aria-hidden="true">
-          <span></span><span></span><span></span>
+      <a class="brand" href="/" aria-label="Hermes Fleet, accueil">
+        <span class="brand-icon-shell" aria-hidden="true">
+          <img
+            class="brand-icon"
+            src="/hermes-icon.webp"
+            alt=""
+            width="32"
+            height="32"
+            draggable="false"
+          />
         </span>
         <span class="brand-copy">
-          <strong>HERMES</strong>
-          <small>FLEET</small>
+          <strong>Hermes</strong>
+          <small>Fleet</small>
         </span>
       </a>
 
-      <div class="current-context" aria-live="polite">
-        <span class="context-eyebrow">Organisation active</span>
-        <span class="context-name" data-current-name>Operator</span>
+      <div class="organisation-picker">
+        <button
+          class="organisation-trigger"
+          type="button"
+          aria-label="Changer d’organisation"
+          aria-haspopup="menu"
+          aria-expanded="false"
+          aria-controls="organisation-menu"
+        >
+          <span class="status-dot" data-status-dot aria-hidden="true"></span>
+          <span class="trigger-copy" aria-live="polite">
+            <small>Organisation</small>
+            <strong data-current-name>Operator</strong>
+            <span data-current-description>Infrastructure et opérations</span>
+          </span>
+          <svg class="chevron" aria-hidden="true" viewBox="0 0 16 16" fill="none">
+            <path d="m4 6 4 4 4-4" />
+          </svg>
+        </button>
+
+        <div
+          class="organisation-menu"
+          id="organisation-menu"
+          role="menu"
+          aria-label="Choisir une organisation"
+          hidden
+        >
+          <div class="menu-heading">
+            <span>Espaces Hermes</span>
+            <kbd>Esc</kbd>
+          </div>
+          <div class="menu-options">
+            ${ORGANISATIONS.map(
+              (organisation) => `
+                <button
+                  class="organisation-option"
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked="false"
+                  data-organisation="${organisation.id}"
+                >
+                  <span
+                    class="option-icon"
+                    style="--organisation-accent: ${organisation.accent}"
+                    aria-hidden="true"
+                  >${organisation.label.slice(0, 1)}</span>
+                  <span class="option-copy">
+                    <strong>${organisation.label}</strong>
+                    <small>${organisation.description}</small>
+                  </span>
+                  <svg class="option-check" aria-hidden="true" viewBox="0 0 16 16" fill="none">
+                    <path d="m3 8 3 3 7-7" />
+                  </svg>
+                </button>
+              `,
+            ).join("")}
+          </div>
+          <p class="menu-note">
+            Les sessions, secrets et connexions restent isolés dans chaque espace.
+          </p>
+        </div>
       </div>
 
       <div class="topbar-actions">
+        <div class="tailnet-badge" aria-label="Connexion privée via Tailscale">
+          <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
+            <rect x="3.5" y="7" width="9" height="6.5" rx="2" />
+            <path d="M5.5 7V5.25a2.5 2.5 0 0 1 5 0V7" />
+          </svg>
+          <span class="tailnet-dot" aria-hidden="true"></span>
+          <span class="tailnet-label">Tailnet privé</span>
+        </div>
+
         <a
           class="open-separately"
           data-open-separately
@@ -44,67 +118,11 @@ app.innerHTML = `
           target="_blank"
           rel="noopener noreferrer"
         >
-          <span>Ouvrir séparément</span>
           <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
             <path d="M6 3h7v7M13 3 5 11M11 9v4H3V5h4" />
           </svg>
+          <span>Ouvrir séparément</span>
         </a>
-
-        <div class="organisation-picker">
-          <button
-            class="organisation-trigger"
-            type="button"
-            aria-haspopup="menu"
-            aria-expanded="false"
-            aria-controls="organisation-menu"
-          >
-            <span class="status-dot" data-status-dot aria-hidden="true"></span>
-            <span>Organisation</span>
-            <svg class="chevron" aria-hidden="true" viewBox="0 0 16 16" fill="none">
-              <path d="m4 6 4 4 4-4" />
-            </svg>
-          </button>
-
-          <div
-            class="organisation-menu"
-            id="organisation-menu"
-            role="menu"
-            aria-label="Choisir une organisation"
-            hidden
-          >
-            <div class="menu-heading">
-              <span>Changer d’espace</span>
-              <kbd>Esc</kbd>
-            </div>
-            <div class="menu-options">
-              ${ORGANISATIONS.map(
-                (organisation) => `
-                  <button
-                    class="organisation-option"
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked="false"
-                    data-organisation="${organisation.id}"
-                  >
-                    <span
-                      class="option-icon"
-                      style="--organisation-accent: ${organisation.accent}"
-                      aria-hidden="true"
-                    >${organisation.label.slice(0, 1)}</span>
-                    <span class="option-copy">
-                      <strong>${organisation.label}</strong>
-                      <small>${organisation.description}</small>
-                    </span>
-                    <svg class="option-check" aria-hidden="true" viewBox="0 0 16 16" fill="none">
-                      <path d="m3 8 3 3 7-7" />
-                    </svg>
-                  </button>
-                `,
-              ).join("")}
-            </div>
-            <p class="menu-note">Chaque espace conserve ses propres sessions, secrets et connexions.</p>
-          </div>
-        </div>
       </div>
     </header>
 
@@ -134,6 +152,9 @@ function requiredElement<T extends Element>(selector: string): T {
 const trigger = requiredElement<HTMLButtonElement>(".organisation-trigger");
 const menu = requiredElement<HTMLDivElement>(".organisation-menu");
 const currentName = requiredElement<HTMLElement>("[data-current-name]");
+const currentDescription = requiredElement<HTMLElement>(
+  "[data-current-description]",
+);
 const statusDot = requiredElement<HTMLElement>("[data-status-dot]");
 const openSeparately = requiredElement<HTMLAnchorElement>("[data-open-separately]");
 const frame = requiredElement<HTMLIFrameElement>("[data-dashboard-frame]");
@@ -170,6 +191,7 @@ function setOrganisation(id: OrganisationId): void {
 
   activeId = id;
   currentName.textContent = organisation.label;
+  currentDescription.textContent = organisation.description;
   statusDot.style.setProperty("--current-accent", organisation.accent);
   openSeparately.href = path;
   openSeparately.setAttribute(

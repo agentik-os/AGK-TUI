@@ -1,4 +1,4 @@
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import {
   createServer,
   request as createRequest,
@@ -195,6 +195,61 @@ describe("Hermes HTTP proxy", () => {
     } finally {
       await close(fleet);
       await close(upstream);
+    }
+  });
+
+  it("routes lazy root chunks from a same-origin dashboard referrer", async () => {
+    let observedUrl = "";
+    const upstream = createServer((request, response) => {
+      observedUrl = request.url ?? "";
+      response.end("hermes-lazy-chunk");
+    });
+    const upstreamPort = await listen(upstream);
+    const temporary = await mkdtemp(join(tmpdir(), "hermes-fleet-assets-test-"));
+    await mkdir(join(temporary, "assets"));
+    await writeFile(join(temporary, "assets", "fleet.js"), "fleet-shell");
+    const fleet = createFleetServer({
+      allowedHosts: ["fleet.test"],
+      distDir: temporary,
+      upstreamPorts: { operator: upstreamPort },
+    });
+    const fleetPort = await listen(fleet);
+
+    try {
+      const lazyChunk = await httpGet(
+        fleetPort,
+        "/assets/SessionsPage.js?revision=1",
+        {
+          host: "fleet.test",
+          referer: "https://fleet.test/operator/sessions",
+        },
+      );
+      expect(lazyChunk.status).toBe(200);
+      expect(lazyChunk.body).toBe("hermes-lazy-chunk");
+      expect(observedUrl).toBe("/assets/SessionsPage.js?revision=1");
+
+      const fleetAsset = await httpGet(fleetPort, "/assets/fleet.js", {
+        host: "fleet.test",
+        referer: "https://fleet.test/?org=operator",
+      });
+      expect(fleetAsset.status).toBe(200);
+      expect(fleetAsset.body).toBe("fleet-shell");
+
+      observedUrl = "";
+      const foreignReferrer = await httpGet(
+        fleetPort,
+        "/assets/SessionsPage.js",
+        {
+          host: "fleet.test",
+          referer: "https://untrusted.test/operator/sessions",
+        },
+      );
+      expect(foreignReferrer.status).toBe(404);
+      expect(observedUrl).toBe("");
+    } finally {
+      await close(fleet);
+      await close(upstream);
+      await rm(temporary, { recursive: true });
     }
   });
 });

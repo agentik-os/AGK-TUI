@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ORGANISATIONS,
   dashboardPath,
   getOrganisation,
   resolveOrganisationId,
@@ -8,6 +9,17 @@ import {
 } from "./organisations.js";
 
 describe("organisation routing", () => {
+  it("keeps the exact four workspaces and their descriptions", () => {
+    expect(
+      ORGANISATIONS.map(({ id, description }) => ({ id, description })),
+    ).toEqual([
+      { id: "operator", description: "Infrastructure et opérations" },
+      { id: "agentik", description: "Organisation et produits" },
+      { id: "mission", description: "Missions et espaces clients" },
+      { id: "private", description: "Espace personnel isolé" },
+    ]);
+  });
+
   it("prefers a valid query organisation over persisted state", () => {
     expect(resolveOrganisationId("?org=mission", "private")).toBe("mission");
   });

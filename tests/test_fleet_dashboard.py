@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "apps" / "hermes-fleet"
 FRONTEND_SRC = FRONTEND / "src"
+FRONTEND_PUBLIC = FRONTEND / "public"
 SERVER_SRC = FRONTEND / "server"
 INSTALLER = ROOT / "scripts" / "install-hermes-fleet-dashboard.sh"
 HERMES_SERVICE_TEMPLATE = ROOT / "systemd" / "hermes-dashboard.service.in"
@@ -16,6 +17,12 @@ EXPECTED_ORGANIZATIONS = {
     "agentik": (8461, "/agentik/"),
     "mission": (8462, "/mission/"),
     "private": (8463, "/private/"),
+}
+EXPECTED_DESCRIPTIONS = {
+    "operator": "Infrastructure et opérations",
+    "agentik": "Organisation et produits",
+    "mission": "Missions et espaces clients",
+    "private": "Espace personnel isolé",
 }
 
 
@@ -94,6 +101,112 @@ def test_frontend_embeds_each_dashboard_and_offers_a_standalone_link():
     assert re.search(r"<a\b", source, flags=re.IGNORECASE)
     assert re.search(r"target\s*=\s*['\"]_blank['\"]", source)
     assert re.search(r"noopener", source, flags=re.IGNORECASE)
+
+
+def test_shell_uses_a_local_app_icon_and_private_tailnet_badge():
+    source = (FRONTEND_SRC / "main.ts").read_text(encoding="utf-8")
+
+    assert re.search(r"<img\b[^>]*class=['\"]brand-icon['\"]", source)
+    assert re.search(r"<img\b[^>]*src=['\"]/hermes-icon\.webp['\"]", source)
+    assert "tailnet-badge" in source
+    assert "tailnet-label" in source
+    assert "Tailnet privé" in source
+
+
+def test_organization_switcher_keeps_four_described_workspaces_accessible():
+    source = (FRONTEND_SRC / "main.ts").read_text(encoding="utf-8")
+    organizations = (FRONTEND_SRC / "organisations.ts").read_text(encoding="utf-8")
+    styles = (FRONTEND_SRC / "styles.css").read_text(encoding="utf-8")
+    trigger = re.search(
+        r"<button\b(?=[^>]*organisation-trigger).*?</button>",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert trigger
+    assert 'aria-haspopup="menu"' in trigger.group(0)
+    assert 'aria-controls="organisation-menu"' in trigger.group(0)
+    assert "data-current-name" in trigger.group(0)
+    assert "data-current-description" in trigger.group(0)
+    assert "ORGANISATIONS.map" in source
+    assert 'class="organisation-option"' in source
+    assert 'data-organisation="${organisation.id}"' in source
+    assert "${organisation.description}" in source
+    for org_id, description in EXPECTED_DESCRIPTIONS.items():
+        assert f'id: "{org_id}"' in organizations
+        assert f'description: "{description}"' in organizations
+
+    # Responsive layouts may reshape the trigger but must not remove it.
+    assert not re.search(
+        r"\.organisation-trigger[^{}]*\{[^{}]*display\s*:\s*none",
+        styles,
+        flags=re.DOTALL,
+    )
+
+
+def test_installable_metadata_and_icons_are_local_files():
+    html = (FRONTEND / "index.html").read_text(encoding="utf-8")
+    expected_links = {
+        "icon": "/favicon-32.png",
+        "apple-touch-icon": "/apple-touch-icon.png",
+        "manifest": "/site.webmanifest",
+    }
+
+    for relation, href in expected_links.items():
+        assert re.search(
+            rf"<link\b(?=[^>]*rel=['\"]{relation}['\"])(?=[^>]*href=['\"]{re.escape(href)}['\"])[^>]*>",
+            html,
+        )
+
+    assets = {
+        "hermes-icon.webp": b"RIFF",
+        "favicon-32.png": b"\x89PNG\r\n\x1a\n",
+        "apple-touch-icon.png": b"\x89PNG\r\n\x1a\n",
+        "app-icon-192.png": b"\x89PNG\r\n\x1a\n",
+        "app-icon-512.png": b"\x89PNG\r\n\x1a\n",
+    }
+    for filename, signature in assets.items():
+        content = (FRONTEND_PUBLIC / filename).read_bytes()
+        assert content.startswith(signature), f"invalid local app asset: {filename}"
+        assert len(content) > 32, f"empty local app asset: {filename}"
+        if filename.endswith(".webp"):
+            assert content[8:12] == b"WEBP"
+
+    manifest = json.loads(
+        (FRONTEND_PUBLIC / "site.webmanifest").read_text(encoding="utf-8")
+    )
+    assert manifest.get("start_url") == "/"
+    assert manifest.get("display") == "standalone"
+    assert {icon["src"] for icon in manifest.get("icons", [])} == {
+        "/app-icon-192.png",
+        "/app-icon-512.png",
+    }
+
+
+def test_shell_runtime_has_no_external_asset_or_network_urls():
+    runtime_files = [
+        FRONTEND / "index.html",
+        FRONTEND_SRC / "main.ts",
+        FRONTEND_SRC / "organisations.ts",
+        FRONTEND_SRC / "styles.css",
+        FRONTEND_PUBLIC / "site.webmanifest",
+    ]
+
+    for path in runtime_files:
+        source = path.read_text(encoding="utf-8")
+        assert not re.search(r"(?:https?:)?//", source), (
+            f"external runtime URL found in {path.relative_to(ROOT)}"
+        )
+
+
+def test_shell_respects_responsive_and_reduced_motion_preferences():
+    styles = (FRONTEND_SRC / "styles.css").read_text(encoding="utf-8")
+
+    assert re.search(r"@media\s*\([^)]*max-width\s*:\s*760px", styles)
+    assert re.search(r"@media\s*\([^)]*max-width\s*:\s*430px", styles)
+    assert re.search(r"@media\s*\(prefers-reduced-motion\s*:\s*reduce\)", styles)
+    assert re.search(r"animation-duration\s*:\s*0\.01ms", styles)
+    assert re.search(r"transition-duration\s*:\s*0\.01ms", styles)
 
 
 def test_compiled_typescript_server_proxies_all_prefixes_to_loopback():

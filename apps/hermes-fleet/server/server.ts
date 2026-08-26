@@ -165,6 +165,32 @@ function targetForPath(
   );
 }
 
+function targetForUnprefixedAsset(
+  request: IncomingMessage,
+  pathname: string,
+  upstreams: readonly UpstreamTarget[],
+): UpstreamTarget | null {
+  if (!pathname.startsWith("/assets/")) {
+    return null;
+  }
+
+  const referer = request.headers.referer;
+  const requestHost = request.headers.host;
+  if (!referer || !requestHost) {
+    return null;
+  }
+
+  try {
+    const refererUrl = new URL(referer);
+    if (refererUrl.hostname !== canonicalHostname(requestHost)) {
+      return null;
+    }
+    return targetForPath(refererUrl.pathname, upstreams);
+  } catch {
+    return null;
+  }
+}
+
 function upstreamPath(requestUrl: string, target: UpstreamTarget): string {
   const parsed = new URL(requestUrl, "http://fleet.invalid");
   const prefixWithoutTrailingSlash = target.prefix.slice(0, -1);
@@ -280,13 +306,14 @@ function proxyHttp(
   response: ServerResponse,
   target: UpstreamTarget,
   onProxyError: NonNullable<FleetServerOptions["onProxyError"]>,
+  pathOverride?: string,
 ): void {
   const proxyRequest = createUpstreamRequest(
     {
       host: target.host,
       port: target.port,
       method: request.method,
-      path: upstreamPath(request.url ?? "/", target),
+      path: pathOverride ?? upstreamPath(request.url ?? "/", target),
       headers: cloneProxyHeaders(request.headers, request, target, false),
       agent: false,
     },
@@ -502,6 +529,22 @@ export function createFleetServer(options: FleetServerOptions = {}): Server {
     const target = targetForPath(parsed.pathname, upstreams);
     if (target) {
       proxyHttp(request, response, target, onProxyError);
+      return;
+    }
+
+    const unprefixedAssetTarget = targetForUnprefixedAsset(
+      request,
+      parsed.pathname,
+      upstreams,
+    );
+    if (unprefixedAssetTarget) {
+      proxyHttp(
+        request,
+        response,
+        unprefixedAssetTarget,
+        onProxyError,
+        `${parsed.pathname}${parsed.search}`,
+      );
       return;
     }
 
