@@ -129,7 +129,9 @@ if [ "$platform" = Linux ]; then
 else
   tar -xzf "$archive" --strip-components=1 -C "$source_dir"
 fi
-for expected in bootstrap-vps.sh bootstrap-macos.sh install.sh apps/agk-tui/Cargo.toml; do
+for expected in bootstrap-vps.sh bootstrap-macos.sh install.sh \
+  scripts/repair-rmux-daemon.sh apps/agk-tui/Cargo.toml
+do
   [ -e "$source_dir/$expected" ] || {
     echo "downloaded AGK-TUI archive is incomplete: missing $expected" >&2
     exit 1

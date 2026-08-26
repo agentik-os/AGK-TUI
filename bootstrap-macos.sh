@@ -129,7 +129,10 @@ run uv pip install --python "$install_root/venv/bin/python" \
   --disable-pip-version-check -r "$repo_root/requirements.txt"
 
 phase "Install the verified RMUX release"
-if command -v rmux >/dev/null 2>&1 && rmux list-sessions >/dev/null 2>&1; then
+if command -v rmux >/dev/null 2>&1 \
+  && [ "$(rmux -V 2>/dev/null || true)" = "rmux $rmux_version" ] \
+  && rmux list-sessions >/dev/null 2>&1
+then
   echo "  = preserve compatible RMUX: $(rmux -V 2>/dev/null || true)"
 elif [ "$dry_run" = true ]; then
   echo "  + RMUX $rmux_version signed release for macOS -> $prefix"
@@ -156,7 +159,7 @@ else
   bash "$package_installer" --prefix "$prefix"
   cleanup
   temporary=
-  rmux list-sessions >/dev/null
+  "$repo_root/scripts/repair-rmux-daemon.sh" "$bin_dir/rmux"
 fi
 
 phase "Build and stage AGK-TUI"

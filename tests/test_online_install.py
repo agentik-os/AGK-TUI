@@ -43,6 +43,7 @@ def test_online_installer_downloads_a_scoped_archive_and_checks_its_layout():
         "bootstrap-vps.sh",
         "bootstrap-macos.sh",
         "install.sh",
+        "scripts/repair-rmux-daemon.sh",
         "apps/agk-tui/Cargo.toml",
     ):
         assert expected in source
