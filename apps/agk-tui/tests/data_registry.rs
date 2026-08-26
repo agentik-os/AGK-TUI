@@ -111,6 +111,34 @@ fn hermes_db(path: &Path) -> Connection {
     connection
 }
 
+fn add_modern_hermes_usage_schema(connection: &Connection) {
+    connection
+        .execute_batch(
+            "ALTER TABLE sessions ADD COLUMN model TEXT;
+             ALTER TABLE sessions ADD COLUMN billing_provider TEXT;
+             ALTER TABLE sessions ADD COLUMN cwd TEXT;
+             ALTER TABLE sessions ADD COLUMN started_at REAL;
+             ALTER TABLE sessions ADD COLUMN last_activity_at REAL;
+             ALTER TABLE sessions ADD COLUMN cache_read_tokens INTEGER DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN cache_write_tokens INTEGER DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN reasoning_tokens INTEGER DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN api_call_count INTEGER DEFAULT 0;
+             CREATE TABLE session_model_usage (
+                session_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                billing_provider TEXT,
+                api_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                last_seen REAL DEFAULT 0
+             );",
+        )
+        .unwrap();
+}
+
 #[test]
 fn missing_stores_are_empty_and_never_created() {
     let temp = TempDir::new().unwrap();
@@ -271,7 +299,7 @@ fn runtimes_join_managed_and_live_sessions_including_control_workspaces() {
     assert_eq!(live.client.as_deref(), Some("CLI-1"));
     assert_eq!(live.project.as_deref(), Some("PRJ-1"));
     assert_eq!(live.mission.as_deref(), Some("MIS-1"));
-    assert_eq!(live.tokens, 20);
+    assert_eq!(live.tokens, 20, "warnings: {:?}", snapshot.warnings);
 
     let stale = &snapshot.runtimes[1];
     assert_eq!(stale.status, "interrupted");
@@ -295,6 +323,133 @@ fn runtimes_join_managed_and_live_sessions_including_control_workspaces() {
     // double counted and unrelated Hermes sessions do not leak into it.
     assert_eq!(snapshot.token_total, 20);
     assert!(snapshot.warnings.is_empty());
+}
+
+#[test]
+fn modern_hermes_usage_is_split_by_model_without_double_counting_cache() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(&temp);
+    let runtime = runtime_db(&paths.runtime_db, true);
+    insert_runtime(
+        &runtime,
+        "RT-MODELS",
+        "model-work",
+        "hermes",
+        "operator",
+        None,
+        None,
+        None,
+        "running",
+        20.0,
+        None,
+        Some("session-modern"),
+    );
+    drop(runtime);
+
+    let hermes = hermes_db(&paths.hermes_state_db);
+    add_modern_hermes_usage_schema(&hermes);
+    hermes
+        .execute(
+            "INSERT INTO sessions(id,input_tokens,output_tokens,model,billing_provider,cwd,started_at)
+             VALUES ('session-modern',9999,9999,'fallback','fallback','/workspace',1)",
+            [],
+        )
+        .unwrap();
+    hermes
+        .execute(
+            "INSERT INTO session_model_usage(
+                session_id,model,billing_provider,api_call_count,input_tokens,output_tokens,
+                cache_read_tokens,cache_write_tokens,reasoning_tokens,last_seen
+             ) VALUES ('session-modern','claude-sonnet-4-6','anthropic',2,100,20,5000,30,7,10)",
+            [],
+        )
+        .unwrap();
+    hermes
+        .execute(
+            "INSERT INTO session_model_usage(
+                session_id,model,billing_provider,api_call_count,input_tokens,output_tokens,
+                cache_read_tokens,cache_write_tokens,reasoning_tokens,last_seen
+             ) VALUES ('session-modern','gpt-5.6-sol','openai-codex',3,300,40,9000,0,11,20)",
+            [],
+        )
+        .unwrap();
+    hermes
+        .execute(
+            "INSERT INTO session_model_usage(
+                session_id,model,billing_provider,input_tokens,output_tokens,last_seen
+             ) VALUES ('unrelated','stealth/ox-alpha','openrouter',50000,50000,30)",
+            [],
+        )
+        .unwrap();
+    drop(hermes);
+
+    let snapshot = RegistryClient::new("operator", paths).load(&["model-work".into()]);
+    let runtime = &snapshot.runtimes[0];
+    assert_eq!(runtime.tokens, 460);
+    assert_eq!(snapshot.token_total, 460);
+    assert_eq!(runtime.model_usage.len(), 2);
+    assert_eq!(runtime.model_usage[0].model, "gpt-5.6-sol");
+    assert_eq!(runtime.model_usage[0].provider, "openai-codex");
+    assert_eq!(runtime.model_usage[0].io_tokens(), 340);
+    assert_eq!(runtime.model_usage[0].cache_read_tokens, 9000);
+    assert_eq!(runtime.model_usage[1].model, "claude-sonnet-4-6");
+    assert_eq!(snapshot.model_usage, runtime.model_usage);
+}
+
+#[test]
+fn new_openrouter_runtime_gets_a_unique_read_only_session_match() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(&temp);
+    let runtime = runtime_db(&paths.runtime_db, true);
+    insert_runtime(
+        &runtime,
+        "RT-ROUTER",
+        "router-work",
+        "openrouter",
+        "operator",
+        None,
+        None,
+        None,
+        "running",
+        101.0,
+        None,
+        None,
+    );
+    runtime
+        .execute(
+            "UPDATE runtime_sessions SET created_at=100 WHERE id='RT-ROUTER'",
+            [],
+        )
+        .unwrap();
+    drop(runtime);
+
+    let hermes = hermes_db(&paths.hermes_state_db);
+    add_modern_hermes_usage_schema(&hermes);
+    hermes
+        .execute(
+            "INSERT INTO sessions(id,input_tokens,output_tokens,model,billing_provider,cwd,started_at)
+             VALUES ('router-native',50,10,'stealth/ox-alpha','openrouter','/workspace',100.4)",
+            [],
+        )
+        .unwrap();
+    hermes
+        .execute(
+            "INSERT INTO session_model_usage(
+                session_id,model,billing_provider,api_call_count,input_tokens,output_tokens,last_seen
+             ) VALUES ('router-native','stealth/ox-alpha','openrouter',1,50,10,101)",
+            [],
+        )
+        .unwrap();
+    drop(hermes);
+
+    let snapshot = RegistryClient::new("operator", paths).load(&["router-work".into()]);
+    assert_eq!(snapshot.runtimes[0].native_session, None);
+    assert_eq!(snapshot.runtimes[0].tokens, 60);
+    assert_eq!(
+        snapshot.runtimes[0].model_usage[0].model,
+        "stealth/ox-alpha"
+    );
+    assert_eq!(snapshot.runtimes[0].model_usage[0].provider, "openrouter");
 }
 
 #[test]

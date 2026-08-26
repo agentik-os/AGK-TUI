@@ -2,7 +2,7 @@
 //!
 //! Host probes are deliberately kept out of rendering. [`SystemInfoService`]
 //! refreshes the comparatively expensive values on a short cadence, while
-//! caller-owned counters (tokens and sessions) are updated on every call.
+//! caller-owned counters (tokens and sessions) are updated on a cheap cadence.
 
 use std::{
     fmt,
@@ -25,7 +25,8 @@ pub struct FooterSnapshot {
     pub ram_percent: Option<f32>,
     pub disk_percent: Option<f32>,
     pub session_count: usize,
-    pub token_total: u64,
+    pub token_total: Option<u64>,
+    pub token_model: Option<String>,
     pub local_time: String,
 }
 
@@ -38,7 +39,8 @@ impl Default for FooterSnapshot {
             ram_percent: None,
             disk_percent: None,
             session_count: 0,
-            token_total: 0,
+            token_total: None,
+            token_model: None,
             local_time: local_hms(),
         }
     }
@@ -83,7 +85,7 @@ impl SystemInfoService {
             last_host_refresh: None,
             snapshot: FooterSnapshot::default(),
         };
-        service.force_refresh(0, 0);
+        service.force_refresh(None, None, 0);
         service
     }
 
@@ -98,11 +100,13 @@ impl SystemInfoService {
     /// cadence so Git and disk probes never run once per rendered frame.
     pub fn refresh_for_context(
         &mut self,
-        token_total: u64,
+        token_total: Option<u64>,
+        token_model: Option<&str>,
         session_count: usize,
         directory: Option<&Path>,
     ) -> &FooterSnapshot {
         self.snapshot.token_total = token_total;
+        self.snapshot.token_model = token_model.map(str::to_owned);
         self.snapshot.session_count = session_count;
         self.snapshot.local_time = local_hms();
 
@@ -119,8 +123,14 @@ impl SystemInfoService {
     }
 
     /// Refresh all values immediately, bypassing the normal cadence.
-    pub fn force_refresh(&mut self, token_total: u64, session_count: usize) -> &FooterSnapshot {
+    pub fn force_refresh(
+        &mut self,
+        token_total: Option<u64>,
+        token_model: Option<&str>,
+        session_count: usize,
+    ) -> &FooterSnapshot {
         self.snapshot.token_total = token_total;
+        self.snapshot.token_model = token_model.map(str::to_owned);
         self.snapshot.session_count = session_count;
         self.snapshot.local_time = local_hms();
         self.refresh_host(Instant::now(), std::env::current_dir().ok());
@@ -201,6 +211,12 @@ pub fn format_token_total(total: u64) -> String {
     }
 }
 
+pub fn format_optional_token_total(total: Option<u64>) -> String {
+    total
+        .map(format_token_total)
+        .unwrap_or_else(|| UNKNOWN.to_owned())
+}
+
 fn local_hms() -> String {
     Local::now().format("%H:%M:%S").to_string()
 }
@@ -246,6 +262,8 @@ mod tests {
         assert_eq!(format_token_total(12_345), "12.3K");
         assert_eq!(format_token_total(1_500_000), "1.5M");
         assert_eq!(format_token_total(2_000_000_000), "2.0B");
+        assert_eq!(format_optional_token_total(None), UNKNOWN);
+        assert_eq!(format_optional_token_total(Some(12_345)), "12.3K");
     }
 
     #[test]
@@ -253,8 +271,14 @@ mod tests {
         let mut info = SystemInfoService::with_refresh_interval(Duration::from_secs(60));
         let before = info.last_host_refresh;
         let context = info.snapshot.cwd.clone();
-        let snapshot = info.refresh_for_context(7_654, 9, context.as_deref());
-        assert_eq!(snapshot.token_total, 7_654);
+        let snapshot = info.refresh_for_context(
+            Some(7_654),
+            Some("claude-sonnet-4-6"),
+            9,
+            context.as_deref(),
+        );
+        assert_eq!(snapshot.token_total, Some(7_654));
+        assert_eq!(snapshot.token_model.as_deref(), Some("claude-sonnet-4-6"));
         assert_eq!(snapshot.session_count, 9);
         assert_eq!(info.last_host_refresh, before);
     }

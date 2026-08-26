@@ -35,11 +35,37 @@ pub struct RuntimeRecord {
     pub status: String,
     pub created_at: f64,
     pub last_activity: f64,
+    /// Input + output tokens across every attributed model in this runtime.
     pub tokens: u64,
+    /// Exact Hermes accounting rows, ordered by most recently used model.
+    #[serde(default)]
+    pub model_usage: Vec<ModelUsageRecord>,
     /// False for a live RMUX session that has no Agentik registry row.
     pub managed: bool,
     /// Current process truth supplied by RMUX, independent of stored status.
     pub live: bool,
+}
+
+/// Token accounting for one model/provider pair. Cache and reasoning tokens
+/// stay separate because adding them to input/output would double count on
+/// providers that already include cached context in their input accounting.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelUsageRecord {
+    pub model: String,
+    pub provider: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub api_calls: u64,
+    pub last_used_at: f64,
+}
+
+impl ModelUsageRecord {
+    pub fn io_tokens(&self) -> u64 {
+        self.input_tokens.saturating_add(self.output_tokens)
+    }
 }
 
 /// A project hierarchy object from the Agentik control registry.
@@ -164,8 +190,11 @@ pub struct RegistrySnapshot {
     pub skills: Vec<SkillRecord>,
     pub providers: Vec<ProviderRecord>,
     pub profiles: Vec<ProfileRecord>,
-    /// Sum of unique Hermes sessions matched by `RuntimeRecord::native_session`.
+    /// Sum of input + output tokens from unique attributed Hermes sessions.
     pub token_total: u64,
+    /// Exact per-model accounting, aggregated across unique attributed
+    /// sessions and ordered by most recently used model.
+    pub model_usage: Vec<ModelUsageRecord>,
     pub warnings: Vec<String>,
 }
 
@@ -301,22 +330,20 @@ impl RegistryClient {
             }
         };
 
-        let native_sessions: BTreeSet<String> = snapshot
-            .runtimes
-            .iter()
-            .filter_map(|record| record.native_session.clone())
-            .collect();
-        match self.load_hermes_tokens(&native_sessions) {
-            Ok(tokens) => {
-                snapshot.token_total = tokens.values().copied().fold(0_u64, u64::saturating_add);
-                for runtime in &mut snapshot.runtimes {
-                    runtime.tokens = runtime
-                        .native_session
-                        .as_ref()
-                        .and_then(|id| tokens.get(id))
-                        .copied()
-                        .unwrap_or(0);
+        match self.load_hermes_usage(&snapshot.runtimes) {
+            Ok((runtime_usage, aggregate)) => {
+                for (runtime, usage) in snapshot.runtimes.iter_mut().zip(runtime_usage) {
+                    runtime.tokens = usage
+                        .iter()
+                        .map(ModelUsageRecord::io_tokens)
+                        .fold(0_u64, u64::saturating_add);
+                    runtime.model_usage = usage;
                 }
+                snapshot.token_total = aggregate
+                    .iter()
+                    .map(ModelUsageRecord::io_tokens)
+                    .fold(0_u64, u64::saturating_add);
+                snapshot.model_usage = aggregate;
             }
             Err(error) => warn(&mut snapshot.warnings, "Hermes token registry", error),
         }
@@ -456,6 +483,7 @@ impl RegistryClient {
                 created_at: row.created_at,
                 last_activity: row.last_activity,
                 tokens: 0,
+                model_usage: Vec::new(),
                 managed: true,
                 live: is_live,
             });
@@ -472,44 +500,37 @@ impl RegistryClient {
         Ok(records)
     }
 
-    fn load_hermes_tokens(
+    fn load_hermes_usage(
         &self,
-        native_sessions: &BTreeSet<String>,
-    ) -> Result<HashMap<String, u64>> {
-        if native_sessions.is_empty() {
-            return Ok(HashMap::new());
-        }
+        runtimes: &[RuntimeRecord],
+    ) -> Result<(Vec<Vec<ModelUsageRecord>>, Vec<ModelUsageRecord>)> {
         let Some(connection) = open_read_only(&self.paths.hermes_state_db)? else {
-            return Ok(HashMap::new());
+            return Ok((vec![Vec::new(); runtimes.len()], Vec::new()));
         };
-        let columns = table_columns(&connection, "sessions")?;
-        require_columns(
-            &columns,
-            &["id", "input_tokens", "output_tokens"],
-            "sessions",
-        )?;
-        let placeholders = std::iter::repeat_n("?", native_sessions.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "SELECT id,COALESCE(input_tokens,0),COALESCE(output_tokens,0) \
-             FROM sessions WHERE id IN ({placeholders})"
-        );
-        let mut statement = connection.prepare(&sql)?;
-        let rows = statement.query_map(params_from_iter(native_sessions.iter()), |row| {
-            let input: i64 = row.get(1)?;
-            let output: i64 = row.get(2)?;
-            Ok((
-                row.get::<_, String>(0)?,
-                nonnegative(input).saturating_add(nonnegative(output)),
-            ))
-        })?;
-        let mut tokens = HashMap::new();
-        for row in rows {
-            let (id, total) = row?;
-            tokens.insert(id, total);
+        let links = resolve_hermes_session_links(&connection, runtimes)?;
+        let session_ids = links.iter().flatten().cloned().collect::<BTreeSet<_>>();
+        if session_ids.is_empty() {
+            return Ok((vec![Vec::new(); runtimes.len()], Vec::new()));
         }
-        Ok(tokens)
+
+        let by_session = load_session_model_usage(&connection, &session_ids)?;
+        let runtime_usage = links
+            .iter()
+            .map(|session_id| {
+                session_id
+                    .as_ref()
+                    .and_then(|id| by_session.get(id))
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
+        let aggregate = aggregate_model_usage(
+            session_ids
+                .iter()
+                .filter_map(|session_id| by_session.get(session_id))
+                .flatten(),
+        );
+        Ok((runtime_usage, aggregate))
     }
 
     fn load_control_objects(&self, warnings: &mut Vec<String>) -> Result<Vec<ControlObject>> {
@@ -1181,6 +1202,18 @@ fn table_columns(connection: &Connection, table: &str) -> Result<HashSet<String>
     Ok(columns)
 }
 
+fn optional_table_columns(connection: &Connection, table: &str) -> Result<Option<HashSet<String>>> {
+    let exists = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !exists {
+        return Ok(None);
+    }
+    table_columns(connection, table).map(Some)
+}
+
 fn require_columns(columns: &HashSet<String>, required: &[&str], table: &str) -> Result<()> {
     let missing: Vec<_> = required
         .iter()
@@ -1300,9 +1333,275 @@ fn unmanaged_runtime(name: String, environment: &str) -> RuntimeRecord {
         created_at: 0.0,
         last_activity: 0.0,
         tokens: 0,
+        model_usage: Vec::new(),
         managed: false,
         live: true,
     }
+}
+
+#[derive(Debug)]
+struct HermesSessionCandidate {
+    id: String,
+    cwd: String,
+    started_at: f64,
+    provider: String,
+}
+
+/// Join new Hermes terminals read-only when their durable runtime row predates
+/// Hermes' own generated session id. A tight time/cwd match avoids presenting
+/// another terminal's usage; ambiguous matches deliberately remain unknown.
+fn resolve_hermes_session_links(
+    connection: &Connection,
+    runtimes: &[RuntimeRecord],
+) -> Result<Vec<Option<String>>> {
+    const MATCH_WINDOW_SECONDS: f64 = 30.0;
+    const AMBIGUITY_MARGIN_SECONDS: f64 = 1.0;
+
+    let mut links = runtimes
+        .iter()
+        .map(|runtime| runtime.native_session.clone())
+        .collect::<Vec<_>>();
+    let candidates_for_runtime = runtimes
+        .iter()
+        .enumerate()
+        .filter(|(_, runtime)| {
+            runtime.native_session.is_none()
+                && runtime.managed
+                && runtime.live
+                && runtime.created_at > 0.0
+                && !runtime.cwd.is_empty()
+                && matches!(
+                    runtime.kind.to_ascii_lowercase().as_str(),
+                    "hermes" | "openrouter"
+                )
+        })
+        .collect::<Vec<_>>();
+    if candidates_for_runtime.is_empty() {
+        return Ok(links);
+    }
+
+    let columns = table_columns(connection, "sessions")?;
+    if !["id", "cwd", "started_at"]
+        .iter()
+        .all(|column| columns.contains(*column))
+    {
+        return Ok(links);
+    }
+    let lower = candidates_for_runtime
+        .iter()
+        .map(|(_, runtime)| runtime.created_at)
+        .fold(f64::INFINITY, f64::min)
+        - MATCH_WINDOW_SECONDS;
+    let upper = candidates_for_runtime
+        .iter()
+        .map(|(_, runtime)| runtime.created_at)
+        .fold(f64::NEG_INFINITY, f64::max)
+        + MATCH_WINDOW_SECONDS;
+    let provider_column = if columns.contains("billing_provider") {
+        "COALESCE(billing_provider,'')"
+    } else {
+        "''"
+    };
+    let sql = format!(
+        "SELECT id,COALESCE(cwd,''),started_at,{provider_column} \
+         FROM sessions WHERE started_at BETWEEN ?1 AND ?2"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map([lower, upper], |row| {
+        Ok(HermesSessionCandidate {
+            id: row.get(0)?,
+            cwd: row.get(1)?,
+            started_at: row.get(2)?,
+            provider: row.get(3)?,
+        })
+    })?;
+    let candidates = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut reserved = links.iter().flatten().cloned().collect::<HashSet<_>>();
+
+    for (index, runtime) in candidates_for_runtime {
+        let mut matches = candidates
+            .iter()
+            .filter(|candidate| {
+                !reserved.contains(&candidate.id)
+                    && candidate.cwd == runtime.cwd
+                    && (candidate.started_at - runtime.created_at).abs() <= MATCH_WINDOW_SECONDS
+                    && (!runtime.kind.eq_ignore_ascii_case("openrouter")
+                        || candidate.provider.eq_ignore_ascii_case("openrouter"))
+            })
+            .map(|candidate| ((candidate.started_at - runtime.created_at).abs(), candidate))
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then_with(|| left.1.id.cmp(&right.1.id))
+        });
+        let Some((best_distance, best)) = matches.first() else {
+            continue;
+        };
+        if matches.get(1).is_some_and(|(next_distance, _)| {
+            next_distance - best_distance < AMBIGUITY_MARGIN_SECONDS
+        }) {
+            continue;
+        }
+        links[index] = Some(best.id.clone());
+        reserved.insert(best.id.clone());
+    }
+    Ok(links)
+}
+
+fn load_session_model_usage(
+    connection: &Connection,
+    session_ids: &BTreeSet<String>,
+) -> Result<HashMap<String, Vec<ModelUsageRecord>>> {
+    let placeholders = std::iter::repeat_n("?", session_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let usage_columns =
+        optional_table_columns(connection, "session_model_usage")?.unwrap_or_default();
+    let mut by_session: HashMap<String, Vec<ModelUsageRecord>> = HashMap::new();
+
+    if ["session_id", "model", "input_tokens", "output_tokens"]
+        .iter()
+        .all(|column| usage_columns.contains(*column))
+    {
+        let expression = |column: &str, fallback: &str| {
+            if usage_columns.contains(column) {
+                format!("COALESCE({column},{fallback})")
+            } else {
+                fallback.to_owned()
+            }
+        };
+        let sql = format!(
+            "SELECT session_id,COALESCE(model,''),{},COALESCE(input_tokens,0),\
+             COALESCE(output_tokens,0),{},{},{},{},{} \
+             FROM session_model_usage WHERE session_id IN ({placeholders})",
+            expression("billing_provider", "''"),
+            expression("cache_read_tokens", "0"),
+            expression("cache_write_tokens", "0"),
+            expression("reasoning_tokens", "0"),
+            expression("api_call_count", "0"),
+            expression("last_seen", "0.0")
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(params_from_iter(session_ids.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, usage_from_row(row, 1)?))
+        })?;
+        for row in rows {
+            let (session_id, usage) = row?;
+            by_session.entry(session_id).or_default().push(usage);
+        }
+        for usage in by_session.values_mut() {
+            *usage = aggregate_model_usage(usage.iter());
+        }
+    }
+
+    let missing = session_ids
+        .iter()
+        .filter(|session_id| !by_session.contains_key(*session_id))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if missing.is_empty() {
+        return Ok(by_session);
+    }
+
+    let columns = table_columns(connection, "sessions")?;
+    require_columns(
+        &columns,
+        &["id", "input_tokens", "output_tokens"],
+        "sessions",
+    )?;
+    let expression = |column: &str, fallback: &str| {
+        if columns.contains(column) {
+            format!("COALESCE({column},{fallback})")
+        } else {
+            fallback.to_owned()
+        }
+    };
+    let fallback_placeholders = std::iter::repeat_n("?", missing.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let last_used_expression = if columns.contains("last_activity_at") {
+        "COALESCE(last_activity_at,0.0)".to_owned()
+    } else {
+        expression("started_at", "0.0")
+    };
+    let sql = format!(
+        "SELECT id,{}, {},COALESCE(input_tokens,0),COALESCE(output_tokens,0),\
+         {},{},{},{},{} FROM sessions WHERE id IN ({fallback_placeholders})",
+        expression("model", "''"),
+        expression("billing_provider", "''"),
+        expression("cache_read_tokens", "0"),
+        expression("cache_write_tokens", "0"),
+        expression("reasoning_tokens", "0"),
+        expression("api_call_count", "0"),
+        last_used_expression,
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(missing.iter()), |row| {
+        Ok((row.get::<_, String>(0)?, usage_from_row(row, 1)?))
+    })?;
+    for row in rows {
+        let (session_id, usage) = row?;
+        by_session.insert(session_id, vec![usage]);
+    }
+    Ok(by_session)
+}
+
+fn usage_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<ModelUsageRecord> {
+    let text = |index: usize, fallback: &str| -> rusqlite::Result<String> {
+        let value = row.get::<_, String>(index)?;
+        Ok(if value.trim().is_empty() {
+            fallback.to_owned()
+        } else {
+            value
+        })
+    };
+    Ok(ModelUsageRecord {
+        model: text(offset, "Unattributed")?,
+        provider: text(offset + 1, "Hermes")?,
+        input_tokens: nonnegative(row.get(offset + 2)?),
+        output_tokens: nonnegative(row.get(offset + 3)?),
+        cache_read_tokens: nonnegative(row.get(offset + 4)?),
+        cache_write_tokens: nonnegative(row.get(offset + 5)?),
+        reasoning_tokens: nonnegative(row.get(offset + 6)?),
+        api_calls: nonnegative(row.get(offset + 7)?),
+        last_used_at: row.get(offset + 8)?,
+    })
+}
+
+fn aggregate_model_usage<'a>(
+    rows: impl IntoIterator<Item = &'a ModelUsageRecord>,
+) -> Vec<ModelUsageRecord> {
+    let mut aggregate: BTreeMap<(String, String), ModelUsageRecord> = BTreeMap::new();
+    for row in rows {
+        let entry = aggregate
+            .entry((row.model.clone(), row.provider.clone()))
+            .or_insert_with(|| ModelUsageRecord {
+                model: row.model.clone(),
+                provider: row.provider.clone(),
+                ..ModelUsageRecord::default()
+            });
+        entry.input_tokens = entry.input_tokens.saturating_add(row.input_tokens);
+        entry.output_tokens = entry.output_tokens.saturating_add(row.output_tokens);
+        entry.cache_read_tokens = entry
+            .cache_read_tokens
+            .saturating_add(row.cache_read_tokens);
+        entry.cache_write_tokens = entry
+            .cache_write_tokens
+            .saturating_add(row.cache_write_tokens);
+        entry.reasoning_tokens = entry.reasoning_tokens.saturating_add(row.reasoning_tokens);
+        entry.api_calls = entry.api_calls.saturating_add(row.api_calls);
+        entry.last_used_at = entry.last_used_at.max(row.last_used_at);
+    }
+    let mut aggregate = aggregate.into_values().collect::<Vec<_>>();
+    aggregate.sort_by(|left, right| {
+        right
+            .last_used_at
+            .total_cmp(&left.last_used_at)
+            .then_with(|| left.model.cmp(&right.model))
+            .then_with(|| left.provider.cmp(&right.provider))
+    });
+    aggregate
 }
 
 fn nonnegative(value: i64) -> u64 {

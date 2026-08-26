@@ -10,7 +10,7 @@ use ratatui_rmux::{PaneState, PaneWidget};
 use crate::{
     input::palette_items,
     model::{App, Density, Focus, Mode, Overlay, SessionKind, SettingsSection, View, density},
-    system_info::{UNKNOWN, format_percent, format_token_total},
+    system_info::{UNKNOWN, format_optional_token_total, format_percent, format_token_total},
     theme::{Palette, Theme},
 };
 
@@ -309,6 +309,13 @@ fn draw_sessions(
                 .flatten()
                 .collect::<Vec<_>>()
                 .join(" / ");
+                let model = runtime.model_usage.first().map(|usage| {
+                    format!(
+                        " · {} · TKN {}",
+                        usage.model,
+                        format_token_total(usage.io_tokens())
+                    )
+                });
                 ListItem::new(vec![
                     Line::from(vec![
                         Span::styled(
@@ -328,14 +335,15 @@ fn draw_sessions(
                     ]),
                     Line::styled(
                         format!(
-                            "  {} · {} · {}",
+                            "  {} · {} · {}{}",
                             runtime.kind,
                             runtime.status,
                             if scope.is_empty() {
                                 runtime.cwd.as_str()
                             } else {
                                 scope.as_str()
-                            }
+                            },
+                            model.as_deref().unwrap_or("")
                         ),
                         Style::default().fg(colors.text_muted),
                     ),
@@ -819,10 +827,47 @@ fn draw_system(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
         field("Skills", &app.snapshot.skills.len().to_string(), colors),
         field(
             "Tokens",
-            &format_token_total(app.snapshot.token_total),
+            &if app.snapshot.model_usage.is_empty() {
+                UNKNOWN.to_owned()
+            } else {
+                format_token_total(app.snapshot.token_total)
+            },
             colors,
         ),
     ];
+    lines.extend([Line::raw(""), heading("MODEL USAGE", colors)]);
+    if app.snapshot.model_usage.is_empty() {
+        lines.push(Line::styled(
+            "No attributed Hermes model usage yet",
+            Style::default().fg(colors.text_muted),
+        ));
+    } else {
+        for usage in &app.snapshot.model_usage {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("● {}", usage.model),
+                    Style::default()
+                        .fg(colors.text)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" · {}", usage.provider),
+                    Style::default().fg(colors.text_muted),
+                ),
+            ]));
+            lines.push(Line::styled(
+                format!(
+                    "  I/O {} · cache R {}/W {} · reasoning {} · {} calls",
+                    format_token_total(usage.io_tokens()),
+                    format_token_total(usage.cache_read_tokens),
+                    format_token_total(usage.cache_write_tokens),
+                    format_token_total(usage.reasoning_tokens),
+                    usage.api_calls,
+                ),
+                Style::default().fg(colors.text_muted),
+            ));
+        }
+    }
     if !app.snapshot.profiles.is_empty() {
         lines.extend([Line::raw(""), heading("PROFILES", colors)]);
         lines.extend(app.snapshot.profiles.iter().map(|profile| {
@@ -1183,22 +1228,38 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
         .iter()
         .filter(|runtime| runtime.live)
         .count();
+    let tokens = format_optional_token_total(app.footer.token_total);
     let full_metrics = format!(
         "TKN {} · RAM {} · CPU {} · DISK {} · ● {live} LIVE",
-        format_token_total(app.footer.token_total),
+        tokens,
         format_percent(app.footer.ram_percent),
         format_percent(app.footer.cpu_percent),
         format_percent(app.footer.disk_percent),
     );
+    let model_metrics = app
+        .footer
+        .token_model
+        .as_deref()
+        .map(|model| format!("{model} · {full_metrics}"));
     let compact_metrics = format!(
         "TKN {}  RAM {}  CPU {}  DSK {}  ● {live} LIVE",
-        format_token_total(app.footer.token_total),
+        tokens,
         format_percent(app.footer.ram_percent),
         format_percent(app.footer.cpu_percent),
         format_percent(app.footer.disk_percent),
     );
     let right_budget = area.width.saturating_sub(8) as usize;
-    let metrics = if full_metrics.chars().count() <= right_budget {
+    let full_context_width = footer_context(app, usize::MAX).chars().count();
+    let metrics = if let Some(model_metrics) = model_metrics.filter(|value| {
+        value
+            .chars()
+            .count()
+            .saturating_add(full_context_width)
+            .saturating_add(2)
+            <= usize::from(area.width)
+    }) {
+        model_metrics
+    } else if full_metrics.chars().count() <= right_budget {
         full_metrics
     } else {
         abbreviate(&compact_metrics, right_budget)
@@ -1536,7 +1597,8 @@ fn abbreviate(value: &str, width: usize) -> String {
 mod tests {
     use super::*;
     use crate::data::{
-        CapabilityRecord, CapabilityToolkitRecord, ProviderRecord, RegistrySnapshot, RuntimeRecord,
+        CapabilityRecord, CapabilityToolkitRecord, ModelUsageRecord, ProviderRecord,
+        RegistrySnapshot, RuntimeRecord,
     };
     use crate::theme::Preferences;
     use ratatui::{Terminal, backend::TestBackend};
@@ -1559,6 +1621,15 @@ mod tests {
                 created_at: 1.0,
                 last_activity: 2.0,
                 tokens: 12_300,
+                model_usage: vec![ModelUsageRecord {
+                    model: "claude-sonnet-4-6".into(),
+                    provider: "anthropic".into(),
+                    input_tokens: 10_000,
+                    output_tokens: 2_300,
+                    api_calls: 3,
+                    last_used_at: 2.0,
+                    ..ModelUsageRecord::default()
+                }],
                 managed: true,
                 live: true,
             }],
@@ -1577,7 +1648,8 @@ mod tests {
         app.footer.ram_percent = Some(34.0);
         app.footer.disk_percent = Some(56.0);
         app.footer.session_count = 2;
-        app.footer.token_total = 12_300;
+        app.footer.token_total = Some(12_300);
+        app.footer.token_model = Some("claude-sonnet-4-6".into());
         app.footer.local_time = "13:37:00".into();
         app
     }
@@ -1697,6 +1769,20 @@ mod tests {
         assert!(output.contains("● 1 LIVE"));
         assert!(!output.contains("MISSION CONTROL"));
         assert!(!output.contains("1SES"));
+    }
+
+    #[test]
+    fn system_view_reports_exact_usage_by_model_and_provider() {
+        let mut app = test_app();
+        app.snapshot.model_usage = app.snapshot.runtimes[0].model_usage.clone();
+        app.snapshot.token_total = 12_300;
+        app.set_view(View::System);
+        let output = render(app, 140, 40);
+        assert!(output.contains("MODEL USAGE"));
+        assert!(output.contains("claude-sonnet-4-6"));
+        assert!(output.contains("anthropic"));
+        assert!(output.contains("I/O 12.3K"));
+        assert!(output.contains("3 calls"));
     }
 
     #[test]

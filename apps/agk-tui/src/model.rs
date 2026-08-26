@@ -689,6 +689,7 @@ mod tests {
             created_at: 1.0,
             last_activity: 2.0,
             tokens: 0,
+            model_usage: Vec::new(),
             managed: true,
             live: true,
         }

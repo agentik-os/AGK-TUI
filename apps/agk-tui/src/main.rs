@@ -34,9 +34,10 @@ use system_info::SystemInfoService;
 use theme::Preferences;
 use ui::SessionPreview;
 
-const FRAME_TIME: Duration = Duration::from_millis(16);
+const FRAME_TIME: Duration = Duration::from_millis(33);
 const INPUT_DRAIN_BUDGET: Duration = Duration::from_millis(8);
-const PREVIEW_REFRESH_TIME: Duration = Duration::from_millis(80);
+const PREVIEW_REFRESH_TIME: Duration = Duration::from_millis(100);
+const FOOTER_CONTEXT_REFRESH_TIME: Duration = Duration::from_millis(250);
 const SESSION_START_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Debug)]
@@ -149,6 +150,7 @@ async fn run(
     let mut observed_status = app.status.clone();
     let mut status_since = Instant::now();
     let mut last_preview_refresh = Instant::now() - PREVIEW_REFRESH_TIME;
+    let mut last_footer_refresh = Instant::now() - FOOTER_CONTEXT_REFRESH_TIME;
 
     'event_loop: loop {
         if app.status != observed_status {
@@ -205,7 +207,10 @@ async fn run(
             refresh_requested = false;
         }
 
-        update_footer(&mut host, app);
+        if last_footer_refresh.elapsed() >= FOOTER_CONTEXT_REFRESH_TIME {
+            update_footer(&mut host, app);
+            last_footer_refresh = Instant::now();
+        }
         if app.mode == Mode::Terminal {
             let size = terminal.size()?;
             app.preview_width = size.width;
@@ -216,10 +221,10 @@ async fn run(
             app.preview_height = size.height.saturating_sub(2);
         }
         // A pane snapshot is an RPC and must never sit in front of queued
-        // keyboard input. Keep the live preview fluid at 12.5 FPS, but skip
-        // the capture while crossterm already has events waiting for us.
+        // keyboard input. Capture only a visible preview, and never rediscover
+        // the same pane on every frame or keystroke.
         let input_pending = event::poll(Duration::ZERO)?;
-        if app.view == View::Sessions
+        if preview_is_visible(app)
             && !input_pending
             && last_preview_refresh.elapsed() >= PREVIEW_REFRESH_TIME
         {
@@ -254,7 +259,7 @@ async fn run(
                     execute!(terminal.backend_mut(), EnableMouseCapture)?;
                     continue;
                 }
-                send_terminal_event(rmux, app, event).await;
+                send_terminal_event(rmux, app, &mut preview_cache, event).await;
                 continue;
             }
 
@@ -426,12 +431,23 @@ fn install_provider(
 
 fn update_footer(host: &mut SystemInfoService, app: &mut App) {
     let directory = footer_directory(app);
+    let usage = footer_model_usage(app);
     host.refresh_for_context(
-        app.snapshot.token_total,
+        usage.map(data::ModelUsageRecord::io_tokens),
+        usage.map(|usage| usage.model.as_str()),
         app.snapshot.runtimes.len(),
         directory.as_deref(),
     );
     app.footer = host.snapshot().clone();
+}
+
+fn footer_model_usage(app: &App) -> Option<&data::ModelUsageRecord> {
+    let session = app.selected_session_name()?;
+    app.snapshot
+        .runtimes
+        .iter()
+        .find(|runtime| runtime.name == session)
+        .and_then(|runtime| runtime.model_usage.first())
 }
 
 fn footer_directory(app: &App) -> Option<PathBuf> {
@@ -463,6 +479,8 @@ enum PreviewState {
 #[derive(Default)]
 struct PreviewCache {
     session: Option<String>,
+    handle: Option<Pane>,
+    target: Option<String>,
     pane: Option<PaneState>,
     history: Option<Vec<String>>,
     size: Option<(u16, u16)>,
@@ -472,6 +490,8 @@ struct PreviewCache {
 impl PreviewCache {
     fn clear(&mut self) {
         self.session = None;
+        self.handle = None;
+        self.target = None;
         self.pane = None;
         self.history = None;
         self.size = None;
@@ -501,6 +521,42 @@ impl PreviewCache {
             PreviewState::Unavailable => SessionPreview::Unavailable,
         }
     }
+
+    fn invalidate_handle(&mut self) {
+        self.handle = None;
+        self.target = None;
+        self.size = None;
+    }
+}
+
+fn preview_is_visible(app: &App) -> bool {
+    app.view == View::Sessions
+        && (app.mode == Mode::Terminal
+            || (app.preview_width > 1
+                && app.preview_height > 1
+                && (app.focus == Focus::Detail || app.preferences.split_preview)))
+}
+
+async fn cached_primary_pane(
+    rmux: &Rmux,
+    session_name: &str,
+    cache: &mut PreviewCache,
+) -> Option<Pane> {
+    cache.select(session_name);
+    if let Some(pane) = cache.handle.clone() {
+        return Some(pane);
+    }
+    let pane = primary_pane(rmux, session_name).await?;
+    cache.target = Some(
+        pane.id()
+            .await
+            .ok()
+            .flatten()
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| session_name.to_owned()),
+    );
+    cache.handle = Some(pane.clone());
+    Some(pane)
 }
 
 async fn refresh_preview(rmux: &Rmux, app: &App, cache: &mut PreviewCache) {
@@ -510,31 +566,27 @@ async fn refresh_preview(rmux: &Rmux, app: &App, cache: &mut PreviewCache) {
     };
     cache.select(&runtime.rmux_session);
     if app.selected_is_current_rmux_session() {
+        cache.invalidate_handle();
         cache.pane = None;
         cache.history = None;
         cache.state = PreviewState::CurrentSession;
         return;
     }
     if !runtime.live {
+        cache.invalidate_handle();
         cache.pane = None;
         cache.history = None;
         cache.state = PreviewState::Unavailable;
         return;
     }
     let session_name = runtime.rmux_session.clone();
-    let Some(pane) = primary_pane(rmux, &session_name).await else {
+    let Some(pane) = cached_primary_pane(rmux, &session_name, cache).await else {
         cache.state = PreviewState::Unavailable;
         return;
     };
     let width = app.preview_width;
     let height = app.preview_height;
-    let target = pane
-        .id()
-        .await
-        .ok()
-        .flatten()
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| session_name.clone());
+    let target = cache.target.clone().unwrap_or_else(|| session_name.clone());
     if width > 1 && height > 1 && cache.size != Some((width, height)) {
         // A pane cannot grow beyond its window. The SDK's pane.resize() is
         // therefore a no-op for the usual one-pane AGK sessions; resize the
@@ -553,10 +605,11 @@ async fn refresh_preview(rmux: &Rmux, app: &App, cache: &mut PreviewCache) {
         }
     }
     cache.history = None;
-    cache.pane = pane
-        .snapshot()
-        .await
-        .ok()
+    let snapshot = pane.snapshot().await.ok();
+    if snapshot.is_none() {
+        cache.invalidate_handle();
+    }
+    cache.pane = snapshot
         .map(|snapshot| crop_snapshot_to_height(snapshot, height))
         .map(PaneState::from_snapshot);
     cache.state = if cache.pane.is_some() {
@@ -731,17 +784,15 @@ fn command_error(output: &std::process::Output) -> String {
     }
 }
 
-async fn send_terminal_event(rmux: &Rmux, app: &App, event: Event) {
+async fn send_terminal_event(rmux: &Rmux, app: &App, cache: &mut PreviewCache, event: Event) {
     let Some(runtime) = app.current_session() else {
         return;
     };
-    let Some(pane) = primary_pane(rmux, &runtime.rmux_session).await else {
+    let Some(pane) = cached_primary_pane(rmux, &runtime.rmux_session, cache).await else {
         return;
     };
-    match event {
-        Event::Paste(text) => {
-            let _ = pane.send_text(text).await;
-        }
+    let result = match event {
+        Event::Paste(text) => pane.send_text(text).await.map(|_| ()),
         Event::Key(key) if accepts_key(&key) => {
             if key.code == KeyCode::Enter
                 && key
@@ -750,19 +801,26 @@ async fn send_terminal_event(rmux: &Rmux, app: &App, event: Event) {
             {
                 // Match the supported agent CLIs: a trailing backslash plus Enter
                 // inserts a newline without submitting the prompt.
-                let _ = pane.send_text("\\").await;
-                let _ = pane.send_key("Enter").await;
+                match pane.send_text("\\").await {
+                    Ok(_) => pane.send_key("Enter").await.map(|_| ()),
+                    Err(error) => Err(error),
+                }
             } else if let KeyCode::Char(character) = key.code
                 && !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
             {
-                let _ = pane.send_text(character.to_string()).await;
+                pane.send_text(character.to_string()).await.map(|_| ())
             } else if let Some(token) = rmux_key_token(key) {
-                let _ = pane.send_key(token).await;
+                pane.send_key(token).await.map(|_| ())
+            } else {
+                return;
             }
         }
-        _ => {}
+        _ => return,
+    };
+    if result.is_err() {
+        cache.invalidate_handle();
     }
 }
 
@@ -946,9 +1004,27 @@ mod tests {
             created_at: 1.0,
             last_activity: 2.0,
             tokens: 0,
+            model_usage: Vec::new(),
             managed: true,
             live,
         }
+    }
+
+    #[test]
+    fn preview_refreshes_only_when_the_pane_is_rendered() {
+        let mut app = App::new(Preferences::default());
+        app.preview_width = 80;
+        app.preview_height = 20;
+        app.focus = Focus::List;
+        app.preferences.split_preview = false;
+        assert!(!preview_is_visible(&app));
+
+        app.focus = Focus::Detail;
+        assert!(preview_is_visible(&app));
+        app.mode = Mode::Terminal;
+        assert!(preview_is_visible(&app));
+        app.view = View::Projects;
+        assert!(!preview_is_visible(&app));
     }
 
     #[test]
