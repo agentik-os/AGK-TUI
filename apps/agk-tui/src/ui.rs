@@ -1125,7 +1125,11 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
         ),
         help_key("f / F11", "Expand or restore live preview", colors),
         help_key("v", "Toggle persistent split preview", colors),
-        help_key("n", "Create via the existing AGK client", colors),
+        help_key(
+            "n",
+            "Choose provider, create session, then open it when RMUX is live",
+            colors,
+        ),
         help_key(
             "1/2/3/4/5",
             "New Hermes / Codex / Claude Code / OpenCode / Hermes OpenRouter",
@@ -1278,7 +1282,10 @@ fn draw_overlay(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
                             if index == *selected { "▶ " } else { "  " },
                             Style::default().fg(colors.accent),
                         ),
-                        Span::styled(kind.label(), Style::default().fg(colors.text)),
+                        Span::styled(
+                            format!("{}. {}", index + 1, kind.label()),
+                            Style::default().fg(colors.text),
+                        ),
                     ])
                 })
                 .collect(),
@@ -1463,6 +1470,9 @@ fn centered(area: Rect, width_percent: u16, height: u16) -> Rect {
 
 fn footer_context(app: &App, width: usize) -> String {
     const BRAND: &str = "AGK";
+    if let Some(status) = app.status.as_deref() {
+        return abbreviate(&format!("{BRAND} · {status}"), width);
+    }
     let session = app.selected_session_name().unwrap_or(UNKNOWN);
     let project = footer_project(app);
     let branch = app.footer.git_branch.as_deref().unwrap_or(UNKNOWN);
@@ -1624,6 +1634,15 @@ mod tests {
                 "obsolete footer/header text {removed:?}"
             );
         }
+    }
+
+    #[test]
+    fn transient_status_is_visible_in_the_one_line_footer() {
+        let mut app = test_app();
+        app.status = Some("Session creation failed: duplicate name".into());
+        let screen = render(app, 120, 24);
+
+        assert!(screen.contains("AGK · Session creation failed: duplicate name"));
     }
 
     #[test]

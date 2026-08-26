@@ -520,6 +520,14 @@ fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Action {
         },
         Overlay::NewKind { mut selected } => match key.code {
             KeyCode::Esc => Action::None,
+            KeyCode::Char(choice @ '1'..='6') if printable(key.modifiers) => {
+                let index = choice as usize - '1' as usize;
+                app.overlay = Overlay::NewName {
+                    kind: SessionKind::ALL[index],
+                    value: String::new(),
+                };
+                Action::None
+            }
             KeyCode::Up => {
                 selected = selected.saturating_sub(1);
                 app.overlay = Overlay::NewKind { selected };
@@ -560,6 +568,12 @@ fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Action {
             }
             KeyCode::Enter if valid_session_name(&value) => {
                 Action::CreateSession { kind, name: value }
+            }
+            KeyCode::Enter => {
+                app.status =
+                    Some("Name must contain 3–80 lowercase letters, numbers or hyphens".into());
+                app.overlay = Overlay::NewName { kind, value };
+                Action::None
             }
             _ => {
                 app.overlay = Overlay::NewName { kind, value };
@@ -865,9 +879,58 @@ mod tests {
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Enter), true),
             Action::CreateSession {
-                kind: SessionKind::Claude,
+                kind: SessionKind::Codex,
                 name: "moon-1".into()
             }
+        );
+    }
+
+    #[test]
+    fn new_session_provider_numbers_match_the_session_shortcuts() {
+        for (choice, expected) in [
+            ('1', SessionKind::Hermes),
+            ('2', SessionKind::Codex),
+            ('3', SessionKind::Claude),
+            ('4', SessionKind::OpenCode),
+            ('5', SessionKind::OpenRouter),
+            ('6', SessionKind::Shell),
+        ] {
+            let mut app = app();
+            app.overlay = Overlay::NewKind { selected: 0 };
+            handle_key(&mut app, key(KeyCode::Char(choice)), true);
+            assert_eq!(
+                app.overlay,
+                Overlay::NewName {
+                    kind: expected,
+                    value: String::new(),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_new_session_name_keeps_the_dialog_open_with_feedback() {
+        let mut app = app();
+        app.overlay = Overlay::NewName {
+            kind: SessionKind::Hermes,
+            value: "ab".into(),
+        };
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter), true),
+            Action::None
+        );
+        assert_eq!(
+            app.overlay,
+            Overlay::NewName {
+                kind: SessionKind::Hermes,
+                value: "ab".into(),
+            }
+        );
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|status| status.contains("3–80"))
         );
     }
 

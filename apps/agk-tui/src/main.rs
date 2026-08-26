@@ -25,7 +25,7 @@ use crossterm::{
 };
 use data::RegistryClient;
 use input::Action;
-use model::{App, Focus, Mode, SessionTarget, View};
+use model::{App, Focus, Mode, Overlay, SessionTarget, View};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use ratatui_rmux::PaneState;
 use rmux_sdk::{Pane, PaneCursor, PaneSnapshot, Rmux};
@@ -36,6 +36,39 @@ use ui::SessionPreview;
 const FRAME_TIME: Duration = Duration::from_millis(16);
 const INPUT_DRAIN_BUDGET: Duration = Duration::from_millis(8);
 const PREVIEW_REFRESH_TIME: Duration = Duration::from_millis(80);
+const SESSION_START_TIMEOUT: Duration = Duration::from_secs(8);
+
+#[derive(Debug)]
+struct PendingSession {
+    name: String,
+    started_at: Instant,
+    enter_terminal: bool,
+}
+
+impl PendingSession {
+    fn created(name: String) -> Self {
+        Self {
+            name,
+            started_at: Instant::now(),
+            enter_terminal: true,
+        }
+    }
+
+    fn renamed(name: String) -> Self {
+        Self {
+            name,
+            started_at: Instant::now(),
+            enter_terminal: false,
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum PendingResolution {
+    Waiting,
+    Ready { name: String, enter_terminal: bool },
+    TimedOut { name: String, registered: bool },
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -110,7 +143,7 @@ async fn run(
     let mut host = SystemInfoService::new();
     let mut last_refresh = Instant::now();
     let mut refresh_requested = false;
-    let mut pending_session: Option<String> = None;
+    let mut pending_session: Option<PendingSession> = None;
     let mut preview_cache = PreviewCache::default();
     let mut observed_status = app.status.clone();
     let mut status_since = Instant::now();
@@ -128,10 +161,37 @@ async fn run(
         if refresh_requested || last_refresh.elapsed() >= refresh_interval {
             match refresh(rmux, registry, app).await {
                 Ok(()) => {
-                    if let Some(name) = pending_session.take()
-                        && app.select_session_by_name(&name)
-                    {
-                        app.status = Some(format!("Created and selected {name}"));
+                    let resolution = pending_session
+                        .as_ref()
+                        .map(|pending| resolve_pending_session(app, pending, Instant::now()));
+                    match resolution {
+                        Some(PendingResolution::Ready {
+                            name,
+                            enter_terminal,
+                        }) => {
+                            pending_session = None;
+                            if enter_terminal {
+                                app.mode = Mode::Terminal;
+                                app.focus = Focus::Detail;
+                                app.scroll_preview_live();
+                                preview_cache.clear();
+                                execute!(terminal.backend_mut(), DisableMouseCapture)?;
+                                app.status = Some(format!("Created and opened {name}"));
+                            } else {
+                                app.status = Some(format!("Renamed and selected {name}"));
+                            }
+                        }
+                        Some(PendingResolution::TimedOut { name, registered }) => {
+                            pending_session = None;
+                            app.status = Some(if registered {
+                                format!(
+                                    "Session {name} was created but its provider terminal did not stay live"
+                                )
+                            } else {
+                                format!("Session {name} did not appear in RMUX after creation")
+                            });
+                        }
+                        Some(PendingResolution::Waiting) | None => {}
                     }
                     if refresh_requested {
                         app.status
@@ -250,6 +310,10 @@ async fn run(
                             "This session is running AGK; recursive terminal mode is disabled"
                                 .into(),
                         );
+                    } else if !app.current_session().is_some_and(|runtime| runtime.live) {
+                        app.status = Some(
+                            "This provider terminal is not live; press R to restart it".into(),
+                        );
                     } else {
                         app.mode = Mode::Terminal;
                         app.focus = Focus::Detail;
@@ -262,11 +326,14 @@ async fn run(
                 }
                 Action::CreateSession { kind, name } => match create_session(kind.slug(), &name) {
                     Ok(message) => {
-                        app.status = Some(message);
-                        pending_session = Some(name);
+                        app.status = Some(format!("{message} · opening provider terminal…"));
+                        pending_session = Some(PendingSession::created(name));
                         refresh_requested = true;
                     }
-                    Err(error) => app.status = Some(format!("Session creation failed: {error:#}")),
+                    Err(error) => {
+                        app.status = Some(format!("Session creation failed: {error:#}"));
+                        app.overlay = Overlay::NewName { kind, value: name };
+                    }
                 },
                 Action::RenameSession { target, name } => match rename_session(&target, &name) {
                     Ok(message) => {
@@ -275,7 +342,7 @@ async fn run(
                             app.current_rmux_session = Some(name.clone());
                         }
                         app.status = Some(message);
-                        pending_session = Some(name);
+                        pending_session = Some(PendingSession::renamed(name));
                         refresh_requested = true;
                         preview_cache.clear();
                     }
@@ -558,6 +625,36 @@ fn create_session(kind: &str, name: &str) -> Result<String> {
     })
 }
 
+fn resolve_pending_session(
+    app: &mut App,
+    pending: &PendingSession,
+    now: Instant,
+) -> PendingResolution {
+    let runtime = app
+        .snapshot
+        .runtimes
+        .iter()
+        .find(|runtime| runtime.name == pending.name);
+    let registered = runtime.is_some();
+    let ready = runtime.is_some_and(|runtime| !pending.enter_terminal || runtime.live);
+    if ready && app.select_session_by_name(&pending.name) {
+        return PendingResolution::Ready {
+            name: pending.name.clone(),
+            enter_terminal: pending.enter_terminal,
+        };
+    }
+    if now.duration_since(pending.started_at) >= SESSION_START_TIMEOUT {
+        if registered {
+            app.select_session_by_name(&pending.name);
+        }
+        return PendingResolution::TimedOut {
+            name: pending.name.clone(),
+            registered,
+        };
+    }
+    PendingResolution::Waiting
+}
+
 fn rename_session(target: &SessionTarget, name: &str) -> Result<String> {
     let mut command = if target.managed {
         let mut command = Command::new("agk");
@@ -813,7 +910,29 @@ fn detail_available(app: &App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::{RegistrySnapshot, RuntimeRecord};
     use rmux_sdk::{PaneCell, PaneGlyph};
+
+    fn runtime(name: &str, live: bool) -> RuntimeRecord {
+        RuntimeRecord {
+            id: format!("runtime-{name}"),
+            name: name.into(),
+            kind: "hermes".into(),
+            environment: "operator".into(),
+            client: None,
+            project: None,
+            mission: None,
+            native_session: None,
+            rmux_session: name.into(),
+            cwd: "/home/operator".into(),
+            status: if live { "running" } else { "interrupted" }.into(),
+            created_at: 1.0,
+            last_activity: 2.0,
+            tokens: 0,
+            managed: true,
+            live,
+        }
+    }
 
     #[test]
     fn terminal_key_mapping_forwards_navigation_function_and_modifiers() {
@@ -870,6 +989,65 @@ mod tests {
             KeyCode::Char('r'),
             KeyModifiers::CONTROL,
         )));
+    }
+
+    #[test]
+    fn pending_creation_waits_for_a_live_runtime_then_selects_it_for_direct_open() {
+        let mut app = App::new(Preferences::default());
+        let started_at = Instant::now();
+        let pending = PendingSession {
+            name: "fresh-hermes".into(),
+            started_at,
+            enter_terminal: true,
+        };
+
+        assert_eq!(
+            resolve_pending_session(&mut app, &pending, started_at),
+            PendingResolution::Waiting
+        );
+        app.set_snapshot(RegistrySnapshot {
+            runtimes: vec![runtime("fresh-hermes", false)],
+            ..RegistrySnapshot::default()
+        });
+        assert_eq!(
+            resolve_pending_session(&mut app, &pending, started_at + Duration::from_secs(1)),
+            PendingResolution::Waiting
+        );
+        app.set_snapshot(RegistrySnapshot {
+            runtimes: vec![runtime("fresh-hermes", true)],
+            ..RegistrySnapshot::default()
+        });
+        assert_eq!(
+            resolve_pending_session(&mut app, &pending, started_at + Duration::from_secs(2)),
+            PendingResolution::Ready {
+                name: "fresh-hermes".into(),
+                enter_terminal: true,
+            }
+        );
+        assert_eq!(app.selected_session_name(), Some("fresh-hermes"));
+    }
+
+    #[test]
+    fn pending_creation_reports_a_provider_that_exits_during_startup() {
+        let mut app = App::new(Preferences::default());
+        app.set_snapshot(RegistrySnapshot {
+            runtimes: vec![runtime("dead-provider", false)],
+            ..RegistrySnapshot::default()
+        });
+        let started_at = Instant::now();
+        let pending = PendingSession {
+            name: "dead-provider".into(),
+            started_at,
+            enter_terminal: true,
+        };
+
+        assert_eq!(
+            resolve_pending_session(&mut app, &pending, started_at + SESSION_START_TIMEOUT),
+            PendingResolution::TimedOut {
+                name: "dead-provider".into(),
+                registered: true,
+            }
+        );
     }
 
     #[test]

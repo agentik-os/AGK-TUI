@@ -151,10 +151,10 @@ impl From<&RuntimeRecord> for SessionTarget {
 impl SessionKind {
     pub const ALL: [Self; 6] = [
         Self::Hermes,
-        Self::Claude,
         Self::Codex,
-        Self::OpenRouter,
+        Self::Claude,
         Self::OpenCode,
+        Self::OpenRouter,
         Self::Shell,
     ];
 
