@@ -34,6 +34,176 @@ pub struct Palette {
     pub info: Color,
 }
 
+/// Serializable RGB value used by the in-app custom theme editor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RgbColor(pub u8, pub u8, pub u8);
+
+impl RgbColor {
+    pub const fn color(self) -> Color {
+        Color::Rgb(self.0, self.1, self.2)
+    }
+
+    pub fn from_hex(value: &str) -> Option<Self> {
+        let hex = value.trim().strip_prefix('#').unwrap_or(value.trim());
+        if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        Some(Self(
+            u8::from_str_radix(&hex[0..2], 16).ok()?,
+            u8::from_str_radix(&hex[2..4], 16).ok()?,
+            u8::from_str_radix(&hex[4..6], 16).ok()?,
+        ))
+    }
+
+    pub fn hex(self) -> String {
+        format!("#{:02X}{:02X}{:02X}", self.0, self.1, self.2)
+    }
+}
+
+/// Ten editable anchors are expanded into the complete semantic palette, so
+/// custom themes remain easy to tune without losing readable selections and
+/// focused borders.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CustomColors {
+    pub background: RgbColor,
+    pub surface: RgbColor,
+    pub text: RgbColor,
+    pub muted: RgbColor,
+    pub accent: RgbColor,
+    pub border: RgbColor,
+    pub success: RgbColor,
+    pub warning: RgbColor,
+    pub error: RgbColor,
+    pub info: RgbColor,
+}
+
+impl Default for CustomColors {
+    fn default() -> Self {
+        Self {
+            background: RgbColor(12, 14, 18),
+            surface: RgbColor(23, 27, 34),
+            text: RgbColor(239, 242, 247),
+            muted: RgbColor(145, 154, 170),
+            accent: RgbColor(139, 124, 246),
+            border: RgbColor(70, 78, 94),
+            success: RgbColor(68, 190, 133),
+            warning: RgbColor(226, 175, 88),
+            error: RgbColor(231, 96, 112),
+            info: RgbColor(91, 169, 244),
+        }
+    }
+}
+
+impl CustomColors {
+    pub const LEN: usize = 10;
+
+    pub const fn label(index: usize) -> &'static str {
+        match index {
+            0 => "Background",
+            1 => "Surface",
+            2 => "Text",
+            3 => "Muted text",
+            4 => "Accent",
+            5 => "Border",
+            6 => "Success",
+            7 => "Warning",
+            8 => "Error",
+            9 => "Info",
+            _ => "Color",
+        }
+    }
+
+    pub const fn config_key(index: usize) -> &'static str {
+        match index {
+            0 => "custom_background",
+            1 => "custom_surface",
+            2 => "custom_text",
+            3 => "custom_muted",
+            4 => "custom_accent",
+            5 => "custom_border",
+            6 => "custom_success",
+            7 => "custom_warning",
+            8 => "custom_error",
+            9 => "custom_info",
+            _ => "custom_color",
+        }
+    }
+
+    pub const fn get(self, index: usize) -> RgbColor {
+        match index {
+            0 => self.background,
+            1 => self.surface,
+            2 => self.text,
+            3 => self.muted,
+            4 => self.accent,
+            5 => self.border,
+            6 => self.success,
+            7 => self.warning,
+            8 => self.error,
+            9 => self.info,
+            _ => self.accent,
+        }
+    }
+
+    pub fn set(&mut self, index: usize, value: RgbColor) {
+        match index {
+            0 => self.background = value,
+            1 => self.surface = value,
+            2 => self.text = value,
+            3 => self.muted = value,
+            4 => self.accent = value,
+            5 => self.border = value,
+            6 => self.success = value,
+            7 => self.warning = value,
+            8 => self.error = value,
+            9 => self.info = value,
+            _ => {}
+        }
+    }
+
+    pub fn palette(self) -> Palette {
+        let selection_bg = blend(self.background, self.accent, 38);
+        Palette {
+            background: self.background.color(),
+            surface: self.surface.color(),
+            surface_alt: blend(self.surface, self.text, 12).color(),
+            text: self.text.color(),
+            text_muted: self.muted.color(),
+            accent: self.accent.color(),
+            accent_alt: blend(self.accent, self.text, 24).color(),
+            selection_bg: selection_bg.color(),
+            selection_text: contrast_text(selection_bg).color(),
+            border: self.border.color(),
+            border_focused: self.accent.color(),
+            success: self.success.color(),
+            warning: self.warning.color(),
+            error: self.error.color(),
+            info: self.info.color(),
+        }
+    }
+}
+
+fn blend(left: RgbColor, right: RgbColor, right_percent: u16) -> RgbColor {
+    let left_percent = 100u16.saturating_sub(right_percent);
+    let channel = |left: u8, right: u8| {
+        ((u16::from(left) * left_percent + u16::from(right) * right_percent) / 100) as u8
+    };
+    RgbColor(
+        channel(left.0, right.0),
+        channel(left.1, right.1),
+        channel(left.2, right.2),
+    )
+}
+
+fn contrast_text(color: RgbColor) -> RgbColor {
+    let luminance = u32::from(color.0) * 299 + u32::from(color.1) * 587 + u32::from(color.2) * 114;
+    if luminance >= 150_000 {
+        RgbColor(12, 14, 18)
+    } else {
+        RgbColor(250, 250, 250)
+    }
+}
+
 /// Built-in AGK themes. Variant order is the stable order shown in Settings.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum Theme {
@@ -46,10 +216,17 @@ pub enum Theme {
     ClaudeLight,
     CodexDark,
     CodexLight,
+    PureBlack,
+    PureWhite,
+    Midnight,
+    Graphite,
+    TerminalAmber,
+    TerminalGreen,
+    Custom,
 }
 
 impl Theme {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 15] = [
         Self::ClassicDark,
         Self::ClassicLight,
         Self::HermesDark,
@@ -58,6 +235,13 @@ impl Theme {
         Self::ClaudeLight,
         Self::CodexDark,
         Self::CodexLight,
+        Self::PureBlack,
+        Self::PureWhite,
+        Self::Midnight,
+        Self::Graphite,
+        Self::TerminalAmber,
+        Self::TerminalGreen,
+        Self::Custom,
     ];
 
     /// Stable identifier used in `tui.conf`.
@@ -71,6 +255,13 @@ impl Theme {
             Self::ClaudeLight => "claude-light",
             Self::CodexDark => "codex-dark",
             Self::CodexLight => "codex-light",
+            Self::PureBlack => "pure-black",
+            Self::PureWhite => "pure-white",
+            Self::Midnight => "midnight",
+            Self::Graphite => "graphite",
+            Self::TerminalAmber => "terminal-amber",
+            Self::TerminalGreen => "terminal-green",
+            Self::Custom => "custom",
         }
     }
 
@@ -84,6 +275,13 @@ impl Theme {
             Self::ClaudeLight => "Claude Light",
             Self::CodexDark => "Codex Dark",
             Self::CodexLight => "Codex Light",
+            Self::PureBlack => "Pure Black",
+            Self::PureWhite => "Pure White",
+            Self::Midnight => "Midnight",
+            Self::Graphite => "Graphite",
+            Self::TerminalAmber => "Terminal Amber",
+            Self::TerminalGreen => "Terminal Green",
+            Self::Custom => "Custom",
         }
     }
 
@@ -97,33 +295,30 @@ impl Theme {
             Self::ClaudeLight => "Claude terracotta on a calm parchment workspace.",
             Self::CodexDark => "Codex green and cyan on a precise graphite shell.",
             Self::CodexLight => "Codex green with crisp, low-noise daylight contrast.",
+            Self::PureBlack => "True-black high contrast for OLED screens and dark terminals.",
+            Self::PureWhite => "Full white daylight canvas with sharp black typography.",
+            Self::Midnight => "Deep blue control room with cool electric highlights.",
+            Self::Graphite => "Low-noise monochrome charcoal for long focused sessions.",
+            Self::TerminalAmber => "Classic amber phosphor, rebuilt with modern contrast.",
+            Self::TerminalGreen => "Classic green phosphor with restrained status colors.",
+            Self::Custom => "Your own live-editable RGB palette, persisted per user.",
         }
     }
 
-    pub const fn next(self) -> Self {
-        match self {
-            Self::ClassicDark => Self::ClassicLight,
-            Self::ClassicLight => Self::HermesDark,
-            Self::HermesDark => Self::HermesLight,
-            Self::HermesLight => Self::ClaudeDark,
-            Self::ClaudeDark => Self::ClaudeLight,
-            Self::ClaudeLight => Self::CodexDark,
-            Self::CodexDark => Self::CodexLight,
-            Self::CodexLight => Self::ClassicDark,
-        }
+    pub fn next(self) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|theme| *theme == self)
+            .unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
     }
 
-    pub const fn previous(self) -> Self {
-        match self {
-            Self::ClassicDark => Self::CodexLight,
-            Self::ClassicLight => Self::ClassicDark,
-            Self::HermesDark => Self::ClassicLight,
-            Self::HermesLight => Self::HermesDark,
-            Self::ClaudeDark => Self::HermesLight,
-            Self::ClaudeLight => Self::ClaudeDark,
-            Self::CodexDark => Self::ClaudeLight,
-            Self::CodexLight => Self::CodexDark,
-        }
+    pub fn previous(self) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|theme| *theme == self)
+            .unwrap_or(0);
+        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
     }
 
     pub fn from_slug(slug: &str) -> Option<Self> {
@@ -141,7 +336,8 @@ impl Theme {
     }
 
     /// Representative colors for the Settings theme picker.
-    pub const fn swatches(self) -> [Color; 5] {
+    #[cfg(test)]
+    pub fn swatches(self) -> [Color; 5] {
         let palette = self.palette();
         [
             palette.background,
@@ -152,7 +348,30 @@ impl Theme {
         ]
     }
 
-    pub const fn palette(self) -> Palette {
+    pub fn swatches_with_custom(self, custom: CustomColors) -> [Color; 5] {
+        let palette = self.palette_with_custom(custom);
+        [
+            palette.background,
+            palette.surface_alt,
+            palette.accent,
+            palette.info,
+            palette.text,
+        ]
+    }
+
+    pub const fn paints_background(self) -> bool {
+        matches!(self, Self::PureBlack | Self::PureWhite | Self::Custom)
+    }
+
+    pub fn palette_with_custom(self, custom: CustomColors) -> Palette {
+        if self == Self::Custom {
+            custom.palette()
+        } else {
+            self.palette()
+        }
+    }
+
+    pub fn palette(self) -> Palette {
         match self {
             Self::ClassicDark => Palette {
                 background: Color::Rgb(15, 17, 21),
@@ -290,6 +509,109 @@ impl Theme {
                 error: Color::Rgb(183, 58, 58),
                 info: Color::Rgb(43, 104, 163),
             },
+            Self::PureBlack => Palette {
+                background: Color::Rgb(0, 0, 0),
+                surface: Color::Rgb(5, 5, 5),
+                surface_alt: Color::Rgb(15, 15, 15),
+                text: Color::Rgb(255, 255, 255),
+                text_muted: Color::Rgb(166, 166, 166),
+                accent: Color::Rgb(255, 255, 255),
+                accent_alt: Color::Rgb(210, 210, 210),
+                selection_bg: Color::Rgb(45, 45, 45),
+                selection_text: Color::Rgb(255, 255, 255),
+                border: Color::Rgb(78, 78, 78),
+                border_focused: Color::Rgb(255, 255, 255),
+                success: Color::Rgb(112, 214, 151),
+                warning: Color::Rgb(242, 194, 105),
+                error: Color::Rgb(244, 112, 124),
+                info: Color::Rgb(126, 184, 255),
+            },
+            Self::PureWhite => Palette {
+                background: Color::Rgb(255, 255, 255),
+                surface: Color::Rgb(250, 250, 250),
+                surface_alt: Color::Rgb(238, 238, 238),
+                text: Color::Rgb(0, 0, 0),
+                text_muted: Color::Rgb(88, 88, 88),
+                accent: Color::Rgb(0, 0, 0),
+                accent_alt: Color::Rgb(55, 55, 55),
+                selection_bg: Color::Rgb(218, 218, 218),
+                selection_text: Color::Rgb(0, 0, 0),
+                border: Color::Rgb(170, 170, 170),
+                border_focused: Color::Rgb(0, 0, 0),
+                success: Color::Rgb(17, 112, 61),
+                warning: Color::Rgb(137, 86, 0),
+                error: Color::Rgb(170, 36, 47),
+                info: Color::Rgb(17, 75, 145),
+            },
+            Self::Midnight => Palette {
+                background: Color::Rgb(5, 10, 24),
+                surface: Color::Rgb(10, 19, 39),
+                surface_alt: Color::Rgb(18, 32, 59),
+                text: Color::Rgb(229, 238, 255),
+                text_muted: Color::Rgb(127, 148, 184),
+                accent: Color::Rgb(102, 153, 255),
+                accent_alt: Color::Rgb(93, 214, 255),
+                selection_bg: Color::Rgb(29, 61, 112),
+                selection_text: Color::Rgb(244, 248, 255),
+                border: Color::Rgb(48, 76, 122),
+                border_focused: Color::Rgb(102, 153, 255),
+                success: Color::Rgb(78, 201, 151),
+                warning: Color::Rgb(235, 184, 92),
+                error: Color::Rgb(241, 106, 126),
+                info: Color::Rgb(93, 214, 255),
+            },
+            Self::Graphite => Palette {
+                background: Color::Rgb(18, 18, 19),
+                surface: Color::Rgb(27, 28, 30),
+                surface_alt: Color::Rgb(39, 40, 43),
+                text: Color::Rgb(232, 232, 230),
+                text_muted: Color::Rgb(151, 151, 146),
+                accent: Color::Rgb(202, 202, 196),
+                accent_alt: Color::Rgb(245, 245, 239),
+                selection_bg: Color::Rgb(66, 67, 69),
+                selection_text: Color::Rgb(255, 255, 251),
+                border: Color::Rgb(78, 79, 82),
+                border_focused: Color::Rgb(202, 202, 196),
+                success: Color::Rgb(119, 182, 133),
+                warning: Color::Rgb(211, 170, 96),
+                error: Color::Rgb(215, 105, 109),
+                info: Color::Rgb(127, 166, 204),
+            },
+            Self::TerminalAmber => Palette {
+                background: Color::Rgb(18, 11, 2),
+                surface: Color::Rgb(29, 19, 5),
+                surface_alt: Color::Rgb(48, 31, 7),
+                text: Color::Rgb(255, 220, 145),
+                text_muted: Color::Rgb(184, 132, 55),
+                accent: Color::Rgb(255, 176, 46),
+                accent_alt: Color::Rgb(255, 213, 119),
+                selection_bg: Color::Rgb(91, 55, 8),
+                selection_text: Color::Rgb(255, 238, 198),
+                border: Color::Rgb(128, 78, 15),
+                border_focused: Color::Rgb(255, 176, 46),
+                success: Color::Rgb(154, 199, 103),
+                warning: Color::Rgb(255, 176, 46),
+                error: Color::Rgb(236, 94, 74),
+                info: Color::Rgb(106, 171, 210),
+            },
+            Self::TerminalGreen => Palette {
+                background: Color::Rgb(2, 15, 8),
+                surface: Color::Rgb(6, 27, 14),
+                surface_alt: Color::Rgb(10, 46, 23),
+                text: Color::Rgb(191, 255, 208),
+                text_muted: Color::Rgb(92, 176, 116),
+                accent: Color::Rgb(73, 255, 125),
+                accent_alt: Color::Rgb(157, 255, 185),
+                selection_bg: Color::Rgb(18, 89, 42),
+                selection_text: Color::Rgb(225, 255, 233),
+                border: Color::Rgb(31, 122, 59),
+                border_focused: Color::Rgb(73, 255, 125),
+                success: Color::Rgb(73, 255, 125),
+                warning: Color::Rgb(231, 190, 83),
+                error: Color::Rgb(235, 93, 103),
+                info: Color::Rgb(87, 190, 225),
+            },
+            Self::Custom => CustomColors::default().palette(),
         }
     }
 }
@@ -301,6 +623,7 @@ pub const DEFAULT_REFRESH_MS: u64 = 1_000;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Preferences {
     pub theme: Theme,
+    pub custom_colors: CustomColors,
     pub split_preview: bool,
     pub refresh_ms: u64,
 }
@@ -309,6 +632,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             theme: Theme::default(),
+            custom_colors: CustomColors::default(),
             split_preview: true,
             refresh_ms: DEFAULT_REFRESH_MS,
         }
@@ -346,12 +670,19 @@ impl Preferences {
         } else {
             self.refresh_ms
         };
-        let contents = format!(
+        let mut contents = format!(
             "# AGK native TUI preferences\ntheme={}\nsplit_preview={}\nrefresh_ms={}\n",
             self.theme.slug(),
             self.split_preview,
             refresh_ms
         );
+        for index in 0..CustomColors::LEN {
+            contents.push_str(&format!(
+                "{}={}\n",
+                CustomColors::config_key(index),
+                self.custom_colors.get(index).hex()
+            ));
+        }
         atomic_write(path, contents.as_bytes())
     }
 
@@ -385,7 +716,14 @@ impl Preferences {
                         preferences.refresh_ms = refresh_ms;
                     }
                 }
-                _ => {}
+                _ => {
+                    if let Some(index) =
+                        (0..CustomColors::LEN).find(|index| CustomColors::config_key(*index) == key)
+                        && let Some(color) = RgbColor::from_hex(value)
+                    {
+                        preferences.custom_colors.set(index, color);
+                    }
+                }
             }
         }
         preferences
@@ -518,11 +856,48 @@ mod tests {
             theme: Theme::ClaudeLight,
             split_preview: false,
             refresh_ms: 2_500,
+            ..Preferences::default()
         };
 
         expected.save_to(&path).expect("save preferences");
 
         assert_eq!(Preferences::load_from(path).unwrap(), expected);
+    }
+
+    #[test]
+    fn custom_colors_accept_hex_and_round_trip_with_the_selected_theme() {
+        let directory = TestDirectory::new();
+        let path = directory.config();
+        let mut expected = Preferences {
+            theme: Theme::Custom,
+            ..Preferences::default()
+        };
+        expected.custom_colors.background = RgbColor(255, 0, 170);
+        expected.custom_colors.accent = RgbColor(12, 34, 56);
+
+        expected.save_to(&path).unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("theme=custom"));
+        assert!(contents.contains("custom_background=#FF00AA"));
+        assert!(contents.contains("custom_accent=#0C2238"));
+        assert_eq!(Preferences::load_from(path).unwrap(), expected);
+    }
+
+    #[test]
+    fn malformed_custom_colors_are_ignored_field_by_field() {
+        let directory = TestDirectory::new();
+        let path = directory.config();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "theme=custom\ncustom_background=#123456\ncustom_accent=broken\n",
+        )
+        .unwrap();
+
+        let loaded = Preferences::load_from(path).unwrap();
+        assert_eq!(loaded.theme, Theme::Custom);
+        assert_eq!(loaded.custom_colors.background, RgbColor(0x12, 0x34, 0x56));
+        assert_eq!(loaded.custom_colors.accent, CustomColors::default().accent);
     }
 
     #[test]
@@ -552,6 +927,7 @@ mod tests {
                 theme: Theme::CodexLight,
                 split_preview: true,
                 refresh_ms: 275,
+                ..Preferences::default()
             }
         );
     }
@@ -573,6 +949,7 @@ mod tests {
             theme: Theme::ClaudeDark,
             split_preview: false,
             refresh_ms: 750,
+            ..Preferences::default()
         };
         expected.save_to(&path).unwrap();
 
@@ -606,8 +983,8 @@ mod tests {
             assert_eq!(theme.previous().next(), theme);
             assert_eq!(theme.next(), Theme::ALL[(index + 1) % Theme::ALL.len()]);
         }
-        assert_eq!(Theme::CodexLight.next(), Theme::ClassicDark);
-        assert_eq!(Theme::ClassicDark.previous(), Theme::CodexLight);
+        assert_eq!(Theme::Custom.next(), Theme::ClassicDark);
+        assert_eq!(Theme::ClassicDark.previous(), Theme::Custom);
     }
 
     #[test]

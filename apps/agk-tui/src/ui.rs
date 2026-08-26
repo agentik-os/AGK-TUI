@@ -10,10 +10,11 @@ use ratatui::{
 use ratatui_rmux::{PaneState, PaneWidget};
 
 use crate::{
+    data::RuntimeRecord,
     input::palette_items,
     model::{App, Density, Focus, Mode, Overlay, SessionKind, SettingsSection, View, density},
     system_info::{UNKNOWN, format_optional_token_total, format_percent, format_token_total},
-    theme::{Palette, Theme},
+    theme::{CustomColors, Palette, Theme},
 };
 
 /// Borrowed preview payload prepared by the RMUX integration.  The hot tail
@@ -29,13 +30,15 @@ pub enum SessionPreview<'a> {
 
 pub fn draw(frame: &mut Frame, app: &mut App, preview: SessionPreview<'_>) {
     let area = frame.area();
-    let mut colors = app.theme.palette();
+    let mut colors = app.palette();
     // AGK is an overlay on the user's terminal, not a second painted desktop.
     // Reset the large surfaces so the native terminal background remains
     // visible; semantic text, borders and selection colors stay themed.
-    colors.background = Color::Reset;
-    colors.surface = Color::Reset;
-    colors.surface_alt = Color::Reset;
+    if !app.theme.paints_background() {
+        colors.background = Color::Reset;
+        colors.surface = Color::Reset;
+        colors.surface_alt = Color::Reset;
+    }
     frame.render_widget(
         Block::default().style(Style::default().bg(colors.background)),
         area,
@@ -87,19 +90,7 @@ fn draw_terminal_workspace(
         let records = app.filtered_sessions().collect::<Vec<_>>();
         let items = records
             .iter()
-            .map(|runtime| {
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        if runtime.live { "● " } else { "○ " },
-                        Style::default().fg(if runtime.live {
-                            colors.success
-                        } else {
-                            colors.text_muted
-                        }),
-                    ),
-                    Span::styled(runtime.name.clone(), Style::default().fg(colors.text)),
-                ]))
-            })
+            .map(|runtime| session_list_item(runtime, colors))
             .collect();
         selectable(
             frame,
@@ -201,7 +192,7 @@ fn draw_nav(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
             nav_label(*view),
             Style::default()
                 .fg(if selected { colors.accent } else { colors.text })
-                .bg(Color::Reset)
+                .bg(colors.background)
                 .add_modifier(if selected {
                     Modifier::BOLD | Modifier::UNDERLINED
                 } else {
@@ -214,7 +205,7 @@ fn draw_nav(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
     }
     frame.render_widget(
         Paragraph::new(Line::from(spans).alignment(Alignment::Left))
-            .style(Style::default().bg(Color::Reset)),
+            .style(Style::default().bg(colors.background)),
         area,
     );
 }
@@ -302,19 +293,7 @@ fn panes(app: &App, area: Rect, size: Density) -> (Rect, Rect) {
         }
         return (area, hidden);
     }
-    let list_width = match size {
-        Density::Compact => unreachable!(),
-        Density::Standard => area
-            .width
-            .saturating_mul(34)
-            .saturating_div(100)
-            .clamp(24, 32),
-        Density::Wide => area
-            .width
-            .saturating_mul(30)
-            .saturating_div(100)
-            .clamp(32, 46),
-    };
+    let list_width = operator_grid_list_width(area, size);
     let columns = Layout::horizontal([Constraint::Length(list_width), Constraint::Min(1)])
         .spacing(1)
         .split(area);
@@ -327,19 +306,33 @@ fn terminal_panes(area: Rect, size: Density, expanded: bool) -> (Rect, Rect) {
     if expanded || area.width < 36 {
         return (hidden, area);
     }
-    let list_width = match size {
+    let list_width = operator_grid_list_width(area, size);
+    let columns = Layout::horizontal([Constraint::Length(list_width), Constraint::Min(1)])
+        .spacing(1)
+        .split(area);
+    (columns[0], columns[1])
+}
+
+/// The session list keeps one stable width before and after entering a live
+/// provider. Changing interaction mode must never collapse its information.
+fn operator_grid_list_width(area: Rect, size: Density) -> u16 {
+    match size {
         Density::Compact => area
             .width
             .saturating_mul(35)
             .saturating_div(100)
             .clamp(16, 22),
-        Density::Standard => 26.min(area.width.saturating_sub(20)),
-        Density::Wide => 32.min(area.width.saturating_sub(24)),
-    };
-    let columns = Layout::horizontal([Constraint::Length(list_width), Constraint::Min(1)])
-        .spacing(1)
-        .split(area);
-    (columns[0], columns[1])
+        Density::Standard => area
+            .width
+            .saturating_mul(34)
+            .saturating_div(100)
+            .clamp(24, 32),
+        Density::Wide => area
+            .width
+            .saturating_mul(30)
+            .saturating_div(100)
+            .clamp(32, 46),
+    }
 }
 
 pub fn terminal_preview_area(size: Size, expanded: bool) -> Rect {
@@ -461,56 +454,7 @@ fn draw_sessions(
         let records = app.filtered_sessions().collect::<Vec<_>>();
         let items = records
             .iter()
-            .map(|runtime| {
-                let scope = [
-                    runtime.client.as_deref(),
-                    runtime.project.as_deref(),
-                    runtime.mission.as_deref(),
-                ]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(" / ");
-                let model = runtime.model_usage.first().map(|usage| {
-                    format!(
-                        " · {} · TKN {}",
-                        usage.model,
-                        format_token_total(usage.io_tokens())
-                    )
-                });
-                ListItem::new(vec![
-                    Line::from(vec![
-                        Span::styled(
-                            if runtime.live { "● " } else { "○ " },
-                            Style::default().fg(if runtime.live {
-                                colors.success
-                            } else {
-                                colors.text_muted
-                            }),
-                        ),
-                        Span::styled(
-                            runtime.name.clone(),
-                            Style::default()
-                                .fg(colors.text)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ]),
-                    Line::styled(
-                        format!(
-                            "  {} · {} · {}{}",
-                            runtime.kind,
-                            runtime.status,
-                            if scope.is_empty() {
-                                runtime.cwd.as_str()
-                            } else {
-                                scope.as_str()
-                            },
-                            model.as_deref().unwrap_or("")
-                        ),
-                        Style::default().fg(colors.text_muted),
-                    ),
-                ])
-            })
+            .map(|runtime| session_list_item(runtime, colors))
             .collect();
         let title = if app.query.is_empty() {
             format!(" SESSIONS · {} ", records.len())
@@ -604,6 +548,62 @@ fn draw_sessions(
         app.preview_width = 0;
         app.preview_height = 0;
     }
+}
+
+fn session_list_item(runtime: &RuntimeRecord, colors: Palette) -> ListItem<'static> {
+    let scope = [
+        runtime.client.as_deref(),
+        runtime.project.as_deref(),
+        runtime.mission.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" / ");
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                if runtime.live { "● " } else { "○ " },
+                Style::default().fg(if runtime.live {
+                    colors.success
+                } else {
+                    colors.text_muted
+                }),
+            ),
+            Span::styled(
+                runtime.name.clone(),
+                Style::default()
+                    .fg(colors.text)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::styled(
+            format!("  {} · {}", runtime.kind, runtime.status),
+            Style::default().fg(colors.text_muted),
+        ),
+        Line::styled(
+            format!(
+                "  {}",
+                if scope.is_empty() {
+                    runtime.cwd.as_str()
+                } else {
+                    scope.as_str()
+                }
+            ),
+            Style::default().fg(colors.text_muted),
+        ),
+    ];
+    if let Some(usage) = runtime.model_usage.first() {
+        lines.push(Line::styled(
+            format!(
+                "  {} · TKN {}",
+                usage.model,
+                format_token_total(usage.io_tokens())
+            ),
+            Style::default().fg(colors.text_muted),
+        ));
+    }
+    ListItem::new(lines)
 }
 
 fn draw_projects(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Palette) {
@@ -1333,20 +1333,34 @@ fn draw_appearance(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
     let mut lines = vec![
         heading("Theme", colors),
         Line::styled(
-            "↑/↓ live preview · Enter save · Esc revert",
+            "↑/↓ live preview · Enter save · E edit Custom · Esc revert",
             Style::default().fg(colors.text_muted),
         ),
         Line::raw(""),
     ];
-    for theme in Theme::ALL {
-        let selected = theme == app.theme;
-        let mut spans = vec![
-            Span::styled(
+    // Fifteen choices stay visible without turning Appearance into a tall,
+    // scrolling list. Narrow panes retain the simple one-column layout.
+    let column_count = usize::from(area.width >= 58) + 1;
+    let column_width = usize::from(area.width.saturating_sub(4)) / column_count;
+    let row_count = Theme::ALL.len().div_ceil(column_count);
+    for row_index in 0..row_count {
+        let mut row = Vec::new();
+        for column in 0..column_count {
+            let index = row_index + column * row_count;
+            let Some(theme) = Theme::ALL.get(index) else {
+                continue;
+            };
+            if column > 0 {
+                row.push(Span::raw(" "));
+            }
+            let selected = *theme == app.theme;
+            row.push(Span::styled(
                 if selected { "▶ " } else { "  " },
                 Style::default().fg(colors.accent),
-            ),
-            Span::styled(
-                format!("{:<14}", theme.name()),
+            ));
+            let label_width = column_width.saturating_sub(11).clamp(8, 16);
+            row.push(Span::styled(
+                format!("{:<label_width$}", theme.name()),
                 Style::default()
                     .fg(if selected { colors.accent } else { colors.text })
                     .add_modifier(if selected {
@@ -1354,17 +1368,31 @@ fn draw_appearance(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
                     } else {
                         Modifier::empty()
                     }),
-            ),
-        ];
-        for swatch in theme.swatches() {
-            spans.push(Span::styled("  ", Style::default().bg(swatch)));
-            spans.push(Span::raw(" "));
+            ));
+            for swatch in theme
+                .swatches_with_custom(app.preferences.custom_colors)
+                .into_iter()
+                .take(3)
+            {
+                row.push(Span::styled("  ", Style::default().bg(swatch)));
+                row.push(Span::raw(" "));
+            }
         }
-        lines.push(Line::from(spans));
+        lines.push(Line::from(row));
     }
     lines.extend([
         Line::raw(""),
         Line::styled(app.theme.description(), Style::default().fg(colors.text)),
+        Line::styled(
+            if app.theme == Theme::Custom {
+                "E opens the RGB editor · 10 semantic colors · live preview"
+            } else if app.theme.paints_background() {
+                "This theme deliberately paints the full terminal canvas."
+            } else {
+                "Uses your terminal background with themed content and controls."
+            },
+            Style::default().fg(colors.text_muted),
+        ),
         Line::styled(
             if app.theme == app.committed_theme {
                 "Saved theme"
@@ -1469,7 +1497,7 @@ fn draw_footer_separator(frame: &mut Frame, area: Rect, colors: Palette) {
     let area = horizontal_area(area);
     frame.render_widget(
         Paragraph::new("─".repeat(usize::from(area.width)))
-            .style(Style::default().fg(colors.border).bg(Color::Reset)),
+            .style(Style::default().fg(colors.border).bg(colors.background)),
         area,
     );
 }
@@ -1523,13 +1551,13 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
         Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)]).split(area);
     let left = footer_context(app, usize::from(columns[0].width));
     frame.render_widget(
-        Paragraph::new(left).style(Style::default().fg(colors.text).bg(Color::Reset)),
+        Paragraph::new(left).style(Style::default().fg(colors.text).bg(colors.background)),
         columns[0],
     );
     frame.render_widget(
         Paragraph::new(format!(" {metrics}"))
             .alignment(Alignment::Right)
-            .style(Style::default().fg(colors.text_muted).bg(Color::Reset)),
+            .style(Style::default().fg(colors.text_muted).bg(colors.background)),
         columns[1],
     );
 }
@@ -1637,6 +1665,56 @@ fn draw_overlay(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
                 ),
             ],
         ),
+        Overlay::CustomTheme {
+            working,
+            selected,
+            value,
+            ..
+        } => {
+            let mut lines = vec![Line::styled(
+                "↑/↓ choose · type #RRGGBB · Enter save · Esc cancel",
+                Style::default().fg(colors.text_muted),
+            )];
+            lines.extend((0..CustomColors::LEN).map(|index| {
+                let active = index == *selected;
+                let rgb = working.get(index);
+                Line::from(vec![
+                    Span::styled(
+                        if active { "▶ " } else { "  " },
+                        Style::default().fg(colors.accent),
+                    ),
+                    Span::styled(
+                        format!("{:<13}", CustomColors::label(index)),
+                        Style::default().fg(if active { colors.accent } else { colors.text }),
+                    ),
+                    Span::styled("  ", Style::default().bg(rgb.color())),
+                    Span::raw("  "),
+                    Span::styled(
+                        if active {
+                            format!("{value}▌")
+                        } else {
+                            rgb.hex()
+                        },
+                        Style::default()
+                            .fg(if active {
+                                colors.selection_text
+                            } else {
+                                colors.text_muted
+                            })
+                            .bg(if active {
+                                colors.selection_bg
+                            } else {
+                                colors.surface_alt
+                            }),
+                    ),
+                ])
+            }));
+            (
+                centered(area, 56, CustomColors::LEN as u16 + 4),
+                " CUSTOM THEME ",
+                lines,
+            )
+        }
     };
     frame.render_widget(Clear, rect);
     frame.render_widget(
@@ -1994,6 +2072,42 @@ mod tests {
     }
 
     #[test]
+    fn appearance_exposes_all_built_in_themes_and_the_custom_rgb_editor() {
+        let mut app = test_app();
+        app.set_view(View::Settings);
+        app.settings_section = 0;
+        app.focus = Focus::Detail;
+        let output = render(app, 140, 40);
+        for name in [
+            "Pure Black",
+            "Pure White",
+            "Midnight",
+            "Graphite",
+            "Terminal Amber",
+            "Terminal Green",
+            "Custom",
+        ] {
+            assert!(output.contains(name), "missing theme {name:?}");
+        }
+
+        let mut app = test_app();
+        app.theme = Theme::Custom;
+        let colors = app.preferences.custom_colors;
+        app.overlay = Overlay::CustomTheme {
+            original: colors,
+            working: colors,
+            selected: 0,
+            value: colors.background.hex(),
+            fresh: true,
+        };
+        let output = render(app, 90, 24);
+        assert!(output.contains("CUSTOM THEME"));
+        assert!(output.contains("Background"));
+        assert!(output.contains("#0C0E12"));
+        assert!(output.contains("Enter save"));
+    }
+
+    #[test]
     fn settings_reports_provider_readiness_and_install_action_hint() {
         let mut app = test_app();
         app.set_view(View::Settings);
@@ -2189,7 +2303,7 @@ mod tests {
             .unwrap();
         let active = &terminal.backend().buffer()[(1, 1)];
         assert_eq!(active.bg, Color::Reset);
-        assert_eq!(active.fg, app.theme.palette().accent);
+        assert_eq!(active.fg, app.palette().accent);
         let rows = terminal
             .backend()
             .buffer()
@@ -2222,7 +2336,7 @@ mod tests {
         let (list, detail) = panes(&app, roomy, Density::Wide);
         assert_eq!(detail.x, list.right() + 1);
 
-        let inner = panel(" TEST ", false, app.theme.palette()).inner(list);
+        let inner = panel(" TEST ", false, app.palette()).inner(list);
         assert_eq!(inner.x, list.x + 2, "border plus one-cell padding");
         assert_eq!(inner.right() + 2, list.right());
     }
@@ -2250,6 +2364,46 @@ mod tests {
 
         assert_eq!(terminal_preview_area(size, true), Rect::new(3, 4, 54, 13));
         assert_eq!(terminal_focus_at(size, true, 1, 4), Some(Focus::Detail));
+    }
+
+    #[test]
+    fn entering_a_session_keeps_the_exact_operator_grid_width_and_metadata() {
+        let size = Size::new(140, 40);
+        let control_area = board_area(terminal_content_area(size));
+        let app = test_app();
+        let (control_list, _) = panes(&app, control_area, Density::Wide);
+        let (terminal_list, _) = terminal_panes(terminal_content_area(size), Density::Wide, false);
+        assert_eq!(terminal_list, control_list);
+
+        let control = render(test_app(), size.width, size.height);
+        let mut terminal_app = test_app();
+        terminal_app.mode = Mode::Terminal;
+        terminal_app.focus = Focus::Detail;
+        let terminal = render(terminal_app, size.width, size.height);
+        for expected in [
+            "moon",
+            "hermes · active",
+            "acme / luna / launch",
+            "claude-sonnet-4-6 · TKN 12.3K",
+        ] {
+            assert!(control.contains(expected), "control missing {expected:?}");
+            assert!(terminal.contains(expected), "terminal missing {expected:?}");
+        }
+    }
+
+    #[test]
+    fn pure_and_custom_themes_can_paint_the_full_terminal_canvas() {
+        for theme in [Theme::PureBlack, Theme::PureWhite, Theme::Custom] {
+            let mut app = test_app();
+            app.theme = theme;
+            let expected = app.palette().background;
+            let backend = TestBackend::new(80, 20);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| draw(frame, &mut app, SessionPreview::Unavailable))
+                .unwrap();
+            assert_eq!(terminal.backend().buffer()[(0, 0)].bg, expected);
+        }
     }
 
     #[test]

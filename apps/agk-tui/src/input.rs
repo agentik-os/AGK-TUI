@@ -1,6 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::model::{App, Focus, Overlay, SessionKind, SessionTarget, SettingsSection, View};
+use crate::{
+    model::{App, Focus, Overlay, SessionKind, SessionTarget, SettingsSection, View},
+    theme::{CustomColors, RgbColor, Theme},
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
@@ -328,6 +331,14 @@ pub fn handle_key_for_layout(
         KeyCode::Char('l') if app.view == View::Settings && app.focus == Focus::Detail => {
             settings_right(app)
         }
+        KeyCode::Char('e')
+            if app.view == View::Settings
+                && app.focus == Focus::Detail
+                && app.settings_section() == SettingsSection::Appearance
+                && app.theme == Theme::Custom =>
+        {
+            open_custom_theme_editor(app)
+        }
         KeyCode::Char(' ') if app.view == View::Settings && app.focus == Focus::Detail => {
             activate_settings(app)
         }
@@ -402,6 +413,28 @@ pub fn handle_paste(app: &mut App, text: &str) -> Action {
                     .map(|character| character.to_ascii_lowercase())
                     .take(80usize.saturating_sub(value.len())),
             );
+        }
+        Overlay::CustomTheme {
+            working,
+            selected,
+            value,
+            fresh,
+            ..
+        } => {
+            let pasted = text
+                .trim()
+                .chars()
+                .filter(|character| *character == '#' || character.is_ascii_hexdigit())
+                .take(7)
+                .collect::<String>();
+            if !pasted.is_empty() {
+                *value = pasted;
+                *fresh = false;
+                if let Some(color) = RgbColor::from_hex(value) {
+                    working.set(*selected, color);
+                    app.preferences.custom_colors = *working;
+                }
+            }
         }
         Overlay::NewKind { .. } | Overlay::None => {}
     }
@@ -617,6 +650,116 @@ fn handle_overlay_key(app: &mut App, key: KeyEvent, compact: bool) -> Action {
                 Action::None
             }
         },
+        Overlay::CustomTheme {
+            original,
+            mut working,
+            mut selected,
+            mut value,
+            mut fresh,
+        } => match key.code {
+            KeyCode::Esc => {
+                app.preferences.custom_colors = original;
+                Action::None
+            }
+            KeyCode::Up | KeyCode::Down => {
+                let Some(color) = RgbColor::from_hex(&value) else {
+                    app.status = Some("Custom colors use #RRGGBB".into());
+                    app.overlay = Overlay::CustomTheme {
+                        original,
+                        working,
+                        selected,
+                        value,
+                        fresh,
+                    };
+                    return Action::None;
+                };
+                working.set(selected, color);
+                selected = if key.code == KeyCode::Up {
+                    (selected + CustomColors::LEN - 1) % CustomColors::LEN
+                } else {
+                    (selected + 1) % CustomColors::LEN
+                };
+                value = working.get(selected).hex();
+                fresh = true;
+                app.preferences.custom_colors = working;
+                app.overlay = Overlay::CustomTheme {
+                    original,
+                    working,
+                    selected,
+                    value,
+                    fresh,
+                };
+                Action::None
+            }
+            KeyCode::Backspace => {
+                if fresh {
+                    value.clear();
+                    fresh = false;
+                } else {
+                    value.pop();
+                }
+                app.overlay = Overlay::CustomTheme {
+                    original,
+                    working,
+                    selected,
+                    value,
+                    fresh,
+                };
+                Action::None
+            }
+            KeyCode::Char(character)
+                if printable(key.modifiers)
+                    && (character == '#' || character.is_ascii_hexdigit()) =>
+            {
+                if fresh {
+                    value.clear();
+                    fresh = false;
+                }
+                if value.len() < 7 {
+                    value.push(character.to_ascii_uppercase());
+                }
+                if let Some(color) = RgbColor::from_hex(&value) {
+                    working.set(selected, color);
+                    app.preferences.custom_colors = working;
+                }
+                app.overlay = Overlay::CustomTheme {
+                    original,
+                    working,
+                    selected,
+                    value,
+                    fresh,
+                };
+                Action::None
+            }
+            KeyCode::Enter => {
+                let Some(color) = RgbColor::from_hex(&value) else {
+                    app.status = Some("Custom colors use #RRGGBB".into());
+                    app.overlay = Overlay::CustomTheme {
+                        original,
+                        working,
+                        selected,
+                        value,
+                        fresh,
+                    };
+                    return Action::None;
+                };
+                working.set(selected, color);
+                app.preferences.custom_colors = working;
+                app.theme = Theme::Custom;
+                app.commit_theme();
+                Action::PersistPreferences
+            }
+            _ => {
+                app.overlay = Overlay::CustomTheme {
+                    original,
+                    working,
+                    selected,
+                    value,
+                    fresh,
+                };
+                Action::None
+            }
+        },
         Overlay::None => Action::None,
     }
 }
@@ -716,6 +859,18 @@ fn settings_right(app: &mut App) -> Action {
         }
         _ => Action::None,
     }
+}
+
+fn open_custom_theme_editor(app: &mut App) -> Action {
+    let colors = app.preferences.custom_colors;
+    app.overlay = Overlay::CustomTheme {
+        original: colors,
+        working: colors,
+        selected: 0,
+        value: colors.get(0).hex(),
+        fresh: true,
+    };
+    Action::None
 }
 
 fn cycle_refresh(app: &mut App, forwards: bool) {
@@ -836,6 +991,37 @@ mod tests {
             Action::Reload
         );
         assert!(matches!(app.overlay, Overlay::Search { .. }));
+    }
+
+    #[test]
+    fn custom_theme_editor_live_previews_and_persists_rgb_colors() {
+        let mut app = app();
+        app.set_view(View::Settings);
+        app.settings_section = 0;
+        app.focus = Focus::Detail;
+        app.theme = Theme::Custom;
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('e')), true),
+            Action::None
+        );
+        assert!(matches!(app.overlay, Overlay::CustomTheme { .. }));
+        for character in "#112233".chars() {
+            assert_eq!(
+                handle_key(&mut app, key(KeyCode::Char(character)), true),
+                Action::None
+            );
+        }
+        assert_eq!(
+            app.preferences.custom_colors.background,
+            RgbColor(0x11, 0x22, 0x33)
+        );
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter), true),
+            Action::PersistPreferences
+        );
+        assert_eq!(app.preferences.theme, Theme::Custom);
+        assert_eq!(app.overlay, Overlay::None);
     }
 
     #[test]

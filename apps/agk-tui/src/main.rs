@@ -300,6 +300,15 @@ async fn run(
                         preview_refresh_requested = true;
                         continue;
                     }
+                    Event::Key(key)
+                        if accepts_key(key)
+                            && app.focus == Focus::List
+                            && terminal_top_nav_key(app, key) =>
+                    {
+                        preview_cache.clear();
+                        preview_refresh_requested = true;
+                        continue;
+                    }
                     Event::Key(key) if accepts_key(key) && app.focus == Focus::List => {
                         let selected_before = app.selected_session_name().map(str::to_owned);
                         if terminal_sidebar_key(app, key)
@@ -1205,6 +1214,20 @@ fn terminal_sidebar_key(app: &mut App, key: &KeyEvent) -> bool {
     }
 }
 
+/// Left/right stays the global top-menu axis while the session sidebar owns
+/// focus. Provider input keeps both arrows untouched when the live pane owns
+/// focus, so shell and editor cursor movement remains native.
+fn terminal_top_nav_key(app: &mut App, key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Left => app.previous_view(),
+        KeyCode::Right => app.next_view(),
+        _ => return false,
+    }
+    app.mode = Mode::Control;
+    app.expanded = false;
+    true
+}
+
 fn terminal_scroll_key(app: &mut App, key: &KeyEvent) -> bool {
     let modified_vertical = key
         .modifiers
@@ -1452,6 +1475,30 @@ mod tests {
         ));
         assert_eq!(app.focus, Focus::Detail);
         assert!(!app.expanded);
+    }
+
+    #[test]
+    fn terminal_sidebar_arrows_move_the_global_top_menu_without_a_middle_step() {
+        let mut app = App::new(Preferences::default());
+        app.mode = Mode::Terminal;
+        app.view = View::Sessions;
+        app.focus = Focus::List;
+
+        assert!(terminal_top_nav_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)
+        ));
+        assert_eq!(app.mode, Mode::Control);
+        assert_eq!(app.view, View::Projects);
+        assert_eq!(app.focus, Focus::List);
+
+        app.mode = Mode::Terminal;
+        assert!(terminal_top_nav_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)
+        ));
+        assert_eq!(app.view, View::Sessions);
+        assert_eq!(app.mode, Mode::Control);
     }
 
     #[test]

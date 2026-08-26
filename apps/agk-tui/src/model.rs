@@ -4,7 +4,7 @@ use crate::{
         RuleRecord, RuntimeRecord, SkillRecord,
     },
     system_info::FooterSnapshot,
-    theme::{Preferences, Theme},
+    theme::{CustomColors, Palette, Preferences, Theme},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -205,6 +205,13 @@ pub enum Overlay {
     RenameSession {
         target: SessionTarget,
         value: String,
+    },
+    CustomTheme {
+        original: CustomColors,
+        working: CustomColors,
+        selected: usize,
+        value: String,
+        fresh: bool,
     },
 }
 
@@ -642,6 +649,11 @@ impl App {
     }
     pub fn preview_previous_theme(&mut self) {
         self.theme = self.theme.previous();
+    }
+
+    pub fn palette(&self) -> Palette {
+        self.theme
+            .palette_with_custom(self.preferences.custom_colors)
     }
 
     pub fn commit_theme(&mut self) {
