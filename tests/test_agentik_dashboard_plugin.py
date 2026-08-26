@@ -72,7 +72,7 @@ def test_manifest_matches_the_official_dashboard_plugin_contract():
 
     assert manifest["name"] == "agentik-os"
     assert manifest["label"] == "OS & Agents"
-    assert manifest["version"] == "0.3.1"
+    assert manifest["version"] == "0.4.0"
     assert manifest["tab"] == {"path": "/os-agents", "position": "after:skills"}
     assert manifest["entry"] == "dist/index.js"
     assert manifest["css"] == "dist/style.css"
@@ -137,6 +137,27 @@ def test_css_is_scoped_and_has_no_external_hosts():
             assert selector.startswith(".agk-os-hub"), selector
             checked += 1
     assert checked > 0
+
+
+def test_dashboard_uses_a_responsive_master_detail_panel_layout():
+    bundle = BUNDLE.read_text(encoding="utf-8")
+    styles = STYLES.read_text(encoding="utf-8")
+
+    for contract in (
+        "CatalogNavigation",
+        "CatalogTrigger",
+        "agk-os-workspace",
+        "agk-os-context-panel",
+        "agk-os-detail-panel",
+        "agk-os-detail-body--dashboard",
+        "agk-os-detail-body--entity",
+    ):
+        assert contract in bundle
+
+    assert 'className: "agk-os-tabs"' not in bundle
+    assert "grid-template-columns: minmax(15.5rem, 18rem) minmax(0, 1fr)" in styles
+    assert "scroll-snap-type: x proximity" in styles
+    assert "@media (max-width: 640px)" in styles
 
 
 def test_agentik_shadcn_theme_is_official_local_and_reproducible():

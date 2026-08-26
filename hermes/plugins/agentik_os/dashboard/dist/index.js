@@ -347,53 +347,98 @@
     );
   }
 
-  function SystemsPanel(props) {
-    const packages = props.packages;
-    return h("section", { className: "agk-os-tab-panel", role: "tabpanel", id: "agk-os-panel-systems", "aria-labelledby": "agk-os-tab-systems" },
-      h("div", { className: "agk-os-section__heading" },
-        h("div", null,
-          h("span", { className: "agk-os-label" }, "Registry"),
-          h("h2", null, "Operative Systems")
-        ),
-        h("div", { className: "agk-os-section__note" },
-          h(Icon, { name: props.registryReady ? "check" : "alert" }),
-          h("span", null, props.registryReady ? "Validated packages only" : "Registry health is not confirmed")
-        )
+  function catalogValue(kind, item, index) {
+    return kind + ":" + String(item.id || item.name || index);
+  }
+
+  function CatalogTrigger(props) {
+    return h(TabsTrigger, {
+      className: "agk-os-catalog-trigger",
+      id: "agk-os-view-" + props.value.replace(/[^a-z0-9_-]+/gi, "-"),
+      value: props.value,
+      active: props.active,
+      role: "tab",
+      "aria-selected": props.active,
+      "aria-controls": "agk-os-panel-detail",
+      "data-catalog-kind": props.kind,
+      onClick: props.onClick,
+    },
+      h("span", { className: "agk-os-catalog-trigger__icon" }, h(Icon, { name: props.icon })),
+      h("span", { className: "agk-os-catalog-trigger__copy" },
+        h("strong", null, props.title),
+        h("small", null, props.description)
       ),
-      packages.length
-        ? h("div", { className: "agk-os-package-grid" }, packages.map(function (item, index) {
-            return h(PackageCard, { item: item, key: item.id || index });
-          }))
-        : h(EmptyState, {
-            icon: "package",
-            title: "No validated OS package is installed",
-            description: "Drafts and historical folders stay hidden until they pass validation in the canonical registry.",
-          })
+      props.meta === undefined || props.meta === null
+        ? null
+        : h(Badge, { tone: "secondary", className: "agk-os-catalog-trigger__meta" }, String(props.meta))
     );
   }
 
-  function AgentsPanel(props) {
-    const agents = props.agents;
-    return h("section", { className: "agk-os-tab-panel", role: "tabpanel", id: "agk-os-panel-agents", "aria-labelledby": "agk-os-tab-agents" },
-      h("div", { className: "agk-os-section__heading" },
+  function CatalogNavigation(props) {
+    return h("aside", { className: "agk-os-context-panel", "aria-label": "OS and agent catalog" },
+      h("header", { className: "agk-os-context-header" },
         h("div", null,
-          h("span", { className: "agk-os-label" }, "Hermes definitions"),
-          h("h2", null, "Installed Agents")
+          h("span", { className: "agk-os-label" }, "Workspace"),
+          h("h2", null, "Supervision")
         ),
-        h("div", { className: "agk-os-section__note" },
-          h(Icon, { name: "agent" }),
-          h("span", null, "Definitions and sessions stay separate")
-        )
+        h(StatusPill, { tone: props.registryReady ? "success" : "warning", dot: false },
+          props.registryReady ? "Healthy" : "Review"
+        ),
+        h("p", null, "Select a system or Hermes agent to inspect its validated state.")
       ),
-      agents.length
-        ? h("div", { className: "agk-os-agent-list" }, agents.map(function (agent, index) {
-            return h(AgentCard, { agent: agent, key: agent.id || index });
-          }))
-        : h(EmptyState, {
-            icon: "agent",
-            title: "No installed agent definition was found",
-            description: "Run the AGK Hermes sync for this profile, then refresh this page.",
-          })
+      h(TabsList, { className: "agk-os-catalog-list", role: "tablist", "aria-label": "Catalog entities" },
+        h("span", { className: "agk-os-catalog-group" }, "Dashboard"),
+        h(CatalogTrigger, {
+          value: "overview",
+          kind: "overview",
+          active: props.activeView === "overview",
+          icon: "activity",
+          title: "Overview",
+          description: "Health and activity",
+          onClick: function () { props.setActiveView("overview"); },
+        }),
+        h("span", { className: "agk-os-catalog-group" }, "Operative systems"),
+        props.packages.length
+          ? props.packages.map(function (item, index) {
+              const value = catalogValue("system", item, index);
+              return h(CatalogTrigger, {
+                key: value,
+                value: value,
+                kind: "system",
+                active: props.activeView === value,
+                icon: "package",
+                title: item.name || item.id || "Unnamed OS",
+                description: item.allowed_here ? "Available here" : "Installed elsewhere",
+                meta: item.version ? "v" + item.version : null,
+                onClick: function () { props.setActiveView(value); },
+              });
+            })
+          : h("span", { className: "agk-os-catalog-empty" }, "No validated systems"),
+        h("span", { className: "agk-os-catalog-group" }, "Hermes agents"),
+        props.agents.length
+          ? props.agents.map(function (agent, index) {
+              const value = catalogValue("agent", agent, index);
+              return h(CatalogTrigger, {
+                key: value,
+                value: value,
+                kind: "agent",
+                active: props.activeView === value,
+                icon: "agent",
+                title: agent.name || agent.id || "Unnamed agent",
+                description: String(agent.runtime || "Hermes") + " runtime",
+                meta: asList(agent.sessions).length,
+                onClick: function () { props.setActiveView(value); },
+              });
+            })
+          : h("span", { className: "agk-os-catalog-empty" }, "No installed agents")
+      ),
+      h("footer", { className: "agk-os-context-footer" },
+        h("div", null,
+          h("span", { className: "agk-os-status-light agk-os-status-light--" + (props.activeSessions ? "live" : "idle"), "aria-hidden": "true" }),
+          h("span", null, props.activeSessions + " active session" + (props.activeSessions === 1 ? "" : "s"))
+        ),
+        h("code", null, props.environment)
+      )
     );
   }
 
@@ -482,100 +527,120 @@
     const definitionsReady = agents.filter(function (agent) {
       return Boolean(agent.prompt_present && agent.definition_hash);
     }).length;
+    const packageEntries = packages.map(function (item, index) {
+      return { value: catalogValue("system", item, index), item: item };
+    });
+    const agentEntries = agents.map(function (agent, index) {
+      return { value: catalogValue("agent", agent, index), item: agent };
+    });
 
     return h("main", { className: "agk-os-hub" },
-      h("header", { className: "agk-os-page-header" },
-        h("div", { className: "agk-os-page-heading" },
-          h("div", { className: "agk-os-kicker" },
-            h("span", null, "Agentik control layer"),
-            h(Badge, { tone: "outline", className: "agk-os-environment" }, data.environment)
-          ),
-          h("h1", null, "OS and Agents"),
-          h("p", null, "Inspect the validated systems, installed Hermes definitions, and linked runtime sessions for this profile.")
-        ),
-        h(Button, {
-          className: "agk-os-button agk-os-refresh-button",
-          type: "button",
-          size: "sm",
-          outlined: true,
-          onClick: function () { loadCatalog(true); },
-          disabled: refreshing,
-          "aria-label": "Refresh OS and agent catalog",
-        },
-          h(Icon, { name: "refresh", className: refreshing ? "agk-os-spin" : "" }),
-          refreshing ? "Refreshing" : "Refresh"
-        )
-      ),
+      h(Tabs, { className: "agk-os-workspace", defaultValue: "overview" }, function (activeView, setActiveView) {
+        const packageEntry = packageEntries.find(function (entry) { return entry.value === activeView; });
+        const agentEntry = agentEntries.find(function (entry) { return entry.value === activeView; });
+        const selectedPackage = packageEntry ? packageEntry.item : null;
+        const selectedAgent = agentEntry ? agentEntry.item : null;
+        const viewKind = selectedPackage ? "system" : (selectedAgent ? "agent" : "overview");
+        const detailTitle = selectedPackage
+          ? (selectedPackage.name || selectedPackage.id || "Operative System")
+          : selectedAgent
+            ? (selectedAgent.name || selectedAgent.id || "Hermes Agent")
+            : "Control overview";
+        const detailDescription = selectedPackage
+          ? (selectedPackage.description || "Validated OS package from the canonical Agentik registry.")
+          : selectedAgent
+            ? (selectedAgent.description || "Installed Hermes agent definition and linked runtime state.")
+            : "Monitor registry health, validated systems, installed agents, and their active runtime sessions.";
+        const viewLabel = viewKind === "system" ? "Systems" : (viewKind === "agent" ? "Agents" : "Dashboard");
+        const triggerId = "agk-os-view-" + (viewKind === "overview" ? "overview" : activeView.replace(/[^a-z0-9_-]+/gi, "-"));
 
-      error ? h("div", { className: "agk-os-inline-alert", role: "status" },
-        h(Icon, { name: "alert" }),
-        h("span", null, "Refresh failed. Showing the last loaded response."),
-        h(Button, { type: "button", size: "sm", ghost: true, onClick: function () { loadCatalog(true); } }, "Retry")
-      ) : null,
-
-      h("section", { className: "agk-os-summary-grid", "aria-label": "Catalog summary" },
-        h(SummaryCard, {
-          icon: "package",
-          label: "Validated OS",
-          value: data.registry.package_count,
-          detail: data.registry.invalid_count ? data.registry.invalid_count + " invalid hidden" : "Registry validated only",
-        }),
-        h(SummaryCard, {
-          icon: "agent",
-          label: "Installed agents",
-          value: data.sync.agent_count || agents.length,
-          detail: definitionsReady + " definitions valid",
-        }),
-        h(SummaryCard, {
-          icon: "activity",
-          label: "Active sessions",
-          value: activeSessions,
-          detail: "Linked runtime processes",
-        }),
-        h(SummaryCard, {
-          icon: registryReady ? "check" : "alert",
-          label: "Registry state",
-          value: registryReady ? "Healthy" : (data.registry.available ? "Needs review" : "Unavailable"),
-          detail: "Current profile · " + data.environment,
-        })
-      ),
-
-      h(Tabs, { className: "agk-os-tabs", defaultValue: "overview" }, function (activeTab, setActiveTab) {
         return h(React.Fragment, null,
-          h(TabsList, { className: "agk-os-tabs__list", role: "tablist", "aria-label": "OS and agent catalog views" },
-            h(TabsTrigger, {
-              id: "agk-os-tab-overview",
-              value: "overview",
-              active: activeTab === "overview",
-              role: "tab",
-              "aria-selected": activeTab === "overview",
-              "aria-controls": "agk-os-panel-overview",
-              onClick: function () { setActiveTab("overview"); },
-            }, "Overview"),
-            h(TabsTrigger, {
-              id: "agk-os-tab-systems",
-              value: "systems",
-              active: activeTab === "systems",
-              role: "tab",
-              "aria-selected": activeTab === "systems",
-              "aria-controls": "agk-os-panel-systems",
-              onClick: function () { setActiveTab("systems"); },
-            }, "Systems", h("span", { className: "agk-os-tab-count" }, String(packages.length))),
-            h(TabsTrigger, {
-              id: "agk-os-tab-agents",
-              value: "agents",
-              active: activeTab === "agents",
-              role: "tab",
-              "aria-selected": activeTab === "agents",
-              "aria-controls": "agk-os-panel-agents",
-              onClick: function () { setActiveTab("agents"); },
-            }, "Agents", h("span", { className: "agk-os-tab-count" }, String(agents.length)))
-          ),
-          activeTab === "systems"
-            ? h(SystemsPanel, { packages: packages, registryReady: registryReady })
-            : activeTab === "agents"
-              ? h(AgentsPanel, { agents: agents })
-              : h(OverviewPanel, { data: data, registryReady: registryReady, definitionsReady: definitionsReady })
+          h(CatalogNavigation, {
+            activeView: activeView,
+            setActiveView: setActiveView,
+            packages: packages,
+            agents: agents,
+            registryReady: registryReady,
+            activeSessions: activeSessions,
+            environment: data.environment,
+          }),
+          h("section", {
+            className: "agk-os-detail-panel",
+            id: "agk-os-panel-detail",
+            role: "tabpanel",
+            "aria-labelledby": triggerId,
+          },
+            h("header", { className: "agk-os-page-header" },
+              h("div", { className: "agk-os-page-heading" },
+                h("div", { className: "agk-os-kicker" },
+                  h("span", null, "OS & Agents"),
+                  h("span", { "aria-hidden": "true" }, "/"),
+                  h("span", null, viewLabel),
+                  h(Badge, { tone: "outline", className: "agk-os-environment" }, data.environment)
+                ),
+                h("h1", null, detailTitle),
+                h("p", null, detailDescription)
+              ),
+              h(Button, {
+                className: "agk-os-button agk-os-refresh-button",
+                type: "button",
+                size: "sm",
+                outlined: true,
+                onClick: function () { loadCatalog(true); },
+                disabled: refreshing,
+                "aria-label": "Refresh OS and agent catalog",
+              },
+                h(Icon, { name: "refresh", className: refreshing ? "agk-os-spin" : "" }),
+                refreshing ? "Refreshing" : "Refresh"
+              )
+            ),
+            error ? h("div", { className: "agk-os-inline-alert", role: "status" },
+              h(Icon, { name: "alert" }),
+              h("span", null, "Refresh failed. Showing the last loaded response."),
+              h(Button, { type: "button", size: "sm", ghost: true, onClick: function () { loadCatalog(true); } }, "Retry")
+            ) : null,
+            viewKind === "overview"
+              ? h("div", { className: "agk-os-detail-body agk-os-detail-body--dashboard" },
+                  h("section", { className: "agk-os-summary-grid", "aria-label": "Catalog summary" },
+                    h(SummaryCard, {
+                      icon: "package",
+                      label: "Validated OS",
+                      value: data.registry.package_count,
+                      detail: data.registry.invalid_count ? data.registry.invalid_count + " invalid hidden" : "Registry validated only",
+                    }),
+                    h(SummaryCard, {
+                      icon: "agent",
+                      label: "Installed agents",
+                      value: data.sync.agent_count || agents.length,
+                      detail: definitionsReady + " definitions valid",
+                    }),
+                    h(SummaryCard, {
+                      icon: "activity",
+                      label: "Active sessions",
+                      value: activeSessions,
+                      detail: "Linked runtime processes",
+                    }),
+                    h(SummaryCard, {
+                      icon: registryReady ? "check" : "alert",
+                      label: "Registry state",
+                      value: registryReady ? "Healthy" : (data.registry.available ? "Needs review" : "Unavailable"),
+                      detail: "Current profile · " + data.environment,
+                    })
+                  ),
+                  h(OverviewPanel, { data: data, registryReady: registryReady, definitionsReady: definitionsReady })
+                )
+              : h("div", { className: "agk-os-detail-body agk-os-detail-body--entity" },
+                  selectedPackage
+                    ? h(PackageCard, { item: selectedPackage })
+                    : selectedAgent
+                      ? h(AgentCard, { agent: selectedAgent })
+                      : h(EmptyState, {
+                          icon: "alert",
+                          title: "The selected catalog entry is unavailable",
+                          description: "Refresh the catalog or select another entry from the supervision panel.",
+                        })
+                )
+          )
         );
       })
     );
