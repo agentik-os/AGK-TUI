@@ -246,10 +246,8 @@ fi
 if [ ! -x "$install_root/venv/bin/python" ]; then
   python3 -m venv "$install_root/venv"
 fi
-if ! "$install_root/venv/bin/python" -c 'import yaml' >/dev/null 2>&1; then
-  "$install_root/venv/bin/python" -m pip install --disable-pip-version-check \
-    -r "$repo_root/requirements.txt"
-fi
+"$install_root/venv/bin/python" -m pip install --disable-pip-version-check \
+  -r "$repo_root/requirements.txt"
 
 if [ "$system_install" = true ]; then
   install -m 0644 "$repo_root/rmux/rmux.conf" /etc/rmux.conf

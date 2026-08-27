@@ -134,6 +134,31 @@ def test_setup_cli_works_when_systemd_does_not_define_home(tmp_path: Path):
     assert result.stdout == "topology-ok\n"
 
 
+def test_agk_launcher_exports_current_linux_identity_as_environment(tmp_path: Path):
+    install = tmp_path / "install"
+    tui = install / "bin" / "agk-tui"
+    tui.parent.mkdir(parents=True)
+    tui.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"${AGK_ENVIRONMENT:-missing}\"\n",
+        encoding="utf-8",
+    )
+    tui.chmod(0o755)
+    env = os.environ.copy()
+    env.pop("USER", None)
+    env.pop("AGK_ENVIRONMENT", None)
+    env["AGK_TERMINAL_ROOT"] = str(install)
+
+    result = subprocess.run(
+        [str(AGK)], env=env, text=True, capture_output=True, check=False
+    )
+
+    expected = subprocess.run(
+        ["id", "-un"], text=True, capture_output=True, check=True
+    ).stdout.strip()
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected
+
+
 def test_agk_help_documents_interactive_session_and_setup_surfaces():
     result = subprocess.run(
         [str(AGK), "--help"],
