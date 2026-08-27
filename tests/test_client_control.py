@@ -305,7 +305,17 @@ def test_ready_authorization_is_derived_from_verified_discord_message(layout, mo
 
 @pytest.mark.parametrize(
     "unauthorized_content",
-    ["START FOU-145", "GO FOU-14", "LAUNCH FOU-14"],
+    [
+        "START FOU-145",
+        "GO FOU-14",
+        "LAUNCH FOU-14",
+        "start FOU-14",
+        "START fou-14",
+        " START FOU-14",
+        "START FOU-14 ",
+        "START  FOU-14",
+        "START\tFOU-14",
+    ],
 )
 def test_ready_authorization_requires_exact_start_command(
     layout, monkeypatch, unauthorized_content
@@ -444,6 +454,24 @@ def test_bootstrap_is_safe_with_no_real_client(layout):
         encoding="utf-8"
     )
     assert client_control.show_doctor(layout, None, online=False) == 0
+
+
+def test_layout_prefers_explicit_agk_control_home_over_virtual_profile_home(
+    tmp_path, monkeypatch
+):
+    virtual_home = tmp_path / "profile" / "home"
+    control_home = tmp_path / "mission"
+    workspace = control_home / "workspace"
+    monkeypatch.setenv("HOME", str(virtual_home))
+    monkeypatch.setenv("AGK_CONTROL_HOME", str(control_home))
+    monkeypatch.setenv("AGK_CLIENT_WORKSPACE", str(workspace))
+    monkeypatch.setenv("AGK_TERMINAL_ROOT", str(ROOT))
+
+    current = client_control.Layout.current()
+
+    assert current.home == control_home.resolve()
+    assert current.workspace == workspace.resolve()
+    assert current.secrets == (control_home / ".config" / "agk" / "clients").resolve()
 
 
 def test_bootstrap_upgrade_migrates_an_existing_registry_without_clients(layout):
@@ -721,11 +749,11 @@ def test_convex_online_checks_require_token_and_every_environment():
 
 
 def test_composio_executable_uses_canonical_agk_fallback(monkeypatch):
+    canonical = Path("/usr/local/lib/agk-terminal/bin/composio")
     monkeypatch.setattr(client_control.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(Path, "is_file", lambda self: self == canonical)
 
-    assert client_control.composio_executable() == Path(
-        "/usr/local/lib/agk-terminal/bin/composio"
-    )
+    assert client_control.composio_executable() == canonical
 
 
 def test_composio_checks_accept_local_vault_discord_bot(monkeypatch):
