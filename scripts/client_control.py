@@ -94,7 +94,11 @@ class Layout:
 
     @classmethod
     def current(cls) -> "Layout":
-        home = Path(os.environ.get("HOME") or Path.home()).expanduser().resolve()
+        home = Path(
+            os.environ.get("AGK_CONTROL_HOME")
+            or os.environ.get("HOME")
+            or Path.home()
+        ).expanduser().resolve()
         workspace = (
             Path(os.environ.get("AGK_CLIENT_WORKSPACE", home / "workspace"))
             .expanduser()
@@ -2249,15 +2253,7 @@ def authorize_work_start(layout: Layout, args: argparse.Namespace) -> dict[str, 
         or author.get("bot") is True
     ):
         raise ClientError("start authorization is not from the configured human owner")
-    authorized_issues = set(
-        re.findall(
-            r"(?<![A-Z0-9])([A-Z][A-Z0-9]{1,15}-[1-9][0-9]*)(?![A-Z0-9])",
-            content.upper(),
-        )
-    )
-    if issue not in authorized_issues or not re.fullmatch(
-        rf"(?i)\s*START\s+{re.escape(issue)}\s*", content
-    ):
+    if content != f"START {issue}":
         raise ClientError("Discord message must be the exact START command for this issue")
     timestamp = dt.datetime.now(dt.timezone.utc).isoformat()
     context_fields = context.get("fields", {})
