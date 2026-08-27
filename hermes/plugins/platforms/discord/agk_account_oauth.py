@@ -47,6 +47,7 @@ _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _SAFE_ATTEMPT = re.compile(r"[a-f0-9]{32}\Z")
 _DEFAULT_GUILD_ID = 1541131439599386644
 _TIMEOUT_SECONDS = 900
+_SYSTEMCTL_INACTIVE_CODES = {3, 4}
 
 
 @dataclass(frozen=True)
@@ -452,9 +453,13 @@ class OAuthRunner:
         ]
         returncode = self.systemd(argv)
         if returncode != 0:
-            self.store.transition(
-                attempt_id, {"starting"}, status="failed", runner_unit=unit
+            terminal = self.store.transition(
+                attempt_id, {"starting"}, status="failed", runner_unit=""
+            ) or self.store.transition(
+                attempt_id, {"cancelling"}, status="cancelled", runner_unit=""
             )
+            if terminal is not None:
+                self._cleanup(terminal)
             raise RuntimeError("OAuth sibling unit failed to start")
         started = self.store.transition(
             attempt_id, {"starting"}, status="running", runner_unit=unit
@@ -543,7 +548,10 @@ class OAuthRunner:
     def _stop_unit(self, unit: str) -> bool:
         if self.systemd(["systemctl", "--user", "stop", unit]) != 0:
             return False
-        if self.systemd(["systemctl", "--user", "is-active", "--quiet", unit]) == 0:
+        activity = self.systemd(
+            ["systemctl", "--user", "is-active", "--quiet", unit]
+        )
+        if activity not in _SYSTEMCTL_INACTIVE_CODES:
             return False
         self.systemd(["systemctl", "--user", "reset-failed", unit])
         return True

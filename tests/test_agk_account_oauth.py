@@ -263,6 +263,9 @@ def test_runner_always_removes_fifo_and_raw_log(tmp_path, runner_script, monkeyp
         "token=SECRET-TOKEN",
         "id_token=SECRET-ID",
         "client_secret=SECRET-CLIENT",
+        "device_code=SECRET-DEVICE",
+        "device-code=SECRET-DEVICE",
+        "deviceCode=SECRET-DEVICE",
         "api-key=SECRET-API",
         "apiKey=SECRET-API",
         "user_password=SECRET-PASSWORD",
@@ -395,6 +398,84 @@ def test_cancel_fails_closed_when_systemd_stop_fails(tmp_path, oauth):
     assert runner.cancel(attempt.attempt_id) is False
     assert store.get(attempt.attempt_id).status == "running"
     assert result.exists()
+
+
+def test_cancel_fails_closed_when_inactivity_query_is_indeterminate(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("anthropic", "add", "Loumna", None, 7)
+    unit = f"agk-account-oauth-{attempt.attempt_id}.service"
+    attempt = store.update(attempt.attempt_id, status="running", runner_unit=unit)
+    result = store.path.parent / f"{attempt.attempt_id}.result.json"
+    result.write_text('{"status":"running"}', encoding="utf-8")
+    calls = []
+
+    def query_error_systemd(argv):
+        calls.append(list(argv))
+        if argv[:4] == ["systemctl", "--user", "is-active", "--quiet"]:
+            return 1
+        return 0
+
+    runner = oauth.OAuthRunner(store, query_error_systemd)
+
+    assert runner.cancel(attempt.attempt_id) is False
+    assert store.get(attempt.attempt_id).status == "running"
+    assert result.exists()
+    assert not any(call[:3] == ["systemctl", "--user", "reset-failed"] for call in calls)
+
+
+def test_cancel_accepts_explicit_unit_not_found_outcome(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("openai-codex", "add", "Agentik", None, 7)
+    unit = f"agk-account-oauth-{attempt.attempt_id}.service"
+    store.update(attempt.attempt_id, status="running", runner_unit=unit)
+
+    def not_found_systemd(argv):
+        if argv[:4] == ["systemctl", "--user", "is-active", "--quiet"]:
+            return 4
+        return 0
+
+    assert oauth.OAuthRunner(store, not_found_systemd).cancel(attempt.attempt_id)
+    assert store.get(attempt.attempt_id).status == "cancelled"
+
+
+def test_cancel_during_failed_start_terminalizes_and_cleans_attempt(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("openai-codex", "add", "Agentik", None, 7)
+    runner_box = {}
+
+    def failed_start_systemd(argv):
+        if argv[0] == "systemd-run":
+            runner = runner_box["runner"]
+            for path in (
+                runner.fifo_path(attempt),
+                runner.result_path(attempt),
+                runner.result_path(attempt).with_suffix(".raw.log"),
+            ):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+            assert runner.cancel(attempt.attempt_id) is False
+            return 1
+        if argv[:3] == ["systemctl", "--user", "stop"]:
+            return 1
+        return 0
+
+    runner = oauth.OAuthRunner(store, failed_start_systemd, runner_script=RUNNER_MODULE)
+    runner_box["runner"] = runner
+
+    with pytest.raises(RuntimeError, match="failed to start"):
+        runner.start(attempt.attempt_id)
+
+    stored = store.get(attempt.attempt_id)
+    assert stored.status == "cancelled"
+    assert stored.runner_unit == ""
+    assert all(
+        not path.exists()
+        for path in (
+            runner.fifo_path(stored),
+            runner.result_path(stored),
+            runner.result_path(stored).with_suffix(".raw.log"),
+        )
+    )
 
 
 def test_get_reconciles_terminal_runner_result_into_durable_store(tmp_path, oauth):

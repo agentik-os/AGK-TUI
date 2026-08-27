@@ -25,7 +25,6 @@ _SAFE_URL_QUERY_KEYS = {
     "client_id",
     "code_challenge",
     "code_challenge_method",
-    "device_code",
     "login_hint",
     "prompt",
     "redirect_uri",
@@ -39,7 +38,7 @@ def _sensitive_url_key(value: str) -> bool:
     """Fail closed on query keys capable of carrying credentials."""
     normalized = re.sub(r"[^a-z0-9]", "", value.casefold())
     return (
-        normalized == "code"
+        normalized.endswith("code")
         or "token" in normalized
         or "secret" in normalized
         or "password" in normalized
