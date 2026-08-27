@@ -138,9 +138,19 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 try:
     from .ffmpeg_utils import resolve_ffmpeg_executable
     from .agk_client_reviews import register_agk_client_review_listener
+    from .agk_account_control_ui import (
+        ACCOUNT_CONTROL_GUILD_ID,
+        reconcile_account_control_channel,
+        register_account_control_center,
+    )
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
     from agk_client_reviews import register_agk_client_review_listener
+    from agk_account_control_ui import (
+        ACCOUNT_CONTROL_GUILD_ID,
+        reconcile_account_control_channel,
+        register_account_control_center,
+    )
 
 from gateway.config import Platform, PlatformConfig
 
@@ -1394,6 +1404,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
+
+                try:
+                    register_account_control_center(adapter_self._client, adapter_self)
+                    account_guild = adapter_self._client.get_guild(ACCOUNT_CONTROL_GUILD_ID)
+                    if account_guild is None:
+                        raise RuntimeError("Station guild is unavailable")
+                    await reconcile_account_control_channel(account_guild, adapter_self)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Account Control Center reconciliation failed safely: %s",
+                        adapter_self.name,
+                        type(exc).__name__,
+                    )
 
                 if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
                     adapter_self._post_connect_task.cancel()
