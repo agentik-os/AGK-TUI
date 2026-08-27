@@ -2907,10 +2907,13 @@ def update_evidence(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
             parsed = urllib.parse.urlsplit(url)
             if parsed.scheme != "https" or not parsed.hostname:
                 raise ClientError("Linear attachment requires an HTTPS URL")
+            subtitle = validate_name(
+                str(item.get("subtitle") or "AGK verified evidence")
+            )
             structured.append(
                 {
                     "title": title,
-                    "subtitle": str(item.get("subtitle") or "AGK verified evidence")[:200],
+                    "subtitle": subtitle,
                     "url": url,
                 }
             )
