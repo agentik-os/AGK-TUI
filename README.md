@@ -1,5 +1,21 @@
 # AGK-TUI
 
+> **AGK-TUI is the RMUX mapping and terminal-session component of [Station](https://github.com/agentik-os/Station).**
+> For a complete Discord + Hermes + AGK-TUI + Portal installation, use Station.
+
+## Product boundary
+
+AGK-TUI owns the native terminal UI, RMUX session persistence, pane mapping,
+provider-terminal launching and session navigation. Complete-VPS concerns —
+Hermes fleet deployment, Discord bots and token lifecycle, the private Portal,
+provider policy, Operative Systems, global rules, backups, updates and rollback —
+are owned by the public [Station repository](https://github.com/agentik-os/Station).
+
+Existing full-stack bootstrap surfaces remain temporarily for compatibility and
+migration, but new platform behavior and new installations are developed in
+Station. RMUX/TUI bugs are fixed here, then Station advances its immutable
+AGK-TUI pin after verification.
+
 AGK-TUI is a native terminal control plane for persistent AI work. It gives
 Hermes, Codex, Claude Code, OpenCode, OpenRouter and ordinary shells one
 consistent interface while [RMUX](https://github.com/Helvesec/rmux) keeps each
@@ -14,7 +30,11 @@ from provider state.
 In practical terms, you can start work on a VPS from a laptop, disconnect,
 reopen AGK from a phone and continue the same live conversation.
 
-## What AGK installs
+## Legacy compatibility distribution
+
+The historical standalone installer still provisions the following integrated
+stack for existing deployments. New installations should use Station, which
+owns and tests this composition while consuming AGK-TUI as its RMUX component.
 
 - the native `agk` TUI;
 - a verified RMUX client and the required layout integration;
@@ -24,6 +44,12 @@ reopen AGK from a phone and continue the same live conversation.
 - Agentik OS packages and specialized catalog agents;
 - a profile-local MCP inventory, including redacted Composio connections;
 - global Rules synchronized to every supported provider;
+- the pinned Superpowers workflow plugin, Caveman efficiency skills and a searchable
+  273-specialist Agency Agents library in every Hermes profile;
+- proactive capability routing so agents load matching tools, plugins, skills and
+  bounded specialist briefs without waiting for an explicit extension name;
+- local bilingual Discord voice transcription with Whisper Large v3 on CPU, plus
+  local Piper voice replies (no speech API key required);
 - optional Hermes gateways for Discord and headless operation;
 - seamless conversation continuation between Discord and AGK;
 - a transactional client-organization control plane for Mission work;
