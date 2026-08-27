@@ -153,3 +153,44 @@ The commit contains only scoped Task 5 canonical code/tests. Pre-existing edits 
 1. `/home/operator/src/Station` is a separate, already dirty repository. Its exact synchronized overlay remains uncommitted to avoid absorbing unrelated/pre-existing edits. The complete patch and before snapshots are preserved above.
 2. The canonical AGK-TUI working tree remains intentionally dirty after the scoped commit; remaining diffs in the three dirty Task 5 files are pre-existing/unrelated to the committed Task 5 hunks.
 3. No runtime/live Discord verification was performed because the task explicitly prohibited live Discord/API/provider mutations; verification is automated and source/install-contract based.
+
+---
+
+## Fix Round 1 — inline Operator repair
+
+The interrupted delegated fix was stopped at the owner's request and completed inline in the Operator session.
+
+### Findings addressed
+
+- Restored the pre-Task5 Station overlay versions before applying only Account Control hunks; recovery/completion/approval/Oracle tooling, Discord UI policy, recovery commands, formatting, services, and operational scripts remain present.
+- Dedicated Account Control modules and OAuth runner are byte-identical to canonical AGK-TUI source.
+- Reworked overlay tests to use an injected overlay path (`AGK_TASK5_STATION_OVERLAY`) or a repository fixture; no hardcoded live Station path is required for hermetic tests.
+- Added explicit regression assertions for preserved critical Station capabilities.
+- Changed `refresh_account_surfaces()` to isolate persistent-post and usage-monitor failures, always attempt both surfaces, log only exception classes, and return a safe failure map.
+- Preserved all unrelated dirty AGK-TUI and Station changes.
+
+### Verification
+
+```text
+Focused Task 5 + UI refresh + monitor: 29 passed
+Real Station overlay injection: 6 passed
+Full Tasks 1–5 affected suite: 174 passed, 3 skipped
+Station install/sync shell syntax: PASS
+Station adapter/monitor py_compile: PASS
+Canonical staged diff check: PASS
+```
+
+Canonical fix commit:
+
+- `fc2db44 fix(station): preserve overlay capabilities during account setup`
+
+Station overlay evidence:
+
+- pre-change snapshots: `task-5-snapshots/pre-20260827T221134Z/station/overlay/`
+- repaired incremental patch: `task-5-station-overlay-incremental.patch`
+- incremental patch SHA-256: `f532e3273b170a33b79836cba59581b01e6f1b89b9fd53c37524a1fd716dc489`
+- dedicated files verified byte-identical: runner, account control domain/UI/OAuth/transactions
+
+### Remaining concern
+
+Live runtime deployment/readback remains Task 6. The separate Station overlay stays uncommitted to avoid absorbing unrelated repository work; the repaired files and exact incremental patch are available for independent review.
