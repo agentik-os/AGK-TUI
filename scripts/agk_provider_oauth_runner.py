@@ -10,6 +10,7 @@ import shlex
 import stat
 import subprocess
 import tempfile
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -19,13 +20,43 @@ _URL = re.compile(r"https://[^\s<>\"']+")
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _DEVICE_CODE = re.compile(r"(?i)(?:device|user)\s+code\s*[:=]\s*([A-Z0-9][A-Z0-9-]{3,31})")
 _CODE_AFTER_PROMPT = re.compile(r"(?i)enter\s+this\s+code\s*:\s*([A-Z0-9][A-Z0-9-]{3,31})")
-_SENSITIVE_URL_KEYS = {"access_token", "refresh_token", "authorization_code", "api_key", "password"}
+_SAFE_URL_QUERY_KEYS = {
+    "audience",
+    "client_id",
+    "code_challenge",
+    "code_challenge_method",
+    "device_code",
+    "login_hint",
+    "prompt",
+    "redirect_uri",
+    "response_type",
+    "scope",
+    "state",
+}
+
+
+def _sensitive_url_key(value: str) -> bool:
+    """Fail closed on query keys capable of carrying credentials."""
+    normalized = re.sub(r"[^a-z0-9]", "", value.casefold())
+    return (
+        normalized == "code"
+        or "token" in normalized
+        or "secret" in normalized
+        or "password" in normalized
+        or "passwd" in normalized
+        or normalized in {"apikey", "authorizationcode"}
+    )
 
 
 def _safe_authorization_url(value: str) -> str | None:
     try:
         parsed = urllib.parse.urlsplit(value)
-        query_keys = {key.casefold() for key, _value in urllib.parse.parse_qsl(parsed.query)}
+        query_keys = {
+            key
+            for key, _value in urllib.parse.parse_qsl(
+                parsed.query, keep_blank_values=True
+            )
+        }
     except ValueError:
         return None
     if (
@@ -34,7 +65,8 @@ def _safe_authorization_url(value: str) -> str | None:
         or parsed.username is not None
         or parsed.password is not None
         or parsed.fragment
-        or query_keys & _SENSITIVE_URL_KEYS
+        or any(_sensitive_url_key(key) for key in query_keys)
+        or any(key.casefold() not in _SAFE_URL_QUERY_KEYS for key in query_keys)
     ):
         return None
     return value
@@ -113,7 +145,15 @@ def _prepare_ephemeral(fifo_path: Path, raw_log: Path) -> None:
     raw_log.chmod(0o600)
 
 
-def run_oauth(provider: str, alias: str, fifo_path: Path, state_path: Path, timeout: int) -> int:
+def run_oauth(
+    provider: str,
+    alias: str,
+    fifo_path: Path,
+    state_path: Path,
+    timeout: int,
+    *,
+    deadline: float | None = None,
+) -> int:
     command = hermes_command(provider, alias, timeout)
     fifo_path, state_path = Path(fifo_path), Path(state_path)
     raw_log = state_path.with_suffix(".raw.log")
@@ -146,10 +186,11 @@ def run_oauth(provider: str, alias: str, fifo_path: Path, state_path: Path, time
             partial = redacted_result("".join(lines), None)
             if partial.keys() != {"status"}:
                 _write_state(state_path, partial)
-        returncode = process.wait(timeout=timeout + 30)
+        wait_timeout = timeout if deadline is None else max(0.001, deadline - time.time())
+        returncode = process.wait(timeout=wait_timeout)
         _write_state(state_path, redacted_result("".join(lines), returncode))
         return returncode
-    except Exception:
+    except Exception:  # noqa: BLE001 - cleanup must cover every terminal path
         if process is not None:
             try:
                 process.kill()
@@ -171,8 +212,16 @@ def main() -> int:
     parser.add_argument("--fifo", required=True, type=Path)
     parser.add_argument("--state", required=True, type=Path)
     parser.add_argument("--timeout", required=True, type=int)
+    parser.add_argument("--deadline", required=True, type=float)
     args = parser.parse_args()
-    return run_oauth(args.provider, args.alias, args.fifo, args.state, args.timeout)
+    return run_oauth(
+        args.provider,
+        args.alias,
+        args.fifo,
+        args.state,
+        args.timeout,
+        deadline=args.deadline,
+    )
 
 
 if __name__ == "__main__":

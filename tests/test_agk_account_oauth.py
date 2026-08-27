@@ -38,6 +38,8 @@ class FakeSystemd:
 
     def __call__(self, argv):
         self.calls.append(list(argv))
+        if argv[:4] == ["systemctl", "--user", "is-active", "--quiet"]:
+            return 3
         return 0
 
 
@@ -132,7 +134,11 @@ def test_valid_claude_code_is_written_only_to_fifo_and_never_retained(tmp_path, 
     store = oauth.OAuthAttemptStore(tmp_path)
     attempt = store.create("anthropic", "add", "Loumna", None, 7, channel_id=44)
     writes = []
-    runner = oauth.OAuthRunner(store, FakeSystemd(), fifo_writer=lambda path, value: writes.append((path, value)))
+    def complete_write(path, value):
+        writes.append((path, value))
+        return len(value.encode("utf-8"))
+
+    runner = oauth.OAuthRunner(store, FakeSystemd(), fifo_writer=complete_write)
 
     assert runner.submit_claude_code(attempt.attempt_id, "code#state", user_id=7, channel_id=44)
     assert writes == [(runner.fifo_path(attempt), "code#state\n")]
@@ -157,7 +163,10 @@ def test_cancel_stops_only_recorded_unit_and_removes_ephemeral_files(tmp_path, o
     result.write_text('{"status":"pending"}', encoding="utf-8")
 
     assert runner.cancel(attempt.attempt_id) is True
-    assert systemd.calls == [["systemctl", "--user", "stop", running.runner_unit]]
+    assert systemd.calls[:2] == [
+        ["systemctl", "--user", "stop", running.runner_unit],
+        ["systemctl", "--user", "is-active", "--quiet", running.runner_unit],
+    ]
     assert store.get(attempt.attempt_id).status == "cancelled"
     assert not fifo.exists() and not result.exists()
 
@@ -245,3 +254,260 @@ def test_runner_always_removes_fifo_and_raw_log(tmp_path, runner_script, monkeyp
     assert "private OAuth response" not in retained
     assert json.loads(retained)["status"] == "succeeded"
     assert stat.S_IMODE(state.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "code=SECRET-CODE",
+        "token=SECRET-TOKEN",
+        "id_token=SECRET-ID",
+        "client_secret=SECRET-CLIENT",
+        "api-key=SECRET-API",
+        "apiKey=SECRET-API",
+        "user_password=SECRET-PASSWORD",
+    ],
+)
+def test_runner_rejects_every_secret_bearing_authorization_url(runner_script, query):
+    result = runner_script.redacted_result(
+        f"Authorization URL: https://auth.example/callback?{query}\n", None
+    )
+
+    assert result == {"status": "running"}
+    assert "SECRET" not in json.dumps(result)
+
+
+def test_late_start_is_bounded_by_original_attempt_deadline(tmp_path, oauth):
+    now = [1000.0]
+    store = oauth.OAuthAttemptStore(tmp_path, clock=lambda: now[0])
+    attempt = store.create("openai-codex", "add", "Agentik", None, 7)
+    now[0] = attempt.expires_at - 1.0
+    systemd = FakeSystemd()
+
+    oauth.OAuthRunner(store, systemd, runner_script=RUNNER_MODULE).start(attempt.attempt_id)
+
+    argv = systemd.calls[0]
+    runtime_property = next(value for value in argv if value.startswith("RuntimeMaxSec="))
+    assert float(runtime_property.removeprefix("RuntimeMaxSec=").removesuffix("s")) <= 1.0
+    assert float(argv[argv.index("--deadline") + 1]) == attempt.expires_at
+    assert argv[argv.index("--timeout") + 1] == "900"
+
+
+def test_cancel_winning_during_start_is_not_revived(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("openai-codex", "add", "Agentik", None, 7)
+    calls = []
+    runner = None
+
+    def racing_systemd(argv):
+        calls.append(list(argv))
+        if argv[0] == "systemd-run":
+            assert runner.cancel(attempt.attempt_id) is True
+            return 0
+        if argv[:4] == ["systemctl", "--user", "is-active", "--quiet"]:
+            return 3
+        return 0
+
+    runner = oauth.OAuthRunner(store, racing_systemd, runner_script=RUNNER_MODULE)
+
+    with pytest.raises(ValueError, match="cancelled"):
+        runner.start(attempt.attempt_id)
+
+    assert store.get(attempt.attempt_id).status == "cancelled"
+    assert any(call[:3] == ["systemctl", "--user", "stop"] for call in calls)
+
+
+def test_duplicate_start_is_rejected_while_first_start_is_reserved(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("openai-codex", "add", "Agentik", None, 7)
+    runner = None
+    nested_errors = []
+
+    def racing_systemd(argv):
+        if argv[0] == "systemd-run":
+            try:
+                runner.start(attempt.attempt_id)
+            except ValueError as exc:
+                nested_errors.append(str(exc))
+        return 0
+
+    runner = oauth.OAuthRunner(store, racing_systemd, runner_script=RUNNER_MODULE)
+    started = runner.start(attempt.attempt_id)
+
+    assert started.status == "running"
+    assert nested_errors == ["attempt is not startable"]
+
+
+def test_cancel_intent_survives_stop_failure_before_unit_is_visible(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("openai-codex", "add", "Agentik", None, 7)
+    calls = []
+    runner_box = {}
+
+    def racing_systemd(argv):
+        calls.append(list(argv))
+        if argv[0] == "systemd-run":
+            assert runner_box["runner"].cancel(attempt.attempt_id) is False
+            return 0
+        if argv[:3] == ["systemctl", "--user", "stop"]:
+            return 1 if sum(call[:3] == argv[:3] for call in calls) == 1 else 0
+        if argv[:4] == ["systemctl", "--user", "is-active", "--quiet"]:
+            return 3
+        return 0
+
+    runner = oauth.OAuthRunner(store, racing_systemd, runner_script=RUNNER_MODULE)
+    runner_box["runner"] = runner
+
+    with pytest.raises(ValueError, match="cancelled"):
+        runner.start(attempt.attempt_id)
+
+    assert store.get(attempt.attempt_id).status == "cancelled"
+
+
+def test_runner_create_stops_and_cleans_running_conflict(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    old = store.create("openai-codex", "add", "Agentik", None, 7)
+    unit = f"agk-account-oauth-{old.attempt_id}.service"
+    old = store.update(old.attempt_id, status="running", runner_unit=unit)
+    systemd = FakeSystemd()
+    runner = oauth.OAuthRunner(store, systemd)
+    for path in (runner.fifo_path(old), runner.result_path(old), runner.result_path(old).with_suffix(".raw.log")):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+
+    replacement = runner.create("openai-codex", "add", "Agentik", None, 7)
+
+    assert store.get(old.attempt_id).status == "cancelled"
+    assert replacement.status == "pending"
+    assert systemd.calls[0] == ["systemctl", "--user", "stop", unit]
+    assert all(not path.exists() for path in (runner.fifo_path(old), runner.result_path(old), runner.result_path(old).with_suffix(".raw.log")))
+
+
+def test_cancel_fails_closed_when_systemd_stop_fails(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("anthropic", "add", "Loumna", None, 7)
+    unit = f"agk-account-oauth-{attempt.attempt_id}.service"
+    attempt = store.update(attempt.attempt_id, status="running", runner_unit=unit)
+    result = store.path.parent / f"{attempt.attempt_id}.result.json"
+    result.write_text('{"status":"running"}', encoding="utf-8")
+    runner = oauth.OAuthRunner(store, lambda argv: 1)
+
+    assert runner.cancel(attempt.attempt_id) is False
+    assert store.get(attempt.attempt_id).status == "running"
+    assert result.exists()
+
+
+def test_get_reconciles_terminal_runner_result_into_durable_store(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("openai-codex", "add", "Agentik", None, 7)
+    store.update(attempt.attempt_id, status="running")
+    result = store.path.parent / f"{attempt.attempt_id}.result.json"
+    result.write_text('{"status":"succeeded","authorization_url":"https://auth.example/device"}', encoding="utf-8")
+
+    assert store.get(attempt.attempt_id).status == "succeeded"
+    persisted = json.loads(store.path.read_text(encoding="utf-8"))["attempts"]
+    assert next(row for row in persisted if row["attempt_id"] == attempt.attempt_id)["status"] == "succeeded"
+
+
+def test_get_durably_expires_stale_live_attempt(tmp_path, oauth):
+    now = [1000.0]
+    store = oauth.OAuthAttemptStore(tmp_path, clock=lambda: now[0])
+    attempt = store.create("openai-codex", "add", "Agentik", None, 7)
+    now[0] = attempt.expires_at
+
+    assert store.get(attempt.attempt_id).status == "expired"
+    assert '"status": "expired"' in store.path.read_text(encoding="utf-8")
+
+
+def test_store_rejects_backward_live_status_transition(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("openai-codex", "add", "Agentik", None, 7)
+    store.update(attempt.attempt_id, status="running")
+
+    with pytest.raises(ValueError, match="invalid attempt status transition"):
+        store.update(attempt.attempt_id, status="pending")
+
+    assert store.get(attempt.attempt_id).status == "running"
+
+
+def test_partial_fifo_write_is_not_marked_submitted(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("anthropic", "add", "Loumna", None, 7, channel_id=44)
+    runner = oauth.OAuthRunner(store, FakeSystemd(), fifo_writer=lambda _path, _value: 2)
+
+    assert runner.submit_claude_code(attempt.attempt_id, "code#state", user_id=7, channel_id=44) is False
+    assert store.get(attempt.attempt_id).status != "code-submitted"
+
+
+def test_cancel_winning_during_fifo_write_is_not_revived(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("anthropic", "add", "Loumna", None, 7, channel_id=44)
+    runner = None
+
+    def racing_writer(_path, value):
+        assert runner.cancel(attempt.attempt_id) is True
+        return len(value.encode("utf-8"))
+
+    runner = oauth.OAuthRunner(store, FakeSystemd(), fifo_writer=racing_writer)
+
+    assert runner.submit_claude_code(attempt.attempt_id, "code#state", user_id=7, channel_id=44) is False
+    assert store.get(attempt.attempt_id).status == "cancelled"
+
+
+def test_duplicate_submission_is_rejected_while_first_write_is_reserved(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("anthropic", "add", "Loumna", None, 7, channel_id=44)
+    runner_box = {}
+    nested_results = []
+
+    def racing_writer(_path, value):
+        nested_results.append(
+            runner_box["runner"].submit_claude_code(
+                attempt.attempt_id, "other#state", user_id=7, channel_id=44
+            )
+        )
+        return len(value.encode("utf-8"))
+
+    runner = oauth.OAuthRunner(store, FakeSystemd(), fifo_writer=racing_writer)
+    runner_box["runner"] = runner
+
+    assert runner.submit_claude_code(
+        attempt.attempt_id, "code#state", user_id=7, channel_id=44
+    ) is True
+    assert nested_results == [False]
+    assert store.get(attempt.attempt_id).status == "code-submitted"
+
+
+def test_cancel_fails_closed_when_unit_remains_active(tmp_path, oauth):
+    store = oauth.OAuthAttemptStore(tmp_path)
+    attempt = store.create("openai-codex", "add", "Agentik", None, 7)
+    unit = f"agk-account-oauth-{attempt.attempt_id}.service"
+    store.update(attempt.attempt_id, status="running", runner_unit=unit)
+    runner = oauth.OAuthRunner(store, lambda _argv: 0)
+
+    assert runner.cancel(attempt.attempt_id) is False
+    assert store.get(attempt.attempt_id).status == "running"
+
+
+def test_runner_wait_uses_absolute_deadline(tmp_path, runner_script, monkeypatch):
+    fifo = tmp_path / "input.fifo"
+    state = tmp_path / "result.json"
+    observed = {}
+
+    class FakeProcess:
+        stdout = iter(())
+
+        def wait(self, timeout=None):
+            observed["timeout"] = timeout
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(runner_script.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner_script.time, "time", lambda: 1000.0)
+
+    assert runner_script.run_oauth(
+        "openai-codex", "Agentik", fifo, state, 900, deadline=1001.25
+    ) == 0
+    assert observed["timeout"] == pytest.approx(1.25)
