@@ -126,11 +126,13 @@ def load_owner_aliases(hermes_home: Path) -> dict[str, dict[str, str]]:
 def voice_channel_name(provider_label: str, account: AccountSnapshot) -> str:
     owner = account.owner_name.strip() or f"Account-{account.credential_id[:8]}"
     owner = "".join(ch for ch in owner if ch.isalnum() or ch in {"-", "_"}).strip("-_") or "Account"
-    remaining = next(
-        (window.remaining_percent for window in account.windows if window.remaining_percent is not None),
-        None,
-    )
-    used = None if remaining is None else 100.0 - max(0.0, min(100.0, float(remaining)))
+    remaining_values = [
+        max(0.0, min(100.0, float(window.remaining_percent)))
+        for window in account.windows
+        if window.remaining_percent is not None
+    ]
+    most_consumed_remaining = min(remaining_values) if remaining_values else None
+    used = None if most_consumed_remaining is None else 100.0 - most_consumed_remaining
     percent = "?" if used is None else str(round(used))
     return f"{owner}-{provider_label} : {percent}%"[:100]
 

@@ -165,6 +165,20 @@ def test_voice_channel_name_uses_owner_session_name_and_primary_used_percent():
     ) == "Loumna-Claude : ?%"
 
 
+def test_voice_channel_name_uses_most_consumed_quota_window():
+    account = monitor.AccountSnapshot(
+        index=1,
+        credential_id="420097",
+        status="ok",
+        windows=(
+            monitor.UsageWindow("Current session", 100.0, None),
+            monitor.UsageWindow("Current week", 57.0, None),
+        ),
+        owner_name="Loumna",
+    )
+    assert monitor.voice_channel_name("Claude", account) == "Loumna-Claude : 43%"
+
+
 def test_collect_snapshots_applies_aliases_by_id_not_pool_order(monkeypatch):
     entries = [
         type("Entry", (), {"id": "7dac56", "last_status": "ok", "access_token": None, "base_url": None})(),
