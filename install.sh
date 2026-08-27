@@ -198,6 +198,8 @@ install -m 0755 "$repo_root/scripts/provider.sh" "$install_root/scripts/provider
 install -m 0755 "$repo_root/scripts/doctor.sh" "$install_root/scripts/doctor.sh"
 install -m 0755 "$repo_root/scripts/sync-hermes.sh" "$install_root/scripts/sync-hermes.sh"
 install -m 0755 "$repo_root/scripts/sync-rules.py" "$install_root/scripts/sync-rules.py"
+install -m 0755 "$repo_root/scripts/agk_provider_oauth_runner.py" \
+  "$install_root/scripts/agk_provider_oauth_runner.py"
 install -m 0755 "$repo_root/scripts/install-shared-hermes.sh" \
   "$install_root/scripts/install-shared-hermes.sh"
 install -m 0755 "$repo_root/scripts/topology.py" "$install_root/scripts/topology.py"

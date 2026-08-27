@@ -747,6 +747,9 @@ class AccountControlView(_ViewBase):
         status = getattr(result, "status", "")
         if status in {"committed", "rolled_back"}:
             self.selected_attempt_id = ""
+        if status == "committed":
+            await self.adapter.refresh_account_surfaces(reason="account-transaction")
+            self._account_surfaces_refreshed = True
         return {
             "committed": "Credential transaction committed. Account roster refreshed.",
             "rolled_back": "Credential transaction rolled back safely. Account roster refreshed.",
@@ -759,7 +762,10 @@ class AccountControlView(_ViewBase):
         }.get(status, "Account roster refreshed.")
 
     async def refresh_message(self) -> str:
+        self._account_surfaces_refreshed = False
         outcome = await self._finalize_succeeded_attempt()
+        if self._account_surfaces_refreshed:
+            return outcome
         self.records = await asyncio.to_thread(_load_records, self.adapter)
         if discord:
             self._build_components()

@@ -138,6 +138,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 try:
     from .ffmpeg_utils import resolve_ffmpeg_executable
     from .agk_client_reviews import register_agk_client_review_listener
+    from .agk_account_usage_monitor import DiscordAccountUsageMonitor, MonitorConfig
     from .agk_account_control_ui import (
         ACCOUNT_CONTROL_GUILD_ID,
         reconcile_account_control_channel,
@@ -146,6 +147,7 @@ try:
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
     from agk_client_reviews import register_agk_client_review_listener
+    from agk_account_usage_monitor import DiscordAccountUsageMonitor, MonitorConfig
     from agk_account_control_ui import (
         ACCOUNT_CONTROL_GUILD_ID,
         reconcile_account_control_channel,
@@ -1062,6 +1064,16 @@ class DiscordAdapter(BasePlatformAdapter):
     # cap are replaced by a short notice.
     MAX_SPLIT_MESSAGES = 8
 
+    async def refresh_account_surfaces(self, *, reason: str) -> None:
+        """Refresh account-control and voice usage surfaces without a restart."""
+        logger.info("[%s] Refreshing account surfaces (%s)", self.name, reason)
+        view = getattr(self, "_account_control_view", None)
+        if view is not None:
+            await view.refresh_message()
+        monitor = self._account_usage_monitor
+        if monitor is not None:
+            await monitor.refresh_once()
+
     # Auto-disconnect from voice channel after this many seconds of inactivity.
     # Config key: discord.voice_channel_inactivity_timeout_seconds (0 disables)
     VOICE_TIMEOUT = 300
@@ -1127,6 +1139,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
+        self._account_usage_monitor: Optional[DiscordAccountUsageMonitor] = None
         self._command_sync_retry_task: Optional[asyncio.Task] = None
         self._empty_content_notice_at: Dict[str, float] = {}
         # WebSocket-level liveness probe. Discord REST and Gateway are distinct
@@ -1425,6 +1438,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 if adapter_self._missed_message_backfill_enabled():
                     adapter_self._ensure_missed_message_backfill_task()
+                monitor_config = MonitorConfig.from_extra(adapter_self.config.extra)
+                if monitor_config.enabled:
+                    if adapter_self._account_usage_monitor is None:
+                        adapter_self._account_usage_monitor = DiscordAccountUsageMonitor(
+                            adapter_self._client, monitor_config
+                        )
+                    adapter_self._account_usage_monitor.start()
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -2185,6 +2205,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # Cancel the liveness probe first so it can't fire a spurious fatal
         # error / reconnect while we're intentionally tearing the adapter down.
         await self._cancel_liveness_task()
+        if self._account_usage_monitor is not None:
+            await self._account_usage_monitor.stop()
+            self._account_usage_monitor = None
         # Clean up all active voice connections *before* cancelling the bot task.
         # leave_voice_channel() ends in `await vc.disconnect()`, and discord.py's
         # VoiceClient.disconnect() sends a voice state update over the main

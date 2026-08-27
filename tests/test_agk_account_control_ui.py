@@ -123,10 +123,14 @@ class FakeAdapter:
         self.hermes_home = hermes_home
         self.roster_calls = 0
         self.records = ()
+        self.surface_refresh_reasons = []
 
     def load_account_roster(self):
         self.roster_calls += 1
         return self.records
+
+    async def refresh_account_surfaces(self, *, reason):
+        self.surface_refresh_reasons.append(reason)
 
 
 @pytest.mark.asyncio
@@ -650,8 +654,9 @@ async def test_refresh_surfaces_safe_transaction_outcome(tmp_path, status, expec
 
     runner = SpyRunner()
     runner.store = Store()
+    adapter = FakeAdapter(tmp_path)
     view = ui.AccountControlView(
-        FakeAdapter(tmp_path), runner=runner, coordinator=Coordinator()
+        adapter, runner=runner, coordinator=Coordinator()
     )
     view.selected_attempt_id = attempt_id
     view.message = FakeMessage(ACCOUNT_CONTROL_MESSAGE_ID)
@@ -662,6 +667,9 @@ async def test_refresh_surfaces_safe_transaction_outcome(tmp_path, status, expec
     assert expected in interaction.followups[-1][0].lower()
     assert "provider secret body" not in interaction.followups[-1][0]
     assert bool(view.selected_attempt_id) is not cleared
+    assert adapter.surface_refresh_reasons == (
+        ["account-transaction"] if status == "committed" else []
+    )
 
 
 @pytest.mark.asyncio

@@ -49,9 +49,7 @@ class AccountSnapshot:
 class MonitorConfig:
     summary_or_category_id: int
     openai_channel_id: int
-    claude_channel_id: int = 0
     interval_seconds: int = 300
-    claude_channel_name: str = "claudecode-all-accounts"
 
     @classmethod
     def from_extra(cls, extra: dict | None) -> MonitorConfig:
@@ -60,9 +58,7 @@ class MonitorConfig:
         return cls(
             summary_or_category_id=int(values.get("usage_monitor_channel_id", 0) or 0),
             openai_channel_id=int(values.get("usage_monitor_openai_channel_id", 0) or 0),
-            claude_channel_id=int(values.get("usage_monitor_claude_channel_id", 0) or 0),
             interval_seconds=interval,
-            claude_channel_name=str(values.get("usage_monitor_claude_channel_name", "claudecode-all-accounts") or "claudecode-all-accounts")[:100],
         )
 
     @property
@@ -284,48 +280,6 @@ class DiscordAccountUsageMonitor:
                 return None
         return channel
 
-    async def _find_or_create_claude_channel(self, root, openai_channel):
-        if self.config.claude_channel_id:
-            return await self._channel(self.config.claude_channel_id)
-        category = root if getattr(root, "channels", None) is not None else getattr(openai_channel, "category", None)
-        if category is None:
-            return root if hasattr(root, "send") else None
-        for channel in getattr(category, "channels", ()):
-            if str(getattr(channel, "name", "")).casefold() == self.config.claude_channel_name.casefold():
-                return channel
-        guild = getattr(category, "guild", None)
-        if guild is not None and hasattr(guild, "create_text_channel"):
-            try:
-                return await guild.create_text_channel(
-                    self.config.claude_channel_name,
-                    category=category,
-                    reason="AGK Station account capacity monitor",
-                )
-            except Exception as exc:  # noqa: BLE001 - Discord client errors vary by adapter/version.
-                logger.warning("Could not create Claude monitor channel safely: %s", type(exc).__name__)
-                return root if hasattr(root, "send") else None
-        return None
-
-    async def _summary_channel(self, root, openai_channel):
-        if hasattr(root, "send"):
-            return root
-        category = root if getattr(root, "channels", None) is not None else getattr(openai_channel, "category", None)
-        if category is not None:
-            for channel in getattr(category, "channels", ()):
-                if str(getattr(channel, "name", "")).casefold() == "station-account-capacity":
-                    return channel
-            guild = getattr(category, "guild", None)
-            if guild is not None and hasattr(guild, "create_text_channel"):
-                try:
-                    return await guild.create_text_channel(
-                        "station-account-capacity",
-                        category=category,
-                        reason="AGK Station account capacity monitor",
-                    )
-                except Exception as exc:  # noqa: BLE001 - Discord client errors vary by adapter/version.
-                    logger.warning("Could not create summary channel safely: %s", type(exc).__name__)
-        return openai_channel
-
     async def _sync_voice_channels(
         self,
         category,
@@ -392,30 +346,6 @@ class DiscordAccountUsageMonitor:
                 except Exception as exc:  # noqa: BLE001 - Discord client errors vary by adapter/version.
                     logger.warning("Could not rename quota voice channel safely: %s", type(exc).__name__)
 
-    async def _upsert(self, key: str, channel, title: str, description: str, state: dict[str, int]) -> None:
-        if channel is None or not hasattr(channel, "send"):
-            return
-        try:
-            import discord
-            embed = discord.Embed(title=title, description=description[:4096], color=discord.Color.from_rgb(17, 17, 17))
-            embed.set_footer(text="Station · refreshes every 5 minutes · no secrets")
-        except Exception as exc:  # noqa: BLE001 - optional Discord embed support must fail open.
-            logger.debug("Discord embed construction unavailable: %s", type(exc).__name__)
-            embed = None
-        message = None
-        message_id = state.get(key)
-        if message_id and hasattr(channel, "fetch_message"):
-            try:
-                message = await channel.fetch_message(message_id)
-            except Exception as exc:  # noqa: BLE001 - Discord client errors vary by adapter/version.
-                logger.debug("Stored monitor message was unavailable: %s", type(exc).__name__)
-                message = None
-        if message is not None:
-            await message.edit(content=None if embed else description[:1900], embed=embed)
-        else:
-            message = await channel.send(content=None if embed else description[:1900], embed=embed)
-            state[key] = int(message.id)
-
     async def refresh_once(self) -> None:
         aliases = load_owner_aliases(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes"))
         openai_rows, claude_rows = await asyncio.wait_for(
@@ -427,17 +357,12 @@ class DiscordAccountUsageMonitor:
         )
         root = await self._channel(self.config.summary_or_category_id)
         openai_channel = await self._channel(self.config.openai_channel_id)
-        claude_channel = await self._find_or_create_claude_channel(root, openai_channel)
-        summary_channel = await self._summary_channel(root, openai_channel)
         state = self.store.load()
         category = root if getattr(root, "channels", None) is not None else getattr(openai_channel, "category", None)
         await self._sync_voice_channels(
             category, "openai-codex", "OpenAI", openai_rows, state, seed_channel=openai_channel
         )
         await self._sync_voice_channels(category, "anthropic", "Claude", claude_rows, state)
-        await self._upsert("summary", summary_channel, "Station · Account capacity", render_summary(openai_rows, claude_rows), state)
-        await self._upsert("openai", openai_channel, "OpenAI Codex · all accounts", render_provider_panel("OpenAI Codex", openai_rows), state)
-        await self._upsert("claude", claude_channel, "Claude Code · all accounts", render_provider_panel("Claude Code", claude_rows), state)
         self.store.save(state)
 
     async def _run(self) -> None:
