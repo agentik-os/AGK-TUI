@@ -1469,6 +1469,50 @@ def linear_sync_apply_locked(
     team = issue.get("team", {})
     if not isinstance(team, dict) or str(team.get("id") or "") != plan["team_id"]:
         raise ClientError("Linear issue belongs to a different client team")
+    canonical_issue_id = str(issue.get("id") or plan["issue"])
+    existing_attachments = {
+        (str(item.get("url") or ""), str(item.get("title") or ""))
+        for item in nested_objects(issue.get("attachments", {}))
+        if item.get("url") or item.get("title")
+    }
+    attachments_created = 0
+    for attachment in plan.get("attachments", []):
+        if not isinstance(attachment, dict):
+            raise ClientError("Linear attachment evidence is invalid")
+        url = str(attachment.get("url") or "")
+        title = str(attachment.get("title") or "")
+        if (url, title) in existing_attachments:
+            continue
+        composio_execute(
+            "LINEAR_CREATE_ATTACHMENT",
+            account,
+            {
+                "issue_id": canonical_issue_id,
+                "title": title,
+                "subtitle": str(attachment.get("subtitle") or "AGK verified evidence"),
+                "url": url,
+            },
+        )
+        attachments_created += 1
+    if plan.get("attachments"):
+        verified_raw = composio_execute(
+            "LINEAR_GET_LINEAR_ISSUE", account, {"issue_id": plan["issue"]}
+        )
+        verified_issue = linear_issue_from_response(
+            verified_raw, str(plan["issue"])
+        )
+        verified_pairs = {
+            (str(item.get("url") or ""), str(item.get("title") or ""))
+            for item in nested_objects(verified_issue.get("attachments", {}))
+            if item.get("url") or item.get("title")
+        }
+        expected_pairs = {
+            (str(item.get("url") or ""), str(item.get("title") or ""))
+            for item in plan["attachments"]
+            if isinstance(item, dict)
+        }
+        if not expected_pairs <= verified_pairs:
+            raise ClientError("Linear attachment readback did not match evidence")
     comments = issue.get("comments", {})
     marker_exists = any(
         plan["comment_marker"] in str(item.get("body") or "")
@@ -1522,6 +1566,7 @@ def linear_sync_apply_locked(
         "issue": plan["issue"],
         "status": plan["agk_status"],
         "comment_created": comment_created,
+        "attachments_created": attachments_created,
     }
 
 
@@ -2847,6 +2892,37 @@ def update_evidence(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
             raise ClientError("QA validation steps must be explicit and bounded")
         evidence.setdefault("validation_steps", []).extend(validation_steps)
         changed.append("validation_steps")
+    linear_attachment_values = getattr(args, "linear_attachment", None) or []
+    if linear_attachment_values:
+        structured = []
+        for raw in linear_attachment_values:
+            try:
+                item = json.loads(raw)
+            except json.JSONDecodeError as error:
+                raise ClientError("Linear attachment must be a JSON object") from error
+            if not isinstance(item, dict):
+                raise ClientError("Linear attachment must be a JSON object")
+            title = validate_name(str(item.get("title") or ""))
+            url = str(item.get("url") or "").strip()
+            parsed = urllib.parse.urlsplit(url)
+            if parsed.scheme != "https" or not parsed.hostname:
+                raise ClientError("Linear attachment requires an HTTPS URL")
+            structured.append(
+                {
+                    "title": title,
+                    "subtitle": str(item.get("subtitle") or "AGK verified evidence")[:200],
+                    "url": url,
+                }
+            )
+        existing_urls = {
+            str(item.get("url") or "")
+            for item in evidence.get("linear_attachments", [])
+            if isinstance(item, dict)
+        }
+        evidence.setdefault("linear_attachments", []).extend(
+            item for item in structured if item["url"] not in existing_urls
+        )
+        changed.append("linear_attachments")
     browser_report = getattr(args, "browser_report", None)
     qa_session_id = str(getattr(args, "qa_session_id", None) or "")
     if browser_report is not None:
@@ -3619,6 +3695,12 @@ def command_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--staging-build")
     evidence.add_argument("--screenshot", action="append", default=[])
     evidence.add_argument("--validation-step", action="append", default=[])
+    evidence.add_argument(
+        "--linear-attachment",
+        action="append",
+        default=[],
+        help='Repeatable JSON: {"title":"Mobile QA","url":"https://..."}',
+    )
     evidence.add_argument("--browser-report")
     evidence.add_argument("--qa-session-id")
     evidence.add_argument("--rollback-plan")

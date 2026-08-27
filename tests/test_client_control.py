@@ -303,7 +303,13 @@ def test_ready_authorization_is_derived_from_verified_discord_message(layout, mo
         )
 
 
-def test_ready_authorization_rejects_longer_issue_identifier_prefix_match(layout, monkeypatch):
+@pytest.mark.parametrize(
+    "unauthorized_content",
+    ["START FOU-145", "GO FOU-14", "LAUNCH FOU-14"],
+)
+def test_ready_authorization_requires_exact_start_command(
+    layout, monkeypatch, unauthorized_content
+):
     client_control.create_client(layout, init_args())
     repository = declare_repository(layout, "test-client")
     config_path = layout.client("test-client") / ".client" / "integrations.yaml"
@@ -336,7 +342,7 @@ def test_ready_authorization_rejects_longer_issue_identifier_prefix_match(layout
             return {"id": "123456789012345679", "guild_id": "123456789012345678"}
         return {
             "id": "999", "channel_id": "123456789012345679",
-            "content": "START FOU-145", "author": {"id": "42", "bot": False},
+            "content": unauthorized_content, "author": {"id": "42", "bot": False},
         }
 
     monkeypatch.setattr(client_control, "discord_client_get", fake_get)
@@ -846,6 +852,30 @@ def test_browser_url_matching_rejects_host_prefix_attack():
     assert client_control.canonical_browser_url("https://staging.test") != (
         client_control.canonical_browser_url("https://staging.test.evil/path")
     )
+
+
+def test_qa_evidence_rejects_a_single_valid_screenshot(layout):
+    client_control.create_client(layout, init_args())
+    work = make_work(layout)
+    screenshot = layout.client("test-client") / "artifacts" / "mobile.png"
+    from PIL import Image
+
+    Image.new("RGB", (390, 844), color="white").save(screenshot)
+    artifact = client_control.client_evidence_artifact(
+        layout,
+        "test-client",
+        str(screenshot),
+        suffixes={".png"},
+    )
+    artifact["viewport"] = "mobile"
+
+    with pytest.raises(client_control.ClientError, match="missing required viewport"):
+        client_control.validate_qa_evidence(
+            layout,
+            "test-client",
+            work["id"],
+            {"screenshots": [artifact]},
+        )
 
 
 def test_browser_profile_binding_rejects_unconfigured_authenticated_principal(layout):
@@ -1454,6 +1484,40 @@ def test_online_doctor_requires_the_exact_client_alias(layout, monkeypatch):
     )
 
 
+def test_linear_material_gates_require_structured_https_attachments(layout):
+    client_control.create_client(layout, init_args())
+    work = make_work(layout)
+    path, record = client_control.load_work(layout, "test-client", work["id"])
+    record["status"] = "security_review"
+    client_control.atomic_yaml(path, record)
+
+    with pytest.raises(client_control.ClientError, match="requires verified Linear attachments"):
+        client_control.linear_sync_plan(layout, "test-client", work["id"])
+
+    updated = client_control.update_evidence(
+        layout,
+        Namespace(
+            slug="test-client", work_id=work["id"], actor="qa-agent",
+            pull_request=None, commit=None, engineering_review=None, ci=None,
+            qa=None, security=None, security_decision_id=None,
+            preview=None, staging_build=None, screenshot=[], validation_step=[],
+            linear_attachment=[json.dumps({"title": "Mobile QA", "url": "https://evidence.example/mobile.png"})],
+            browser_report=None, qa_session_id=None, rollback_plan=None, risk=None,
+            production_health=None, linear_done=False,
+        ),
+    )
+    assert updated["evidence"]["linear_attachments"] == [
+        {
+            "title": "Mobile QA",
+            "subtitle": "AGK verified evidence",
+            "url": "https://evidence.example/mobile.png",
+        }
+    ]
+    plan = client_control.linear_sync_plan(layout, "test-client", work["id"])
+    assert plan["attachments_required"] is True
+    assert plan["attachments"][0]["url"] == "https://evidence.example/mobile.png"
+
+
 def test_linear_sync_is_client_scoped_mapped_and_comment_idempotent(
     layout, monkeypatch
 ):
@@ -1463,8 +1527,18 @@ def test_linear_sync_is_client_scoped_mapped_and_comment_idempotent(
     integrations = client_control.yaml_document(config_path)
     integrations["linear"]["workflow_state_ids"]["in_progress"] = "state-started"
     client_control.atomic_yaml(config_path, integrations)
+    work_path, persisted_work = client_control.load_work(layout, "test-client", work["id"])
+    persisted_work["evidence"]["linear_attachments"] = [
+        {
+            "title": "QA evidence",
+            "subtitle": "AGK verified evidence",
+            "url": "https://evidence.example/qa.png",
+        }
+    ]
+    client_control.atomic_yaml(work_path, persisted_work)
     calls = []
     comments = []
+    attachments = []
 
     def fake_execute(tool, account, data):
         assert account == "client-test-client-linear"
@@ -1476,9 +1550,12 @@ def test_linear_sync_is_client_scoped_mapped_and_comment_idempotent(
                         "identifier": "FOU-142",
                         "team": {"id": "team-id"},
                         "comments": {"nodes": [{"body": body} for body in comments]},
+                        "attachments": {"nodes": list(attachments)},
                     }
                 }
             }
+        if tool == "LINEAR_CREATE_ATTACHMENT":
+            attachments.append({"title": data["title"], "url": data["url"]})
         if tool == "LINEAR_CREATE_LINEAR_COMMENT":
             comments.append(data["body"])
         if tool == "LINEAR_RUN_QUERY_OR_MUTATION":
@@ -1501,8 +1578,11 @@ def test_linear_sync_is_client_scoped_mapped_and_comment_idempotent(
     )
 
     assert first["comment_created"] is True
+    assert first["attachments_created"] == 1
     assert second["comment_created"] is False
+    assert second["attachments_created"] == 0
     assert len(comments) == 1
+    assert attachments == [{"title": "QA evidence", "url": "https://evidence.example/qa.png"}]
     mutations = [data for tool, data in calls if tool == "LINEAR_RUN_QUERY_OR_MUTATION"]
     assert all(item["variables"]["stateId"] == "state-started" for item in mutations)
     _, persisted = client_control.load_work(layout, "test-client", work["id"])
