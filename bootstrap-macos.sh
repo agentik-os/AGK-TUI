@@ -170,19 +170,25 @@ else
 fi
 run mkdir -p \
   "$install_root/bin" "$install_root/scripts" "$install_root/config" \
-  "$install_root/rmux" "$install_root/hermes/plugins/platforms" \
+  "$install_root/rmux" "$install_root/client" \
+  "$install_root/hermes/plugins/platforms" \
   "$install_root/agents" "$bin_dir"
 run install -m 0755 "$repo_root/apps/agk-tui/target/release/agk-tui" \
   "$install_root/bin/agk-tui"
-for script in agk_control.py provider.sh doctor.sh sync-hermes.sh topology.py composio_inventory.py; do
+for script in agk_control.py provider.sh doctor.sh sync-hermes.sh topology.py composio_inventory.py client_control.py; do
   run install -m 0755 "$repo_root/scripts/$script" "$install_root/scripts/$script"
 done
-for config in topology.yaml providers.yaml hermes.env.example; do
+for config in topology.yaml providers.yaml rules.yaml hermes.env.example; do
   run install -m 0644 "$repo_root/config/$config" "$install_root/config/$config"
 done
+run rm -rf -- "$install_root/client"
+run cp -R "$repo_root/client" "$install_root/client"
 run install -m 0644 "$repo_root/rmux/rmux.conf" "$install_root/rmux/rmux.conf"
 run install -m 0755 "$repo_root/bin/agk" "$bin_dir/agk"
 run install -m 0755 "$repo_root/bin/agk-terminal" "$bin_dir/agk-terminal"
+for client_launcher in client-init client-doctor client-status client-env provision-client; do
+  run install -m 0755 "$repo_root/bin/$client_launcher" "$bin_dir/$client_launcher"
+done
 if [ "$dry_run" = true ]; then
   echo "  + synchronize Hermes plugins and Master OS Builder catalog"
 else
