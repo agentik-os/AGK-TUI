@@ -345,6 +345,7 @@ For every custom ID prefix below, invoke with wrong user, wrong guild, and wrong
 ```text
 agkacct:provider
 agkacct:account
+agkacct:switch
 agkacct:add
 agkacct:reconnect
 agkacct:refresh
@@ -378,6 +379,7 @@ Persist state at `$HERMES_HOME/account_control_state.json`, mode `0600`. Use sta
 - [ ] **Step 5: Implement exact user flows**
 
 - Provider select → account select.
+- `Switch` calls the existing canonical `_prefer_account_credential(provider, credential_id)` path, re-reads the pool, and refreshes the post. Cover OpenAI and Claude separately and assert automatic quota rotation remains enabled.
 - `Add account` → owner-nickname modal → start attempt → ephemeral OAuth instructions.
 - `Reconnect` → ephemeral confirmation → start attempt.
 - OpenAI response shows only verification URL, device code, alias, and expiry.

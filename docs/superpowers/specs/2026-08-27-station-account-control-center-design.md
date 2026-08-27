@@ -103,12 +103,17 @@ The persistent view exposes:
 
 - provider select: OpenAI / Claude;
 - account select populated from the live pool;
+- `Switch` to make the selected credential the preferred account for its provider;
 - `Reconnect`;
 - `Add account`;
 - `Refresh`;
 - `Close session` for an active temporary OAuth session.
 
 The roster remains visible while sensitive interaction responses are ephemeral.
+
+### Account switching
+
+`Switch` follows a two-level flow: select OpenAI or Claude, then select one live account in that provider pool. The callback calls Hermes' canonical account-preference mechanism, re-reads the pool, and refreshes the persistent post and `/account`. Switching changes priority/preference only; it never reconnects, duplicates, removes, or rewrites credentials. Automatic quota rotation remains enabled after a manual preference change.
 
 ## 6. OAuth attempt model
 
@@ -179,6 +184,7 @@ Fetch usage with the canonical account-usage API. Store/render only whitelisted 
 After every successful transaction:
 
 - `/account` reads the new live pool on Refresh;
+- `Switch` changes the preferred OpenAI or Claude credential through the canonical Hermes pool API;
 - the persistent roster post is edited immediately;
 - the provider pool rotation contains the new credential;
 - a replaced credential is absent from rotation;
@@ -282,6 +288,7 @@ The feature is complete only when all of the following are verified:
 - private `account-control` channel and one persistent roster post;
 - Gareth-only channel visibility and callback authorization;
 - live OpenAI and Claude roster with correct owner nicknames;
+- functional provider → account → `Switch` flow for OpenAI and Claude;
 - functional OpenAI device-link/code workflow;
 - functional Claude link/code workflow;
 - add-account and reconnect-account paths;
