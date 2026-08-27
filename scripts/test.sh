@@ -10,7 +10,7 @@ cargo test --locked --manifest-path "$repo_root/apps/agk-tui/Cargo.toml"
 if python3 -c 'import pytest' >/dev/null 2>&1; then
   python3 -m pytest -q "$repo_root/tests"
 elif command -v uv >/dev/null 2>&1; then
-  uv run --no-project --with pytest==9.0.2 --with PyYAML==6.0.3 \
+  uv run --no-project --with pytest==9.0.2 --with PyYAML==6.0.3 --with Pillow==12.3.0 \
     python -m pytest -q "$repo_root/tests"
 else
   echo "Python tests require pytest or uv" >&2
