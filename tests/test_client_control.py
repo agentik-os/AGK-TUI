@@ -57,7 +57,7 @@ def declare_repository(layout, slug, repository="test-org/product"):
 
 def make_work(layout, slug="test-client"):
     repository = declare_repository(layout, slug)
-    return client_control.create_work(
+    record = client_control.create_work(
         layout,
         Namespace(
             slug=slug,
@@ -71,6 +71,363 @@ def make_work(layout, slug="test-client"):
             target="staging",
         ),
     )
+    path, record = client_control.load_work(layout, slug, record["id"])
+    integrations_path = layout.client(slug) / ".client" / "integrations.yaml"
+    integrations = client_control.yaml_document(integrations_path)
+    integrations["linear"]["delivery_project_id"] = "project-id"
+    integrations["discord"].update(
+        {
+            "owner_user_id": "test-owner",
+            "guild_id": "123456789012345678",
+            "channels": {"dev_requests": "123456789012345679"},
+        }
+    )
+    client_control.atomic_yaml(integrations_path, integrations)
+    attach_verified_linear_snapshot(layout, slug, record, "FOU-142")
+    authorization = {
+        "id": "discord:999",
+        "actor": "test-owner",
+        "actor_id": "test-owner",
+        "source": "discord",
+        "timestamp": "2026-08-27T00:00:00+00:00",
+        "channel_id": "123456789012345679",
+        "message_id": "999",
+        "guild_id": "123456789012345678",
+        "client": slug,
+        "project": "project-id",
+        "issue": "FOU-142",
+        "scope": record["title"],
+        "priority": "unspecified",
+        "constraints": [],
+        "at": "2026-08-27T00:00:00+00:00",
+        "message_sha256": hashlib.sha256(b"START FOU-142").hexdigest(),
+        "message_timestamp": "2026-08-27T00:00:00+00:00",
+    }
+    payload = {"work_id": record["id"], **authorization}
+    payload.pop("client", None)
+    authorization["receipt"] = client_control.write_start_authorization_receipt(
+        layout, slug, record["id"], payload
+    )
+    record["authorization"] = authorization
+    record["status"] = "in_progress"
+    client_control.atomic_yaml(path, record)
+    return record
+
+
+def attach_verified_linear_snapshot(layout, slug, record, issue):
+    snapshot = {
+        "identifier": issue,
+        "title": record["title"],
+        "description": "Authoritative Linear description",
+        "updated_at": "2026-08-27T12:00:00.000Z",
+        "team_id": "team-id",
+        "comments": [],
+        "attachments": [],
+        "relations": [],
+        "state": {},
+        "id": None,
+        "url": None,
+    }
+    body = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    relative = Path("state") / "work" / f"{record['id']}.linear-snapshot.json"
+    client_control.atomic_text(
+        layout.client(slug) / relative,
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        0o600,
+    )
+    receipt = client_control.write_linear_snapshot_receipt(
+        layout,
+        slug,
+        record["id"],
+        issue=issue,
+        team_id="team-id",
+        snapshot_sha256=hashlib.sha256(body.encode()).hexdigest(),
+        updated_at=snapshot["updated_at"],
+    )
+    record["context"] = {
+        "complete": True,
+        "fields": {
+            "documented": True,
+            "requested_outcome": record["title"],
+            "security_and_data_constraints": [],
+        },
+        "linear_snapshot": {
+            "identifier": issue,
+            "team_id": "team-id",
+            "updated_at": snapshot["updated_at"],
+            "sha256": hashlib.sha256(body.encode()).hexdigest(),
+            "path": str(relative),
+            "receipt": receipt,
+        },
+    }
+    return record
+
+
+def test_work_context_requires_complete_client_scoped_contract(layout, monkeypatch):
+    client_control.create_client(layout, init_args())
+    repository = declare_repository(layout, "test-client")
+    work = client_control.create_work(
+        layout,
+        Namespace(
+            slug="test-client", issue="FOU-144", title="Context contract",
+            role="backend-engineer", provider="hermes", repo=repository,
+            branch=None, session=None, target="staging",
+        ),
+    )
+    workflow = client_control.yaml_document(
+        layout.client("test-client") / ".client" / "workflow.yaml"
+    )
+    fields = {
+        key: ["evidence"] if key in {"attachments_and_screenshots", "acceptance_criteria", "dependencies", "test_plan", "real_navigation_requirements", "staging_and_deployment_requirements", "evidence_plan", "links_to_source_mission_pr_release_incident_and_decisions", "risks"} else "documented"
+        for key in workflow["intake"]["product_definition_requires"]
+    }
+    context_file = layout.client("test-client") / "tmp" / "context.yaml"
+    client_control.atomic_yaml(context_file, fields)
+    monkeypatch.setattr(
+        client_control,
+        "composio_execute",
+        lambda tool, account, data: {
+            "data": {
+                "issue": {
+                    "identifier": "FOU-144",
+                    "title": "Context contract",
+                    "description": "Authoritative Linear description",
+                    "updatedAt": "2026-08-27T12:00:00.000Z",
+                    "url": "https://linear.app/test/issue/FOU-144",
+                    "team": {"id": "team-id"},
+                    "comments": {"nodes": [{"id": "comment-1", "body": "History"}]},
+                    "attachments": {"nodes": [{"id": "attachment-1", "title": "Capture"}]},
+                    "relations": {"nodes": []},
+                }
+            }
+        },
+    )
+
+    updated = client_control.update_work_context(
+        layout,
+        Namespace(
+            slug="test-client", work_id=work["id"], actor="pm",
+            context_file=str(context_file),
+        ),
+    )
+
+    assert updated["context"]["complete"] is True
+    assert set(fields) <= set(updated["context"]["fields"])
+    assert updated["context"]["linear_snapshot"]["identifier"] == "FOU-144"
+    assert len(updated["context"]["linear_snapshot"]["sha256"]) == 64
+    receipt = layout.system / updated["context"]["linear_snapshot"]["receipt"]
+    assert receipt.is_file()
+    assert receipt.stat().st_mode & 0o777 == 0o400
+    assert len(client_control.yaml_document(receipt)["signature"]) == 64
+    snapshot = (
+        layout.client("test-client")
+        / updated["context"]["linear_snapshot"]["path"]
+    )
+    assert snapshot.is_file()
+    assert client_control.yaml_document(snapshot)["description"] == (
+        "Authoritative Linear description"
+    )
+    outside = layout.workspace / "outside.yaml"
+    client_control.atomic_yaml(outside, fields)
+    with pytest.raises(client_control.ClientError, match="inside the client boundary"):
+        client_control.update_work_context(
+            layout,
+            Namespace(
+                slug="test-client", work_id=work["id"], actor="pm",
+                context_file=str(outside),
+            ),
+        )
+
+
+def test_ready_authorization_is_derived_from_verified_discord_message(layout, monkeypatch):
+    client_control.create_client(layout, init_args())
+    repository = declare_repository(layout, "test-client")
+    config_path = layout.client("test-client") / ".client" / "integrations.yaml"
+    integrations = client_control.yaml_document(config_path)
+    integrations["linear"]["delivery_project_id"] = "project-id"
+    integrations["discord"].update(
+        {
+            "enabled": True,
+            "guild_id": "123456789012345678",
+            "owner_user_id": "42",
+            "channels": {"dev_requests": "123456789012345679"},
+            "token_set": True,
+        }
+    )
+    client_control.atomic_yaml(config_path, integrations)
+    work = client_control.create_work(
+        layout,
+        Namespace(
+            slug="test-client", issue="FOU-145", title="Authorized work",
+            role="backend-engineer", provider="hermes", repo=repository,
+            branch=None, session=None, target="staging",
+        ),
+    )
+    path, record = client_control.load_work(layout, "test-client", work["id"])
+    attach_verified_linear_snapshot(layout, "test-client", record, "FOU-145")
+    client_control.atomic_yaml(path, record)
+
+    def fake_get(_layout, _slug, endpoint):
+        if endpoint == "/channels/123456789012345679":
+            return {"id": "123456789012345679", "guild_id": "123456789012345678"}
+        if endpoint == "/channels/123456789012345679/messages/999":
+            return {
+                "id": "999", "channel_id": "123456789012345679",
+                "content": "START FOU-145", "timestamp": "2026-08-27T18:00:00+00:00",
+                "author": {"id": "42", "bot": False},
+            }
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(client_control, "discord_client_get", fake_get)
+    ready = client_control.authorize_work_start(
+        layout,
+        Namespace(
+            slug="test-client", work_id=work["id"],
+            channel_id="123456789012345679", message_id="999",
+        ),
+    )
+
+    assert ready["status"] == "todo"
+    assert ready["authorization"]["actor_id"] == "42"
+    assert ready["authorization"]["source"] == "discord"
+    assert ready["authorization"]["id"] == "discord:999"
+    assert ready["authorization"]["receipt"].startswith("audit/start-authorizations/")
+
+    path, forged = client_control.load_work(layout, "test-client", work["id"])
+    forged["authorization"]["message_id"] = "1000"
+    forged["authorization"]["id"] = "discord:1000"
+    client_control.atomic_yaml(path, forged)
+    with pytest.raises(client_control.ClientError, match="START receipt"):
+        client_control.transition_work(
+            layout, "test-client", work["id"], "in_progress", actor="attacker"
+        )
+
+
+def test_ready_authorization_rejects_longer_issue_identifier_prefix_match(layout, monkeypatch):
+    client_control.create_client(layout, init_args())
+    repository = declare_repository(layout, "test-client")
+    config_path = layout.client("test-client") / ".client" / "integrations.yaml"
+    integrations = client_control.yaml_document(config_path)
+    integrations["linear"]["delivery_project_id"] = "project-id"
+    integrations["discord"].update(
+        {
+            "enabled": True,
+            "guild_id": "123456789012345678",
+            "owner_user_id": "42",
+            "channels": {"dev_requests": "123456789012345679"},
+            "token_set": True,
+        }
+    )
+    client_control.atomic_yaml(config_path, integrations)
+    work = client_control.create_work(
+        layout,
+        Namespace(
+            slug="test-client", issue="FOU-14", title="Exact authorization",
+            role="backend-engineer", provider="hermes", repo=repository,
+            branch=None, session=None, target="staging",
+        ),
+    )
+    path, record = client_control.load_work(layout, "test-client", work["id"])
+    attach_verified_linear_snapshot(layout, "test-client", record, "FOU-14")
+    client_control.atomic_yaml(path, record)
+
+    def fake_get(_layout, _slug, endpoint):
+        if endpoint.endswith("/channels/123456789012345679"):
+            return {"id": "123456789012345679", "guild_id": "123456789012345678"}
+        return {
+            "id": "999", "channel_id": "123456789012345679",
+            "content": "START FOU-145", "author": {"id": "42", "bot": False},
+        }
+
+    monkeypatch.setattr(client_control, "discord_client_get", fake_get)
+
+    with pytest.raises(client_control.ClientError, match="exact START command"):
+        client_control.authorize_work_start(
+            layout,
+            Namespace(
+                slug="test-client", work_id=work["id"],
+                channel_id="123456789012345679", message_id="999",
+            ),
+        )
+
+
+def test_work_is_passive_until_context_and_human_authorization_exist(layout):
+    client_control.create_client(layout, init_args())
+    repository = declare_repository(layout, "test-client")
+    work = client_control.create_work(
+        layout,
+        Namespace(
+            slug="test-client",
+            issue="FOU-143",
+            title="Passive backlog candidate",
+            role="backend-engineer",
+            provider="hermes",
+            repo=repository,
+            branch=None,
+            session=None,
+            target="staging",
+        ),
+    )
+
+    assert work["status"] == "backlog"
+    assert work["context"]["complete"] is False
+    assert work["authorization"] is None
+    with pytest.raises(client_control.ClientError, match="context is incomplete"):
+        client_control.transition_work(
+            layout, "test-client", work["id"], "todo", actor="pm-agent"
+        )
+    with pytest.raises(client_control.ClientError, match="only IN_PROGRESS"):
+        client_control.start_work_session(layout, "test-client", work["id"])
+
+
+def test_legacy_work_without_governance_can_be_quarantined_without_forging_authorization(
+    layout,
+):
+    client_control.create_client(layout, init_args())
+    work = make_work(layout)
+    path, record = client_control.load_work(layout, "test-client", work["id"])
+    record["status"] = "in_progress"
+    record["context"] = {"complete": False}
+    record["authorization"] = None
+    client_control.atomic_yaml(path, record)
+
+    with pytest.raises(client_control.ClientError, match="complete Linear context"):
+        client_control.transition_work(
+            layout, "test-client", work["id"], "agent_review", actor="legacy-agent"
+        )
+
+    quarantined = client_control.quarantine_legacy_work(
+        layout,
+        "test-client",
+        work["id"],
+        actor="MISSION",
+        reason="created by a stale runtime before governed START enforcement",
+    )
+
+    assert quarantined["status"] == "blocked"
+    assert quarantined["authorization"] is None
+    assert quarantined["context"]["complete"] is False
+    assert quarantined["legacy_quarantine"]["previous_status"] == "in_progress"
+    assert quarantined["legacy_quarantine"]["missing"] == [
+        "complete_context",
+        "signed_linear_snapshot_receipt",
+        "authenticated_start_authorization",
+    ]
+    assert quarantined["events"][-1]["event"] == "work.legacy_quarantined"
+
+    parsed = client_control.command_parser().parse_args(
+        [
+            "work",
+            "quarantine-legacy",
+            "test-client",
+            work["id"],
+            "--actor",
+            "MISSION",
+            "--reason",
+            "stale runtime",
+        ]
+    )
+    assert parsed.work_command == "quarantine-legacy"
 
 
 def test_bootstrap_is_safe_with_no_real_client(layout):
@@ -93,6 +450,30 @@ def test_bootstrap_upgrade_migrates_an_existing_registry_without_clients(layout)
         "schema_version": client_control.SCHEMA_VERSION,
         "clients": [],
     }
+    assert (layout.system / "AGK_CLIENT_DELIVERY_SYSTEM_MASTER.md").is_file()
+    assert "BACKLOG IS PASSIVE" in (
+        layout.system / "AGK_CLIENT_DELIVERY_SYSTEM_MASTER.md"
+    ).read_text()
+
+
+def test_bootstrap_upgrade_migrates_existing_client_workflow_and_team(layout):
+    client_control.create_client(layout, init_args())
+    config = layout.client("test-client") / ".client"
+    client_control.atomic_yaml(config / "workflow.yaml", {"schema_version": 1, "legacy": True})
+    client_control.atomic_yaml(config / "team.yaml", {"schema_version": 1, "client_id": "test-client"})
+
+    client_control.bootstrap(layout, upgrade=True)
+
+    workflow = client_control.yaml_document(config / "workflow.yaml")
+    team = client_control.yaml_document(config / "team.yaml")
+    assert workflow["schema_version"] == 4
+    assert workflow["invariants"]["explicit_human_start_authorization_required"] is True
+    assert team["schema_version"] == 2
+    assert team["client_id"] == "test-client"
+    assert team["hermes_profile"] == client_control.hermes_profile_id("test-client")
+    backups = layout.system / "audit" / "client-config-migrations" / "test-client"
+    assert (backups / "workflow.schema-1.yaml").is_file()
+    assert (backups / "team.schema-1.yaml").is_file()
 
 
 def test_dry_run_makes_no_files_or_external_calls(layout, monkeypatch):
@@ -117,13 +498,267 @@ def test_client_init_is_transactional_private_and_registered(layout):
     assert root.is_dir()
     assert (root.stat().st_mode & 0o077) == 0
     assert (layout.secret_file("test-client").stat().st_mode & 0o777) == 0o600
+    assert f"export AGK_CLIENT_WORKSPACE={layout.workspace}" in layout.secret_file(
+        "test-client"
+    ).read_text()
     assert client_control.load_registry(layout)["clients"][0]["id"] == "test-client"
     assert (root / ".client" / "workflow.yaml").is_file()
+    runtime = client_control.yaml_document(root / ".client" / "runtime.yaml")
+    assert runtime["browser_qa"]["authenticated_session_required"] is True
+    assert runtime["browser_qa"]["enabled"] is False
+    assert runtime["browser_qa"]["profiles"] == []
+    assert [item["id"] for item in runtime["browser_qa"]["viewports"]] == [
+        "mobile", "ipad", "desktop", "large_desktop"
+    ]
+    assert runtime["browser_qa"]["capture_policy"] == (
+        "full_page_unobstructed_after_dismissing_overlays"
+    )
     assert (root / ".client" / "team.yaml").is_file()
     assert client_control.show_doctor(layout, "test-client", online=False) == 0
 
     with pytest.raises(client_control.ClientError, match="already exists"):
         client_control.create_client(layout, init_args())
+
+
+def test_new_clients_include_dev_intake_and_harness_engineering_loop(layout):
+    client_control.create_client(layout, init_args())
+    root = layout.client("test-client")
+    workflow = client_control.yaml_document(root / ".client" / "workflow.yaml")
+    team = client_control.yaml_document(root / ".client" / "team.yaml")
+    integrations = client_control.yaml_document(root / ".client" / "integrations.yaml")
+
+    assert "dev_requests" in integrations["discord"]["channels"]
+    assert team["discord_channels"]["dev_requests"] == "dev-requests"
+    assert team["execution_model"]["supervision_surface"] == "agk_tui"
+    assert team["agent_collaboration"]["changes_requested_resumes_same_session"] is True
+    assert workflow["display_names"]["automated_qa"] == "QA"
+    assert workflow["display_names"]["ready_for_cto"] == "CTO Review"
+    assert workflow["display_names"]["security_review"] == "Security Review"
+    assert workflow["display_names"]["business_review"] == "Business Review"
+    assert workflow["invariants"]["real_navigation_required"] is True
+    assert workflow["invariants"]["backlog_is_passive"] is True
+    assert workflow["invariants"]["agents_never_mark_done"] is True
+    assert workflow["harness_engineering_loop"]["qa"]["browser"] == (
+        "exact_authenticated_client_profile_from_runtime"
+    )
+    assert workflow["harness_engineering_loop"]["qa"]["authentication_reprobe_after_restart"] is True
+    assert workflow["gates"]["ready_for_cto"]["validation_request_channel"] == "cto_inbox"
+    assert workflow["gates"]["done"]["agents_forbidden_from_provider_state_mutation"] is True
+    assert workflow["linear_evidence_policy"]["comment_every_material_gate"] is True
+    assert workflow["linear_evidence_policy"]["attach_all_required_viewports"] is True
+    assert workflow["linear_evidence_policy"]["preserve_failed_attempts_and_corrections"] is True
+    assert workflow["harness_engineering_loop"]["correction_loop"]["on_failure"] == "return_to_in_progress"
+    assert "hermes_session" in workflow["harness_engineering_loop"]["correction_loop"]["preserve"]
+
+
+def test_client_team_uses_dedicated_project_manager_orchestration(layout):
+    client_control.create_client(layout, init_args())
+
+    team = client_control.yaml_document(
+        layout.client("test-client") / ".client" / "team.yaml"
+    )
+
+    assert team["orchestrator"] == {"role": "project-manager", "provider": "hermes"}
+    assert team["roles"]["project-manager"]["scope"] == "delivery-orchestration"
+    assert team["roles"]["product-manager"]["scope"] == "product-direction"
+    assert team["roles"]["product-manager"]["reports_to"] == "project-manager"
+    assert team["execution_model"] == {
+        "client_profile": "dedicated",
+        "agents": "on_demand_preserved_sessions",
+        "discord_identity": "dedicated_client_project_manager_bot",
+        "production_gate": "cto_required",
+        "supervision_surface": "agk_tui",
+        "specialist_sessions": "preserved_and_visible",
+    }
+    assert team["human_gates"]["issue_human_only_fields"] == [
+        "human_decision",
+        "human_approval",
+        "production_authorization",
+    ]
+
+
+def test_doctor_rejects_regressed_delivery_harness(layout):
+    client_control.create_client(layout, init_args())
+    root = layout.client("test-client")
+    workflow_path = root / ".client" / "workflow.yaml"
+    workflow = client_control.yaml_document(workflow_path)
+    workflow["invariants"]["backlog_is_passive"] = False
+    workflow["invariants"]["real_navigation_required"] = False
+    workflow["display_names"].pop("security_review")
+    workflow["intake"]["product_definition_requires"].remove("source")
+    workflow["gates"]["business_review"]["human_decision_required"] = False
+    workflow["gates"]["ready_for_cto"]["requires"].remove(
+        "security_passed_or_not_required"
+    )
+    client_control.atomic_yaml(workflow_path, workflow)
+    team_path = root / ".client" / "team.yaml"
+    team = client_control.yaml_document(team_path)
+    team["discord_channels"].pop("dev_requests")
+    team["execution_model"].pop("supervision_surface")
+    team["agent_collaboration"]["changes_requested_resumes_same_session"] = False
+    client_control.atomic_yaml(team_path, team)
+
+    failures = [
+        message
+        for level, message in client_control.doctor_one(
+            layout, "test-client", online=False
+        )
+        if level == "fail"
+    ]
+
+    assert "workflow invariant backlog_is_passive" in failures
+    assert "workflow invariant real_navigation_required" in failures
+    assert "workflow maps Security Review" in failures
+    assert "Linear product definition contract is complete" in failures
+    assert "Business Review is an actor-attributed human decision" in failures
+    assert "CTO Review accepts a recorded security disposition" in failures
+    assert "team has a dedicated dev-requests intake channel" in failures
+    assert "team sessions are supervised in AGK TUI" in failures
+    assert "changes requested preserves the same agent session" in failures
+
+
+def test_doctor_rejects_regressed_team_orchestration(layout):
+    client_control.create_client(layout, init_args())
+    path = layout.client("test-client") / ".client" / "team.yaml"
+    team = client_control.yaml_document(path)
+    team["orchestrator"]["role"] = "platform-lead"
+    team["execution_model"]["discord_identity"] = "shared_mission_bot_with_role_labels"
+    client_control.atomic_yaml(path, team)
+
+    checks = client_control.doctor_one(layout, "test-client", online=False)
+
+    failures = [message for level, message in checks if level == "fail"]
+    assert "team project-manager is the Hermes orchestrator" in failures
+    assert "team uses a dedicated client Project Manager Discord bot" in failures
+
+
+def test_client_init_declares_vercel_convex_and_drive_as_first_class_integrations(layout):
+    client_control.create_client(
+        layout,
+        init_args(vercel=True, convex=True, google_drive=True),
+    )
+
+    integrations = client_control.yaml_document(
+        layout.client("test-client") / ".client" / "integrations.yaml"
+    )
+
+    assert integrations["vercel"] == {
+        "enabled": True,
+        "account_alias": "client-test-client-vercel",
+        "team_id": None,
+        "project_ids": [],
+    }
+    assert integrations["convex"] == {
+        "enabled": True,
+        "credential_backend": "client-secret-store",
+        "deployment_ids": {"development": None, "staging": None, "production": None},
+        "token_set": False,
+    }
+    assert integrations["google_drive"] == {
+        "enabled": True,
+        "account_alias": "client-test-client-googledrive",
+        "account_selector": None,
+        "meeting_summary_folder_ids": [],
+        "shared_drive_id": None,
+        "supports_all_drives": True,
+        "processed_state": "state/meeting-intake/processed.json",
+        "intake_policy": {
+            "destination": "linear",
+            "apply_mode": "candidate_backlog_only",
+            "dedupe_key": "drive_file_id+content_hash",
+            "agent_statuses": ["backlog"],
+            "human_start_status": "todo",
+            "human_review_states": ["business_review", "ready_for_cto"],
+            "human_only_decisions": [
+                "business_review_result", "approved_for_prod", "done",
+            ],
+            "human_only_statuses": ["cto_approved", "done"],
+            "system_only_statuses": ["ready_to_deploy", "production", "verified"],
+            "human_gate_mode": "proposal_only",
+        },
+    }
+    team = client_control.yaml_document(
+        layout.client("test-client") / ".client" / "team.yaml"
+    )
+    assert team["roles"]["meeting-intake-coordinator"]["scope"] == "drive-to-linear"
+    plan = client_control.integration_plan(layout, "test-client")
+    aliases = {item["account_alias"] for item in plan["connections"]}
+    assert "client-test-client-vercel" in aliases
+    assert "client-test-client-googledrive" in aliases
+    assert "client-test-client-convex" not in aliases
+
+
+def test_convex_online_checks_require_token_and_every_environment():
+    config = {
+        "enabled": True,
+        "token_set": False,
+        "deployment_ids": {"development": None, "staging": None, "production": None},
+    }
+
+    assert client_control.convex_checks(config) == [
+        ("fail", "Convex client credential is not configured"),
+        ("fail", "Convex deployment id is missing: development"),
+        ("fail", "Convex deployment id is missing: staging"),
+        ("fail", "Convex deployment id is missing: production"),
+    ]
+
+    config["token_set"] = True
+    config["deployment_ids"] = {
+        "development": "dev:dentistry",
+        "staging": "staging:dentistry",
+        "production": "prod:dentistry",
+    }
+    assert client_control.convex_checks(config) == [
+        ("ok", "Convex client credential is configured"),
+        ("ok", "Convex deployment ids are explicit for development, staging and production"),
+    ]
+
+
+def test_composio_executable_uses_canonical_agk_fallback(monkeypatch):
+    monkeypatch.setattr(client_control.shutil, "which", lambda _name: None)
+
+    assert client_control.composio_executable() == Path(
+        "/usr/local/lib/agk-terminal/bin/composio"
+    )
+
+
+def test_composio_checks_accept_local_vault_discord_bot(monkeypatch):
+    monkeypatch.setattr(client_control, "composio_connections", lambda: {})
+    integrations = {
+        "discord": {
+            "enabled": True,
+            "provisioning_backend": "client-discord-bot",
+            "token_set": True,
+            "bot_id": "1542493917541437480",
+        }
+    }
+
+    assert client_control.composio_checks(integrations) == [
+        ("ok", "Discord dedicated bot credential is configured in the client vault")
+    ]
+
+
+def test_composio_checks_use_explicit_account_selector_when_alias_is_not_preserved(monkeypatch):
+    monkeypatch.setattr(
+        client_control,
+        "composio_connections",
+        lambda: {
+            "googledrive": [
+                {"word_id": "googledrive_kohl-scent", "status": "ACTIVE"}
+            ]
+        },
+    )
+    integrations = {
+        "google_drive": {
+            "enabled": True,
+            "account_alias": "client-test-client-googledrive",
+            "account_selector": "googledrive_kohl-scent",
+        }
+    }
+
+    assert client_control.composio_checks(integrations) == [
+        ("ok", "Composio google_drive account is active: googledrive_kohl-scent")
+    ]
 
 
 def test_integration_plan_requires_client_scoped_composio_aliases(layout):
@@ -138,6 +773,7 @@ def test_integration_plan_requires_client_scoped_composio_aliases(layout):
         "client-test-client-discordbot",
     }
     assert all("--alias" in item["command"] for item in plan["connections"])
+    assert all("--no-wait" in item["command"] for item in plan["connections"])
     assert plan["external_writes"] is False
 
 
@@ -195,87 +831,282 @@ def test_request_changes_preserves_the_exact_execution_context(layout):
     assert resumed["events"][-1]["resumed_context"]["session"] == original["session"]
 
 
-def test_delivery_gates_separate_approval_deploy_and_run_evidence(layout):
+def test_image_evidence_must_decode(layout):
+    client_control.create_client(layout, init_args())
+    fake = layout.client("test-client") / "artifacts" / "fake.png"
+    fake.write_bytes(b"not-an-image")
+
+    with pytest.raises(client_control.ClientError, match="does not decode"):
+        client_control.client_evidence_artifact(
+            layout, "test-client", str(fake), suffixes={".png"}
+        )
+
+
+def test_browser_url_matching_rejects_host_prefix_attack():
+    assert client_control.canonical_browser_url("https://staging.test") != (
+        client_control.canonical_browser_url("https://staging.test.evil/path")
+    )
+
+
+def test_browser_profile_binding_rejects_unconfigured_authenticated_principal(layout):
+    client_control.create_client(layout, init_args())
+    runtime_path = layout.client("test-client") / ".client" / "runtime.yaml"
+    runtime = client_control.yaml_document(runtime_path)
+    runtime["browser_qa"].update(
+        {
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "staging-user",
+                    "environment": "staging",
+                    "role": "user",
+                    "authenticated_verified": True,
+                }
+            ],
+        }
+    )
+    client_control.atomic_yaml(runtime_path, runtime)
+
+    with pytest.raises(client_control.ClientError, match="authentication is unverified"):
+        client_control.validate_browser_qa_profile(
+            layout,
+            "test-client",
+            {
+                "browser_profile_id": "staging-user",
+                "environment": "staging",
+                "role": "user",
+                "authenticated_principal": "attacker@example.test",
+                "authentication_probe_sha256": "b" * 64,
+            },
+        )
+
+
+def test_qa_pass_requires_real_artifacts_and_browser_session_provenance(layout):
+    import sqlite3
+
     client_control.create_client(layout, init_args())
     work = make_work(layout)
-    work_id = work["id"]
-    for target in ("agent_review", "automated_qa"):
-        client_control.transition_work(
-            layout, "test-client", work_id, target, actor="backend-agent"
+    runtime_path = layout.client("test-client") / ".client" / "runtime.yaml"
+    runtime = client_control.yaml_document(runtime_path)
+    runtime["browser_qa"].update(
+        {
+            "enabled": True,
+            "profiles": [
+                {
+                    "id": "test-staging-user",
+                    "environment": "staging",
+                    "role": "standard-user",
+                    "authenticated_verified": True,
+                    "authenticated_principal": "test-user",
+                    "authentication_probe_sha256": "a" * 64,
+                }
+            ],
+        }
+    )
+    client_control.atomic_yaml(runtime_path, runtime)
+    profile = client_control.yaml_document(
+        layout.client("test-client") / ".client" / "manifest.yaml"
+    )["profile"]["hermes_profile"]
+    profile_home = layout.home / ".hermes" / "profiles" / profile
+    profile_home.mkdir(parents=True)
+    db = sqlite3.connect(profile_home / "state.db")
+    db.execute("create table sessions(id text primary key, source text, started_at real, last_activity_at real)")
+    db.execute("create table messages(session_id text, role text, tool_name text, content text, timestamp real)")
+    db.execute("insert into sessions values(?,?,?,?)", ("qa-session-1", "kanban", 1000.0, 1100.0))
+    db.execute(
+        "insert into messages values(?,?,?,?,?)",
+        ("qa-session-1", "tool", "browser_exec", '{"url":"https://staging.test","page_title":"Test"}', 1050.0),
+    )
+    db.commit()
+    db.close()
+    from PIL import Image
+    screenshot_paths = []
+    for viewport in runtime["browser_qa"]["viewports"]:
+        screenshot = (
+            layout.client("test-client")
+            / "artifacts"
+            / f"qa-{viewport['id']}.png"
         )
-
-    with pytest.raises(client_control.ClientError, match="evidence is incomplete"):
-        client_control.transition_work(
-            layout, "test-client", work_id, "ready_for_cto", actor="qa-agent"
+        Image.new(
+            "RGB",
+            (viewport["width"], viewport["height"]),
+            color="white",
+        ).save(screenshot)
+        screenshot_paths.append(str(screenshot))
+    report = layout.client("test-client") / "artifacts" / "browser-report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "session_id": "qa-session-1",
+                "work_id": work["id"],
+                "actor": "qa-agent",
+                "started_at": 1000.0,
+                "finished_at": 1100.0,
+                "real_browser_navigation_succeeded": True,
+                "url": "https://staging.test",
+                "page_title": "Test",
+                "browser_profile_id": "test-staging-user",
+                "environment": "staging",
+                "role": "standard-user",
+                "authenticated_principal": "test-user",
+                "authentication_probe_sha256": "a" * 64,
+            }
         )
+    )
 
-    client_control.update_evidence(
+    updated = client_control.update_evidence(
         layout,
         Namespace(
-            slug="test-client",
-            work_id=work_id,
-            actor="qa-agent",
-            pull_request="https://github.test/pr/284",
-            commit="882ba43",
-            ci="passed",
-            qa="passed",
-            security="passed",
-            preview="https://staging.test/FOU-142",
-            risk="low",
-            production_health=None,
+            slug="test-client", work_id=work["id"], actor="qa-agent",
+            pull_request=None, commit=None, engineering_review=None, ci=None,
+            qa="passed", security=None, security_decision_id=None,
+            preview=None, staging_build=None, screenshot=screenshot_paths,
+            validation_step=["Navigate the real user flow and verify the result"],
+            browser_report=str(report), qa_session_id="qa-session-1",
+            rollback_plan=None, risk=None, production_health=None,
             linear_done=False,
         ),
     )
-    client_control.transition_work(
-        layout, "test-client", work_id, "ready_for_cto", actor="qa-agent"
-    )
-    approved = client_control.approve_work(
-        layout,
-        Namespace(
-            slug="test-client",
-            work_id=work_id,
-            approval_id="ENG-APPROVAL-1",
-            actor="cto-user",
-        ),
-    )
-    assert approved["status"] == "cto_approved"
 
-    with pytest.raises(client_control.ClientError, match="must be separate"):
-        client_control.authorize_deploy(
+    assert updated["evidence"]["qa_passed"] is True
+    assert {
+        item["viewport"] for item in updated["evidence"]["screenshots"]
+    } == {"mobile", "ipad", "desktop", "large_desktop"}
+    assert all(len(item["sha256"]) == 64 for item in updated["evidence"]["screenshots"])
+    assert updated["evidence"]["qa_browser_provenance"]["session_id"] == "qa-session-1"
+
+
+def test_intermediate_delivery_gates_fail_closed(layout, monkeypatch):
+    monkeypatch.setattr(client_control, "validate_qa_evidence", lambda *_args: None)
+    client_control.create_client(layout, init_args())
+    work = make_work(layout)
+    work_id = work["id"]
+    client_control.transition_work(
+        layout, "test-client", work_id, "agent_review", actor="engineer"
+    )
+    with pytest.raises(client_control.ClientError, match="engineering review"):
+        client_control.transition_work(
+            layout, "test-client", work_id, "automated_qa", actor="reviewer"
+        )
+    path, record = client_control.load_work(layout, "test-client", work_id)
+    record["evidence"]["engineering_review_passed"] = True
+    client_control.atomic_yaml(path, record)
+    client_control.transition_work(
+        layout, "test-client", work_id, "automated_qa", actor="reviewer"
+    )
+    with pytest.raises(client_control.ClientError, match="QA evidence"):
+        client_control.transition_work(
+            layout, "test-client", work_id, "security_review", actor="qa"
+        )
+    path, record = client_control.load_work(layout, "test-client", work_id)
+    record["evidence"].update(
+        {
+            "qa_passed": True,
+            "screenshots": ["evidence/before-after.png"],
+            "validation_steps": ["Navigate real flow and verify expected state"],
+        }
+    )
+    client_control.atomic_yaml(path, record)
+    client_control.transition_work(
+        layout, "test-client", work_id, "security_review", actor="qa"
+    )
+    with pytest.raises(client_control.ClientError, match="security disposition"):
+        client_control.transition_work(
+            layout, "test-client", work_id, "staging", actor="security"
+        )
+    path, record = client_control.load_work(layout, "test-client", work_id)
+    record["repository"].update(
+        {"pull_request": "https://github.test/pr/1", "commit": "abc123"}
+    )
+    record["evidence"].update(
+        {
+            "ci_passed": True,
+            "security_disposition": "not_required",
+            "security_decision_id": "SEC-NA-1",
+            "rollback_plan": "Revert PR",
+        }
+    )
+    client_control.atomic_yaml(path, record)
+    client_control.transition_work(
+        layout, "test-client", work_id, "staging", actor="security"
+    )
+    with pytest.raises(client_control.ClientError, match="staging evidence"):
+        client_control.transition_work(
+            layout, "test-client", work_id, "business_review", actor="release"
+        )
+    path, record = client_control.load_work(layout, "test-client", work_id)
+    record["evidence"].update(
+        {
+            "staging_preview": "https://staging.test",
+            "staging_build_version": "preview-1",
+        }
+    )
+    client_control.atomic_yaml(path, record)
+    client_control.transition_work(
+        layout, "test-client", work_id, "business_review", actor="release"
+    )
+    with pytest.raises(client_control.ClientError, match="Business Review"):
+        client_control.transition_work(
+            layout, "test-client", work_id, "ready_for_cto", actor="pm"
+        )
+
+
+def test_delivery_gates_and_release_controller_fail_closed(layout, monkeypatch):
+    monkeypatch.setattr(client_control, "validate_qa_evidence", lambda *_args: None)
+    client_control.create_client(layout, init_args())
+    work = make_work(layout)
+    work_id = work["id"]
+    path, record = client_control.load_work(layout, "test-client", work_id)
+    record["repository"].update(
+        {
+            "pull_request": "https://github.test/pr/284",
+            "commit": "882ba43",
+        }
+    )
+    record["evidence"].update(
+        {
+            "engineering_review_passed": True,
+            "ci_passed": True,
+            "qa_passed": True,
+            "security_disposition": "passed",
+            "security_decision_id": "SEC-1",
+            "staging_preview": "https://staging.test/FOU-142",
+            "staging_build_version": "preview-284",
+            "screenshots": ["evidence/qa.png"],
+            "validation_steps": ["Navigate the real flow"],
+            "business_review": {
+                "result": "approved",
+                "actor_id": "product-owner",
+                "decision_id": "BUS-1",
+                "at": "2026-08-27T00:00:00+00:00",
+            },
+            "rollback_plan": "Revert PR 284",
+            "risk": "low",
+        }
+    )
+    client_control.atomic_yaml(path, record)
+    for target in (
+        "agent_review",
+        "automated_qa",
+        "security_review",
+        "staging",
+        "business_review",
+        "ready_for_cto",
+    ):
+        client_control.transition_work(
+            layout, "test-client", work_id, target, actor="delivery-system"
+        )
+
+    with pytest.raises(client_control.ClientError, match="release controller is disabled"):
+        client_control.approve_work(
             layout,
             Namespace(
                 slug="test-client",
                 work_id=work_id,
-                approval_id="ENG-APPROVAL-1",
-                actor="cto-user",
+                approval_id="UNTRUSTED",
+                actor="untrusted-cli",
             ),
         )
-    authorized = client_control.authorize_deploy(
-        layout,
-        Namespace(
-            slug="test-client",
-            work_id=work_id,
-            approval_id="PROD-AUTH-1",
-            actor="cto-user",
-        ),
-    )
-    assert authorized["status"] == "ready_to_deploy"
-
-    run = client_control.start_run(
-        layout,
-        Namespace(
-            slug="test-client",
-            work_id=work_id,
-            action="deploy_production",
-            actor="release-manager",
-            machine="test-prod-01",
-            commit="882ba43",
-            before="v1.4.21",
-            after="v1.4.22",
-            approval_id="PROD-AUTH-1",
-            rollback_available=True,
-        ),
-    )
     with pytest.raises(client_control.ClientError, match="forbidden"):
         client_control.start_run(
             layout,
@@ -288,67 +1119,28 @@ def test_delivery_gates_separate_approval_deploy_and_run_evidence(layout):
                 commit="882ba43",
                 before=None,
                 after=None,
-                approval_id="PROD-AUTH-1",
+                approval_id="UNTRUSTED",
                 rollback_available=False,
             ),
         )
-    client_control.complete_run(
-        layout,
-        Namespace(
-            slug="test-client",
-            run_id=run["id"],
-            result="success",
-            evidence=["health-check:pending"],
-        ),
-    )
-    _, production = client_control.load_work(layout, "test-client", work_id)
-    assert production["status"] == "production"
-
-    client_control.update_evidence(
-        layout,
-        Namespace(
-            slug="test-client",
-            work_id=work_id,
-            actor="sre-agent",
-            pull_request=None,
-            commit=None,
-            ci=None,
-            qa=None,
-            security=None,
-            preview=None,
-            risk=None,
-            production_health="passed",
-            linear_done=False,
-        ),
-    )
-    client_control.transition_work(
-        layout, "test-client", work_id, "verified", actor="sre-agent"
-    )
-    with pytest.raises(client_control.ClientError, match="Linear completion"):
-        client_control.transition_work(
-            layout, "test-client", work_id, "done", actor="release-manager"
+    with pytest.raises(client_control.ClientError, match="authoritative"):
+        client_control.update_evidence(
+            layout,
+            Namespace(
+                slug="test-client",
+                work_id=work_id,
+                actor="untrusted-cli",
+                pull_request=None,
+                commit=None,
+                ci=None,
+                qa=None,
+                security=None,
+                preview=None,
+                risk=None,
+                production_health=None,
+                linear_done=True,
+            ),
         )
-    client_control.update_evidence(
-        layout,
-        Namespace(
-            slug="test-client",
-            work_id=work_id,
-            actor="linear-sync",
-            pull_request=None,
-            commit=None,
-            ci=None,
-            qa=None,
-            security=None,
-            preview=None,
-            risk=None,
-            production_health=None,
-            linear_done=True,
-        ),
-    )
-    done = client_control.transition_work(
-        layout, "test-client", work_id, "done", actor="release-manager"
-    )
-    assert done["status"] == "done"
 
 
 def test_review_card_only_exposes_the_valid_human_action(layout):
@@ -357,14 +1149,20 @@ def test_review_card_only_exposes_the_valid_human_action(layout):
     record["status"] = "ready_for_cto"
 
     labels = {
-        button["label"] for button in client_control.review_card(record)["buttons"]
+        button["label"]
+        for button in client_control.review_card(
+            record, release_controller_enabled=True
+        )["buttons"]
     }
     assert "APPROVE" in labels
     assert "DEPLOY" not in labels
 
     record["status"] = "ready_to_deploy"
     labels = {
-        button["label"] for button in client_control.review_card(record)["buttons"]
+        button["label"]
+        for button in client_control.review_card(
+            record, release_controller_enabled=True
+        )["buttons"]
     }
     assert "DEPLOY" in labels
     assert "APPROVE" not in labels
@@ -428,9 +1226,9 @@ def test_discord_plan_has_no_write_and_apply_is_idempotent_in_contract(
         layout, Namespace(slug="test-client", yes=True)
     )
 
-    assert len(first["created_resource_ids"]) == 7
+    assert len(first["created_resource_ids"]) == 8
     assert second["created_resource_ids"] == []
-    assert len(remote) == 7
+    assert len(remote) == 8
 
 
 def test_discord_apply_rolls_back_remote_resources_when_local_commit_fails(
@@ -470,7 +1268,7 @@ def test_discord_apply_rolls_back_remote_resources_when_local_commit_fails(
         client_control.discord_apply(layout, Namespace(slug="test-client", yes=True))
 
     assert remote == []
-    assert len(deleted) == 7
+    assert len(deleted) == 8
 
 
 def test_agent_session_start_is_bound_and_cannot_bypass_review_state(
@@ -478,6 +1276,7 @@ def test_agent_session_start_is_bound_and_cannot_bypass_review_state(
 ):
     client_control.create_client(layout, init_args())
     work = make_work(layout)
+    work_path, work = client_control.load_work(layout, "test-client", work["id"])
     manifest = client_control.client_configs(layout, "test-client")["manifest.yaml"]
     profile = manifest["profile"]["hermes_profile"]
     profile_home = layout.home / ".hermes" / "profiles" / profile
@@ -485,8 +1284,14 @@ def test_agent_session_start_is_bound_and_cannot_bypass_review_state(
     (profile_home / "config.yaml").write_text("model: test\n", encoding="utf-8")
 
     class FakeRuntime:
+        def __init__(self):
+            self.sent = []
+
         def has_session(self, _session):
             return True
+
+        def send_input(self, session, prompt):
+            self.sent.append((session, prompt))
 
     class FakeRegistry:
         def __init__(self):
@@ -517,6 +1322,8 @@ def test_agent_session_start_is_bound_and_cannot_bypass_review_state(
 
     assert started["created"] is True
     assert registry.created_command[1:3] == ["-p", profile]
+    assert work["id"] in registry.runtime.sent[0][1]
+    assert "FOU-142" in registry.runtime.sent[0][1]
 
     work_path, record = client_control.load_work(layout, "test-client", work["id"])
     record["status"] = "ready_for_cto"
@@ -552,6 +1359,13 @@ def test_client_activation_creates_a_blank_isolated_hermes_profile(layout, monke
     assert (profile_home / "AGK-CLIENT.md").read_text(encoding="utf-8") == (
         layout.client("test-client") / "AGENTS.md"
     ).read_text(encoding="utf-8")
+    intake_skill = profile_home / "skills" / "client-meeting-intake" / "SKILL.md"
+    assert intake_skill.is_file()
+    content = intake_skill.read_text(encoding="utf-8")
+    assert "Google Drive" in content
+    assert "Linear" in content
+    assert "cto_approved" in content
+    assert "proposal only" in content
 
 
 def test_client_provider_commands_keep_hermes_and_openrouter_in_profile(
@@ -583,46 +1397,31 @@ def test_client_provider_commands_keep_hermes_and_openrouter_in_profile(
     assert codex == ["/tools/codex"]
 
 
-def test_failed_production_completion_leaves_the_run_running(layout):
+def test_production_run_is_impossible_while_release_controller_is_disabled(layout):
     client_control.create_client(layout, init_args())
     work = make_work(layout)
     work_path, record = client_control.load_work(layout, "test-client", work["id"])
     record["status"] = "ready_to_deploy"
-    record["approvals"]["production"] = {"id": "PROD-AUTH-1"}
-    client_control.atomic_yaml(work_path, record)
-    run = client_control.start_run(
-        layout,
-        Namespace(
-            slug="test-client",
-            work_id=work["id"],
-            action="deploy_production",
-            actor="release-manager",
-            machine="test-prod-01",
-            commit="882ba43",
-            before="v1",
-            after="v2",
-            approval_id="PROD-AUTH-1",
-            rollback_available=True,
-        ),
-    )
-    record["status"] = "in_progress"
+    record["approvals"]["production"] = {"id": "UNTRUSTED"}
     client_control.atomic_yaml(work_path, record)
 
-    with pytest.raises(client_control.ClientError, match="READY_TO_DEPLOY"):
-        client_control.complete_run(
+    with pytest.raises(client_control.ClientError, match="release controller is disabled"):
+        client_control.start_run(
             layout,
             Namespace(
                 slug="test-client",
-                run_id=run["id"],
-                result="success",
-                evidence=["health-check:passed"],
+                work_id=work["id"],
+                action="deploy_production",
+                actor="untrusted-cli",
+                machine="test-prod-01",
+                commit="882ba43",
+                before="v1",
+                after="v2",
+                approval_id="UNTRUSTED",
+                rollback_available=True,
             ),
         )
-
-    persisted = client_control.yaml_document(
-        layout.client("test-client") / "state" / "runs" / f"{run['id']}.yaml"
-    )
-    assert persisted["status"] == "running"
+    assert not list((layout.client("test-client") / "state" / "runs").glob("RUN-*.yaml"))
 
 
 def test_online_doctor_requires_the_exact_client_alias(layout, monkeypatch):
@@ -739,7 +1538,7 @@ def test_discord_review_delivery_is_explicit_and_locally_idempotent(
     client_control.atomic_yaml(work_path, record)
     config_path = layout.client("test-client") / ".client" / "integrations.yaml"
     integrations = client_control.yaml_document(config_path)
-    integrations["discord"]["channels"]["reviews"] = "987654321012345678"
+    integrations["discord"]["channels"]["cto_inbox"] = "987654321012345678"
     client_control.atomic_yaml(config_path, integrations)
     calls = []
 
@@ -763,13 +1562,16 @@ def test_discord_review_delivery_is_explicit_and_locally_idempotent(
     )
 
     assert first["created"] is True
+    assert first["channel_id"] == "987654321012345678"
     assert second["created"] is False
     assert len(calls) == 1
     payload = calls[0][3]
     labels = {
         button["label"] for row in payload["components"] for button in row["components"]
     }
-    assert {"REQUEST CHANGES", "APPROVE"} <= labels
+    assert "REQUEST CHANGES" in labels
+    assert "APPROVE" not in labels
+    assert "DEPLOY" not in labels
     assert payload["allowed_mentions"] == {"parse": []}
 
     client_control.request_changes(
@@ -791,7 +1593,7 @@ def test_discord_review_delivery_is_explicit_and_locally_idempotent(
     assert len(calls) == 2
 
 
-def test_discord_review_actions_revalidate_gates_and_queue_deploy(layout):
+def test_discord_review_actions_cannot_bypass_disabled_release_controller(layout):
     client_control.create_client(layout, init_args())
     work = make_work(layout)
     work_path, record = client_control.load_work(layout, "test-client", work["id"])
@@ -799,49 +1601,26 @@ def test_discord_review_actions_revalidate_gates_and_queue_deploy(layout):
     client_control.atomic_yaml(work_path, record)
     prefix = f"agk:review:test-client:{work['id']}"
 
-    approved = client_control.apply_review_action(
-        layout,
-        Namespace(
-            custom_id=prefix + ":approve",
-            actor="discord:42",
-            decision_id="discord-approval-1",
-            feedback=None,
-        ),
-    )
-    assert approved["status"] == "cto_approved"
-    client_control.authorize_deploy(
-        layout,
-        Namespace(
-            slug="test-client",
-            work_id=work["id"],
-            approval_id="discord-production-1",
-            actor="discord:42",
-        ),
-    )
-    queued = client_control.apply_review_action(
-        layout,
-        Namespace(
-            custom_id=prefix + ":deploy",
-            actor="discord:42",
-            decision_id="discord-deploy-1",
-            feedback=None,
-        ),
-    )
-    duplicate = client_control.apply_review_action(
-        layout,
-        Namespace(
-            custom_id=prefix + ":deploy",
-            actor="discord:42",
-            decision_id="discord-deploy-1",
-            feedback=None,
-        ),
-    )
-
-    assert queued == {
-        "action": "deploy",
-        "client_id": "test-client",
-        "work_id": work["id"],
-        "status": "queued",
-        "created": True,
-    }
-    assert duplicate["created"] is False
+    with pytest.raises(client_control.ClientError, match="release controller is disabled"):
+        client_control.apply_review_action(
+            layout,
+            Namespace(
+                custom_id=prefix + ":approve",
+                actor="discord:42",
+                decision_id="untrusted-approval",
+                feedback=None,
+            ),
+        )
+    work_path, record = client_control.load_work(layout, "test-client", work["id"])
+    record["status"] = "ready_to_deploy"
+    client_control.atomic_yaml(work_path, record)
+    with pytest.raises(client_control.ClientError, match="release controller is disabled"):
+        client_control.apply_review_action(
+            layout,
+            Namespace(
+                custom_id=prefix + ":deploy",
+                actor="discord:42",
+                decision_id="untrusted-deploy",
+                feedback=None,
+            ),
+        )

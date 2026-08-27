@@ -13,10 +13,14 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +33,17 @@ SCHEMA_VERSION = 1
 CLIENT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$")
 SESSION_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,78}[a-z0-9]$")
 ISSUE_RE = re.compile(r"^[A-Z][A-Z0-9]{1,15}-[1-9][0-9]*$")
+LINEAR_ATTACHMENT_REQUIRED_STATES = {
+    "security_review",
+    "staging",
+    "business_review",
+    "ready_for_cto",
+    "cto_approved",
+    "ready_to_deploy",
+    "production",
+    "verified",
+    "done",
+}
 REQUIRED_DIRS = (
     "repos",
     "knowledge",
@@ -53,6 +68,7 @@ REQUIRED_CONFIG = (
     "team.yaml",
 )
 DISCORD_CHANNELS = (
+    "dev-requests",
     "cto-inbox",
     "reviews",
     "releases",
@@ -230,10 +246,56 @@ def default_file(layout: Layout, name: str) -> dict[str, Any]:
     return yaml_document(layout.source / "defaults" / name)
 
 
+def migrate_existing_client_configs(layout: Layout, registry: dict[str, Any]) -> None:
+    for entry in registry.get("clients", []):
+        slug = registry_id(entry)
+        if not slug:
+            continue
+        slug = validate_slug(slug)
+        config = layout.client(slug) / ".client"
+        if not config.is_dir():
+            raise ClientError(f"registered client config is missing: {slug}")
+        manifest = yaml_document(config / "manifest.yaml")
+        profile = manifest.get("profile", {}) if isinstance(manifest, dict) else {}
+        profile_id = (
+            str(profile.get("hermes_profile") or hermes_profile_id(slug))
+            if isinstance(profile, dict)
+            else hermes_profile_id(slug)
+        )
+        replacements = {
+            "workflow.yaml": default_file(layout, "workflow.yaml"),
+            "team.yaml": default_file(layout, "team.yaml"),
+        }
+        replacements["team.yaml"]["client_id"] = slug
+        replacements["team.yaml"]["hermes_profile"] = profile_id
+        for filename, replacement in replacements.items():
+            path = config / filename
+            current = yaml_document(path)
+            current_schema = int(current.get("schema_version") or 0)
+            target_schema = int(replacement.get("schema_version") or 0)
+            if current_schema >= target_schema:
+                continue
+            backup = (
+                layout.system
+                / "audit"
+                / "client-config-migrations"
+                / slug
+                / f"{filename.removesuffix('.yaml')}.schema-{current_schema}.yaml"
+            )
+            if not backup.exists():
+                atomic_yaml(backup, current, 0o400)
+            atomic_yaml(path, replacement, 0o600)
+
+
 def bootstrap(layout: Layout, *, upgrade: bool) -> None:
     standard_source = layout.source / "CLIENT-STANDARD.md"
+    delivery_master_source = layout.source / "AGK_CLIENT_DELIVERY_SYSTEM_MASTER.md"
     if not standard_source.is_file():
         raise ClientError(f"installed client standard is missing: {standard_source}")
+    if not delivery_master_source.is_file():
+        raise ClientError(
+            f"installed client delivery master is missing: {delivery_master_source}"
+        )
     layout.clients.mkdir(parents=True, exist_ok=True)
     layout.system.mkdir(parents=True, exist_ok=True)
     layout.secrets.mkdir(parents=True, exist_ok=True)
@@ -241,6 +303,13 @@ def bootstrap(layout: Layout, *, upgrade: bool) -> None:
     standard_target = layout.system / "CLIENT-STANDARD.md"
     if upgrade or not standard_target.exists():
         atomic_text(standard_target, standard_source.read_text(encoding="utf-8"), 0o600)
+    delivery_master_target = layout.system / "AGK_CLIENT_DELIVERY_SYSTEM_MASTER.md"
+    if upgrade or not delivery_master_target.exists():
+        atomic_text(
+            delivery_master_target,
+            delivery_master_source.read_text(encoding="utf-8"),
+            0o600,
+        )
     if not layout.registry.exists():
         atomic_yaml(
             layout.registry,
@@ -252,6 +321,7 @@ def bootstrap(layout: Layout, *, upgrade: bool) -> None:
             registry = load_registry(layout)
             registry["schema_version"] = SCHEMA_VERSION
             atomic_yaml(layout.registry, registry, 0o600)
+        migrate_existing_client_configs(layout, registry)
 
 
 def render_template(source: Path, replacements: dict[str, str]) -> str:
@@ -277,17 +347,46 @@ def integration_document(slug: str, args: argparse.Namespace) -> dict[str, Any]:
             "account_alias": f"{prefix}-linear",
             "workspace_id": args.linear_workspace or None,
             "team_id": args.linear_team or None,
+            "delivery_project_id": None,
             "workflow_state_ids": {
+                "triage": None,
+                "backlog": None,
+                "product_definition": None,
                 "todo": None,
+                "ready_for_engineering": None,
                 "in_progress": None,
+                "blocked": None,
                 "agent_review": None,
+                "engineering_review": None,
                 "automated_qa": None,
+                "qa": None,
+                "failed_qa": None,
+                "security_review": None,
+                "failed_security": None,
+                "staging": None,
+                "business_review": None,
                 "ready_for_cto": None,
+                "cto_review": None,
+                "changes_requested": None,
                 "cto_approved": None,
+                "approved_for_prod": None,
                 "ready_to_deploy": None,
+                "release_queued": None,
                 "production": None,
+                "deploying": None,
+                "failed_deploy": None,
+                "rollback": None,
                 "verified": None,
+                "production_verify": None,
                 "done": None,
+            },
+            "release_controller": {
+                "enabled": False,
+                "operational_acceptance_verified": False,
+                "mode": "dry_run_until_acceptance_test",
+                "fail_closed": True,
+                "dedupe_key": "linear_issue+approval_id+pr_head_sha",
+                "merge_method": "github_api_or_merge_queue",
             },
             "webhook_id": None,
             "webhook_secret_set": False,
@@ -300,6 +399,47 @@ def integration_document(slug: str, args: argparse.Namespace) -> dict[str, Any]:
             "organization": args.github_org or None,
             "repositories": [],
             "ssh_host_alias": f"github-{slug}",
+        },
+        "vercel": {
+            "enabled": bool(getattr(args, "vercel", False)),
+            "account_alias": f"{prefix}-vercel",
+            "team_id": None,
+            "project_ids": [],
+        },
+        "convex": {
+            "enabled": bool(getattr(args, "convex", False)),
+            "credential_backend": "client-secret-store",
+            "deployment_ids": {
+                "development": None,
+                "staging": None,
+                "production": None,
+            },
+            "token_set": False,
+        },
+        "google_drive": {
+            "enabled": bool(getattr(args, "google_drive", False)),
+            "account_alias": f"{prefix}-googledrive",
+            "account_selector": None,
+            "meeting_summary_folder_ids": [],
+            "shared_drive_id": None,
+            "supports_all_drives": True,
+            "processed_state": "state/meeting-intake/processed.json",
+            "intake_policy": {
+                "destination": "linear",
+                "apply_mode": "candidate_backlog_only",
+                "dedupe_key": "drive_file_id+content_hash",
+                "agent_statuses": ["backlog"],
+                "human_start_status": "todo",
+                "human_review_states": ["business_review", "ready_for_cto"],
+                "human_only_decisions": [
+                    "business_review_result", "approved_for_prod", "done",
+                ],
+                "human_only_statuses": ["cto_approved", "done"],
+                "system_only_statuses": [
+                    "ready_to_deploy", "production", "verified",
+                ],
+                "human_gate_mode": "proposal_only",
+            },
         },
         "discord": {
             "enabled": bool(args.discord_guild),
@@ -359,6 +499,24 @@ def runtime_document(slug: str, runtime_type: str) -> dict[str, Any]:
             "staging": {"target": None},
             "production": {"target": None},
         },
+        "browser_qa": {
+            "enabled": False,
+            "authenticated_session_required": True,
+            "profiles": [],
+            "selection_policy": "exact_client_environment_and_role",
+            "forbid_personal_or_cross_client_profile": True,
+            "require_live_authentication_probe": True,
+            "require_real_navigation": True,
+            "require_screenshots_and_linear_attachment": True,
+            "require_reverification_after_browser_restart": True,
+            "viewports": [
+                {"id": "mobile", "width": 390, "height": 844},
+                {"id": "ipad", "width": 820, "height": 1180},
+                {"id": "desktop", "width": 1440, "height": 900},
+                {"id": "large_desktop", "width": 1920, "height": 1080},
+            ],
+            "capture_policy": "full_page_unobstructed_after_dismissing_overlays",
+        },
     }
 
 
@@ -371,10 +529,11 @@ def validate_client_init(layout: Layout, args: argparse.Namespace) -> None:
         raise ClientError("Discord guild_id must contain digits only")
     for path in (
         layout.source / "CLIENT-STANDARD.md",
+        layout.source / "AGK_CLIENT_DELIVERY_SYSTEM_MASTER.md",
         *(layout.source / "defaults" / name for name in REQUIRED_CONFIG[3:]),
         *(
             layout.source / "templates" / name
-            for name in ("README.md", "CLIENT.md", "AGENTS.md")
+            for name in ("README.md", "CLIENT.md", "AGENTS.md", "MEETING-INTAKE-SKILL.md")
         ),
     ):
         if not path.is_file():
@@ -442,6 +601,7 @@ def create_client(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
         secret_body = (
             f"# Secrets for AGK client {slug}. Never commit or print this file.\n"
             f"export AGK_CLIENT={slug}\n"
+            f"export AGK_CLIENT_WORKSPACE={layout.workspace}\n"
             f"export AGK_CLIENT_DIR={destination}\n"
             "\n# OAuth credentials stay in client-selected Composio accounts.\n"
             "# Add only credentials that cannot be managed by Composio below.\n"
@@ -492,6 +652,28 @@ def client_configs(layout: Layout, slug: str) -> dict[str, dict[str, Any]]:
     return {name: yaml_document(root / name) for name in REQUIRED_CONFIG}
 
 
+def convex_checks(config: object) -> list[tuple[str, str]]:
+    if not isinstance(config, dict) or not config.get("enabled"):
+        return []
+    checks: list[tuple[str, str]] = []
+    if config.get("token_set") is True:
+        checks.append(("ok", "Convex client credential is configured"))
+    else:
+        checks.append(("fail", "Convex client credential is not configured"))
+    deployment_ids = config.get("deployment_ids", {})
+    missing = []
+    for environment in ("development", "staging", "production"):
+        value = deployment_ids.get(environment) if isinstance(deployment_ids, dict) else None
+        if not value:
+            missing.append(environment)
+            checks.append(("fail", f"Convex deployment id is missing: {environment}"))
+    if not missing:
+        checks.append(
+            ("ok", "Convex deployment ids are explicit for development, staging and production")
+        )
+    return checks
+
+
 def doctor_one(layout: Layout, slug: str, *, online: bool) -> list[tuple[str, str]]:
     root = layout.client(slug)
     checks: list[tuple[str, str]] = []
@@ -526,12 +708,104 @@ def doctor_one(layout: Layout, slug: str, *, online: bool) -> list[tuple[str, st
     invariants = workflow.get("invariants", {})
     for key in (
         "linear_issue_required",
+        "full_issue_context_required",
+        "backlog_is_passive",
+        "explicit_human_start_authorization_required",
         "preserve_session_on_changes",
+        "preserve_issue_branch_and_pr_on_changes",
+        "coding_complete_is_not_qa_complete",
+        "real_navigation_required",
+        "screenshots_required_for_review",
         "engineering_approval_is_not_deploy_authorization",
+        "agents_never_mark_approved_for_prod",
+        "agents_never_mark_done",
     ):
         (ok if isinstance(invariants, dict) and invariants.get(key) is True else fail)(
             f"workflow invariant {key}"
         )
+    display_names = workflow.get("display_names", {})
+    for key, expected in (
+        ("agent_review", "Engineering Review"),
+        ("automated_qa", "QA"),
+        ("security_review", "Security Review"),
+        ("staging", "Staging"),
+        ("business_review", "Business Review"),
+        ("ready_for_cto", "CTO Review"),
+        ("cto_approved", "Approved for Prod"),
+        ("ready_to_deploy", "Release Queued"),
+        ("production", "Deploying"),
+        ("verified", "Production Verify"),
+    ):
+        label = expected
+        (ok if isinstance(display_names, dict) and display_names.get(key) == expected else fail)(
+            f"workflow maps {label}"
+        )
+    intake = workflow.get("intake", {})
+    issue_contract = (
+        set(intake.get("product_definition_requires", []))
+        if isinstance(intake, dict)
+        else set()
+    )
+    required_issue_contract = {
+        "title", "source", "requester", "business_and_product_context",
+        "problem", "requested_outcome", "user_and_business_impact",
+        "full_issue_description", "complete_comment_history",
+        "attachments_and_screenshots", "acceptance_criteria",
+        "technical_context", "affected_repositories_and_services",
+        "dependencies", "security_and_data_constraints", "test_plan",
+        "real_navigation_requirements", "staging_and_deployment_requirements",
+        "evidence_plan", "rollback_considerations",
+        "links_to_source_mission_pr_release_incident_and_decisions", "risks",
+    }
+    (ok if required_issue_contract <= issue_contract else fail)(
+        "Linear product definition contract is complete"
+    )
+    gates = workflow.get("gates", {})
+    business_gate = gates.get("business_review", {}) if isinstance(gates, dict) else {}
+    business_requirements = set(business_gate.get("requires", [])) if isinstance(business_gate, dict) else set()
+    (ok if isinstance(business_gate, dict)
+     and business_gate.get("human_decision_required") is True
+     and {"business_reviewer_actor", "business_review_timestamp", "business_review_decision_id"} <= business_requirements
+     else fail)("Business Review is an actor-attributed human decision")
+    cto_gate = gates.get("ready_for_cto", {}) if isinstance(gates, dict) else {}
+    cto_requirements = set(cto_gate.get("requires", [])) if isinstance(cto_gate, dict) else set()
+    (ok if "security_passed_or_not_required" in cto_requirements else fail)(
+        "CTO Review accepts a recorded security disposition"
+    )
+    team = configs["team.yaml"]
+    orchestrator = team.get("orchestrator", {})
+    (ok if isinstance(orchestrator, dict) and orchestrator == {
+        "role": "project-manager", "provider": "hermes"
+    } else fail)("team project-manager is the Hermes orchestrator")
+    execution_model = team.get("execution_model", {})
+    (ok if isinstance(execution_model, dict) and execution_model.get(
+        "discord_identity"
+    ) == "dedicated_client_project_manager_bot" else fail)(
+        "team uses a dedicated client Project Manager Discord bot"
+    )
+    (ok if isinstance(execution_model, dict) and execution_model.get(
+        "supervision_surface"
+    ) == "agk_tui" and execution_model.get(
+        "specialist_sessions"
+    ) == "preserved_and_visible" else fail)(
+        "team sessions are supervised in AGK TUI"
+    )
+    discord_channels = team.get("discord_channels", {})
+    (ok if isinstance(discord_channels, dict) and discord_channels.get(
+        "dev_requests"
+    ) == "dev-requests" else fail)(
+        "team has a dedicated dev-requests intake channel"
+    )
+    collaboration = team.get("agent_collaboration", {})
+    (ok if isinstance(collaboration, dict) and collaboration.get(
+        "changes_requested_resumes_same_session"
+    ) is True else fail)(
+        "changes requested preserves the same agent session"
+    )
+    human_gates = team.get("human_gates", {})
+    (ok if isinstance(human_gates, dict) and human_gates.get(
+        "agents_may_complete_human_fields"
+    ) is False else fail)("team preserves human-only decision fields")
     permissions = configs["permissions.yaml"].get("actions", {})
     delete_policy = (
         permissions.get("delete_database", {}) if isinstance(permissions, dict) else {}
@@ -563,7 +837,9 @@ def doctor_one(layout: Layout, slug: str, *, online: bool) -> list[tuple[str, st
     else:
         ok("no foreign client loaded")
     if online:
-        checks.extend(composio_checks(configs["integrations.yaml"]))
+        integrations = configs["integrations.yaml"]
+        checks.extend(composio_checks(integrations))
+        checks.extend(convex_checks(integrations.get("convex", {})))
     return checks
 
 
@@ -578,12 +854,20 @@ def parse_connections(value: object) -> dict[str, list[dict[str, Any]]]:
     return result
 
 
+def composio_executable() -> Path | None:
+    discovered = shutil.which("composio")
+    if discovered:
+        return Path(discovered)
+    canonical = Path("/usr/local/lib/agk-terminal/bin/composio")
+    return canonical if canonical.is_file() else None
+
+
 def composio_connections() -> dict[str, list[dict[str, Any]]]:
-    executable = shutil.which("composio")
+    executable = composio_executable()
     if not executable:
         raise ClientError("Composio CLI is not installed in this profile")
     result = subprocess.run(
-        [executable, "connections", "list"],
+        [str(executable), "connections", "list"],
         text=True,
         capture_output=True,
         check=False,
@@ -608,6 +892,8 @@ def composio_checks(integrations: dict[str, Any]) -> list[tuple[str, str]]:
     toolkit_map = {
         "linear": "linear",
         "github": "github",
+        "vercel": "vercel",
+        "google_drive": "googledrive",
         "discord": "discordbot",
         "figma": "figma",
     }
@@ -615,7 +901,20 @@ def composio_checks(integrations: dict[str, Any]) -> list[tuple[str, str]]:
         config = integrations.get(section, {})
         if not isinstance(config, dict) or not config.get("enabled"):
             continue
-        selector = str(config.get("account_alias") or "")
+        if (
+            section == "discord"
+            and config.get("provisioning_backend") == "client-discord-bot"
+        ):
+            if config.get("token_set") is True and str(config.get("bot_id") or "").isdigit():
+                checks.append(
+                    ("ok", "Discord dedicated bot credential is configured in the client vault")
+                )
+            else:
+                checks.append(
+                    ("fail", "Discord dedicated bot credential or identity is missing")
+                )
+            continue
+        selector = str(config.get("account_selector") or config.get("account_alias") or "")
         candidates = connections.get(toolkit, [])
         match = next(
             (
@@ -667,6 +966,8 @@ def integration_plan(layout: Layout, slug: str) -> dict[str, Any]:
     for section, toolkit in (
         ("linear", "linear"),
         ("github", "github"),
+        ("vercel", "vercel"),
+        ("google_drive", "googledrive"),
         ("discord", "discordbot"),
         ("figma", "figma"),
     ):
@@ -684,6 +985,7 @@ def integration_plan(layout: Layout, slug: str) -> dict[str, Any]:
                         "--alias",
                         alias,
                         "--no-browser",
+                        "--no-wait",
                     ],
                     "account_alias": alias,
                 }
@@ -819,6 +1121,260 @@ def linear_issue_from_response(value: object, identifier: str) -> dict[str, Any]
     raise ClientError(f"Linear did not return the expected issue: {identifier}")
 
 
+def linear_collection(value: object) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        value = value.get("nodes", [])
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def authoritative_linear_snapshot(
+    layout: Layout, slug: str, issue_identifier: str
+) -> dict[str, Any]:
+    integrations = client_configs(layout, slug)["integrations.yaml"]
+    linear = integrations.get("linear", {}) if isinstance(integrations, dict) else {}
+    account = str(linear.get("account_alias") or "") if isinstance(linear, dict) else ""
+    expected_team = str(linear.get("team_id") or "") if isinstance(linear, dict) else ""
+    if not account or not expected_team:
+        raise ClientError("Linear account alias and delivery team must be configured")
+    response = composio_execute(
+        "LINEAR_GET_LINEAR_ISSUE", account, {"issue_id": issue_identifier}
+    )
+    issue = linear_issue_from_response(response, issue_identifier)
+    team = issue.get("team", {})
+    team_id = str(team.get("id") or "") if isinstance(team, dict) else ""
+    if team_id != expected_team:
+        raise ClientError("Linear issue belongs to a different delivery team")
+
+    def allow(item: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+        return {key: item.get(key) for key in keys if item.get(key) is not None}
+
+    snapshot = {
+        "identifier": str(issue.get("identifier") or "").upper(),
+        "id": issue.get("id"),
+        "title": issue.get("title"),
+        "description": issue.get("description"),
+        "url": issue.get("url"),
+        "priority": issue.get("priority"),
+        "priority_label": issue.get("priorityLabel") or issue.get("priority_label"),
+        "updated_at": issue.get("updatedAt") or issue.get("updated_at"),
+        "team_id": team_id,
+        "state": allow(issue.get("state", {}), ("id", "name", "type"))
+        if isinstance(issue.get("state"), dict)
+        else {},
+        "comments": [
+            allow(item, ("id", "body", "createdAt", "updatedAt", "url"))
+            for item in linear_collection(issue.get("comments"))
+        ],
+        "attachments": [
+            allow(item, ("id", "title", "url", "subtitle", "createdAt"))
+            for item in linear_collection(issue.get("attachments"))
+        ],
+        "relations": [
+            allow(item, ("id", "type", "relatedIssue", "issue"))
+            for item in linear_collection(issue.get("relations"))
+        ],
+    }
+    if not snapshot["title"] or snapshot["description"] is None:
+        raise ClientError("Linear issue snapshot is missing title or description")
+    return snapshot
+
+
+def control_plane_audit_key(layout: Layout) -> bytes:
+    path = layout.home / ".config" / "agk" / "control-plane" / "audit.key"
+    if not path.exists():
+        atomic_text(path, os.urandom(32).hex() + "\n", 0o600)
+    if path.stat().st_mode & 0o777 != 0o600:
+        raise ClientError("control-plane audit key must have mode 0600")
+    raw = path.read_text().strip()
+    try:
+        key = bytes.fromhex(raw)
+    except ValueError as error:
+        raise ClientError("control-plane audit key is invalid") from error
+    if len(key) != 32:
+        raise ClientError("control-plane audit key must be 256 bits")
+    return key
+
+
+def write_linear_snapshot_receipt(
+    layout: Layout,
+    slug: str,
+    work_id: str,
+    *,
+    issue: str,
+    team_id: str,
+    snapshot_sha256: str,
+    updated_at: object,
+) -> str:
+    payload = {
+        "client": validate_slug(slug),
+        "work_id": work_id,
+        "issue": issue,
+        "team_id": team_id,
+        "snapshot_sha256": snapshot_sha256,
+        "linear_updated_at": updated_at,
+    }
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    receipt = {
+        **payload,
+        "signature": hmac.new(
+            control_plane_audit_key(layout), canonical.encode(), hashlib.sha256
+        ).hexdigest(),
+    }
+    relative = Path("audit") / "linear-snapshots" / slug / f"{work_id}.json"
+    path = layout.system / relative
+    if path.exists():
+        existing = yaml_document(path)
+        if existing != receipt:
+            raise ClientError("immutable Linear snapshot receipt already exists")
+        return str(relative)
+    atomic_text(
+        path,
+        json.dumps(receipt, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        0o400,
+    )
+    return str(relative)
+
+
+def verify_linear_snapshot_receipt(
+    layout: Layout, receipt_relative: str, expected: dict[str, Any]
+) -> None:
+    path = (layout.system / receipt_relative).resolve()
+    try:
+        path.relative_to(layout.system.resolve())
+    except ValueError as error:
+        raise ClientError("Linear receipt must stay inside the control plane") from error
+    if not path.is_file() or path.stat().st_mode & 0o777 != 0o400:
+        raise ClientError("immutable Linear snapshot receipt is unavailable")
+    receipt = yaml_document(path)
+    signature = str(receipt.pop("signature", ""))
+    canonical = json.dumps(
+        receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    calculated = hmac.new(
+        control_plane_audit_key(layout), canonical.encode(), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(signature, calculated):
+        raise ClientError("Linear snapshot receipt signature is invalid")
+    for key, value in expected.items():
+        if receipt.get(key) != value:
+            raise ClientError("Linear snapshot receipt does not match the work context")
+
+
+def write_start_authorization_receipt(
+    layout: Layout,
+    slug: str,
+    work_id: str,
+    payload: dict[str, Any],
+) -> str:
+    signed_payload = {"client": validate_slug(slug), "work_id": work_id, **payload}
+    canonical = json.dumps(
+        signed_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    receipt = {
+        **signed_payload,
+        "signature": hmac.new(
+            control_plane_audit_key(layout), canonical.encode(), hashlib.sha256
+        ).hexdigest(),
+    }
+    relative = Path("audit") / "start-authorizations" / slug / f"{work_id}.json"
+    path = layout.system / relative
+    if path.exists():
+        existing = yaml_document(path)
+        if existing != receipt:
+            raise ClientError("immutable START authorization receipt already exists")
+        return str(relative)
+    atomic_text(
+        path,
+        json.dumps(receipt, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        0o400,
+    )
+    return str(relative)
+
+
+def verify_start_authorization_receipt(
+    layout: Layout, receipt_relative: str, expected: dict[str, Any]
+) -> None:
+    path = (layout.system / receipt_relative).resolve()
+    try:
+        path.relative_to(layout.system.resolve())
+    except ValueError as error:
+        raise ClientError("START receipt must stay inside the control plane") from error
+    if not path.is_file() or path.stat().st_mode & 0o777 != 0o400:
+        raise ClientError("immutable START receipt is unavailable")
+    receipt = yaml_document(path)
+    signature = str(receipt.pop("signature", ""))
+    canonical = json.dumps(
+        receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    calculated = hmac.new(
+        control_plane_audit_key(layout), canonical.encode(), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(signature, calculated):
+        raise ClientError("START receipt signature is invalid")
+    if receipt != expected:
+        raise ClientError("START receipt does not match the authorization")
+
+
+def write_qa_receipt(
+    layout: Layout,
+    slug: str,
+    work_id: str,
+    payload: dict[str, Any],
+) -> str:
+    signed_payload = {"client": validate_slug(slug), "work_id": work_id, **payload}
+    canonical = json.dumps(
+        signed_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    receipt = {
+        **signed_payload,
+        "signature": hmac.new(
+            control_plane_audit_key(layout), canonical.encode(), hashlib.sha256
+        ).hexdigest(),
+    }
+    relative = Path("audit") / "qa" / slug / f"{work_id}.json"
+    path = layout.system / relative
+    if path.exists():
+        existing = yaml_document(path)
+        if existing != receipt:
+            raise ClientError("immutable QA receipt already exists")
+        return str(relative)
+    atomic_text(
+        path,
+        json.dumps(receipt, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        0o400,
+    )
+    return str(relative)
+
+
+def verify_qa_receipt(
+    layout: Layout, receipt_relative: str, expected: dict[str, Any]
+) -> None:
+    path = (layout.system / receipt_relative).resolve()
+    try:
+        path.relative_to(layout.system.resolve())
+    except ValueError as error:
+        raise ClientError("QA receipt must stay inside the control plane") from error
+    if not path.is_file() or path.stat().st_mode & 0o777 != 0o400:
+        raise ClientError("immutable QA receipt is unavailable")
+    receipt = yaml_document(path)
+    signature = str(receipt.pop("signature", ""))
+    canonical = json.dumps(
+        receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    calculated = hmac.new(
+        control_plane_audit_key(layout), canonical.encode(), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(signature, calculated):
+        raise ClientError("QA receipt signature is invalid")
+    for key, value in expected.items():
+        if receipt.get(key) != value:
+            raise ClientError("QA receipt does not match the evidence bundle")
+
+
 def linear_sync_plan(layout: Layout, slug: str, work_id: str) -> dict[str, Any]:
     _, work = load_work(layout, slug, work_id)
     integrations = client_configs(layout, slug)["integrations.yaml"]
@@ -833,6 +1389,15 @@ def linear_sync_plan(layout: Layout, slug: str, work_id: str) -> dict[str, Any]:
     issue = str(work.get("linear", {}).get("issue") or "")
     evidence = work.get("evidence", {})
     repository = work.get("repository", {})
+    linear_attachments = (
+        evidence.get("linear_attachments", []) if isinstance(evidence, dict) else []
+    )
+    if not isinstance(linear_attachments, list):
+        raise ClientError("Linear attachment evidence is not structured")
+    if state in LINEAR_ATTACHMENT_REQUIRED_STATES and not linear_attachments:
+        raise ClientError(
+            f"AGK status {state} requires verified Linear attachments"
+        )
     comment_body = "\n".join(
         (
             f"## AGK delivery update · {work_id}",
@@ -843,9 +1408,11 @@ def linear_sync_plan(layout: Layout, slug: str, work_id: str) -> dict[str, Any]:
             f"- Pull request: {repository.get('pull_request') or 'pending'}",
             f"- Commit: `{repository.get('commit') or 'pending'}`",
             f"- CI / QA / Security: {bool(evidence.get('ci_passed'))} / "
-            f"{bool(evidence.get('qa_passed'))} / {bool(evidence.get('security_passed'))}",
+            f"{bool(evidence.get('qa_passed'))} / "
+            f"{evidence.get('security_disposition') in {'passed', 'not_required'}}",
             f"- Preview: {evidence.get('staging_preview') or 'pending'}",
             f"- Risk: {evidence.get('risk') or 'unrated'}",
+            f"- Linear attachments: {len(linear_attachments)}",
         )
     )
     digest = hashlib.sha256(comment_body.encode()).hexdigest()[:16]
@@ -862,6 +1429,8 @@ def linear_sync_plan(layout: Layout, slug: str, work_id: str) -> dict[str, Any]:
         "state_mapping_ready": bool(state_id),
         "comment": comment,
         "comment_marker": marker,
+        "attachments": linear_attachments,
+        "attachments_required": state in LINEAR_ATTACHMENT_REQUIRED_STATES,
         "external_writes": True,
     }
 
@@ -1109,6 +1678,20 @@ def activate_client(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
     soul = profile_home / "SOUL.md"
     if not soul.exists():
         atomic_text(soul, instructions, 0o600)
+    identity = manifest.get("client", {})
+    client_name = (
+        str(identity.get("name") or slug) if isinstance(identity, dict) else slug
+    )
+    intake_template = layout.source / "templates" / "MEETING-INTAKE-SKILL.md"
+    intake_content = render_template(
+        intake_template,
+        {"CLIENT_ID": slug, "CLIENT_NAME": client_name},
+    )
+    atomic_text(
+        profile_home / "skills" / "client-meeting-intake" / "SKILL.md",
+        intake_content,
+        0o600,
+    )
     setup_required = not (profile_home / "config.yaml").is_file()
     return {
         "client_id": slug,
@@ -1163,10 +1746,110 @@ def provider_command(provider: str, profile_id: str, workspace: Path) -> list[st
         raise ClientError(f"unsupported client work provider: {provider}") from error
 
 
+def validate_work_start_record(
+    layout: Layout, slug: str, work_id: str, record: dict[str, Any]
+) -> None:
+    context = record.get("context", {})
+    authorization = record.get("authorization", {})
+    issue = str(record.get("linear", {}).get("issue") or "")
+    if not isinstance(context, dict) or context.get("complete") is not True:
+        raise ClientError("work start requires complete Linear context")
+    snapshot_record = context.get("linear_snapshot", {})
+    if not isinstance(snapshot_record, dict):
+        raise ClientError("work start requires a signed Linear snapshot")
+    snapshot_path = (
+        layout.client(slug) / str(snapshot_record.get("path") or "")
+    ).resolve()
+    try:
+        snapshot_path.relative_to(layout.client(slug).resolve())
+    except ValueError as error:
+        raise ClientError("Linear snapshot must stay inside the client boundary") from error
+    snapshot = yaml_document(snapshot_path)
+    canonical = json.dumps(
+        snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    digest = hashlib.sha256(canonical.encode()).hexdigest()
+    if not hmac.compare_digest(digest, str(snapshot_record.get("sha256") or "")):
+        raise ClientError("work start Linear snapshot digest verification failed")
+    verify_linear_snapshot_receipt(
+        layout,
+        str(snapshot_record.get("receipt") or ""),
+        {
+            "client": slug,
+            "work_id": work_id,
+            "issue": issue,
+            "team_id": str(snapshot_record.get("team_id") or ""),
+            "snapshot_sha256": digest,
+            "linear_updated_at": snapshot_record.get("updated_at"),
+        },
+    )
+    required = {
+        "id", "actor", "actor_id", "source", "timestamp", "channel_id",
+        "message_id", "guild_id", "client", "project", "issue", "scope",
+        "priority", "constraints", "at", "message_sha256", "message_timestamp",
+        "receipt",
+    }
+    integrations = client_configs(layout, slug)["integrations.yaml"]
+    discord = integrations.get("discord", {}) if isinstance(integrations, dict) else {}
+    linear = integrations.get("linear", {}) if isinstance(integrations, dict) else {}
+    non_empty = required - {"constraints"}
+    if (
+        not isinstance(authorization, dict)
+        or not required <= set(authorization)
+        or any(authorization.get(key) in (None, "", [], {}) for key in non_empty)
+        or not isinstance(authorization.get("constraints"), (list, dict, str))
+        or authorization.get("client") != slug
+        or authorization.get("issue") != issue
+        or authorization.get("actor") != authorization.get("actor_id")
+        or authorization.get("actor_id") != str(discord.get("owner_user_id") or "")
+        or authorization.get("source") != "discord"
+        or authorization.get("guild_id") != str(discord.get("guild_id") or "")
+        or authorization.get("channel_id")
+        != str(discord.get("channels", {}).get("dev_requests") or "")
+        or authorization.get("project")
+        != str(linear.get("delivery_project_id") or "")
+        or authorization.get("timestamp") != authorization.get("at")
+        or authorization.get("id") != f"discord:{authorization.get('message_id')}"
+    ):
+        raise ClientError("work start authorization is incomplete or mismatched")
+    verify_start_authorization_receipt(
+        layout,
+        str(authorization.get("receipt") or ""),
+        {
+            "client": slug,
+            "work_id": work_id,
+            **{
+                key: value
+                for key, value in authorization.items()
+                if key != "receipt"
+            },
+        },
+    )
+
+
+def work_session_prompt(record: dict[str, Any]) -> str:
+    context = record.get("context", {})
+    snapshot = context.get("linear_snapshot", {}) if isinstance(context, dict) else {}
+    return "\n".join(
+        (
+            "AGK AUTHORIZED WORK SESSION — use this exact immutable context.",
+            f"Client: {record.get('client_id')}",
+            f"Work: {record.get('id')}",
+            f"Linear issue: {record.get('linear', {}).get('issue')}",
+            f"Linear snapshot SHA-256: {snapshot.get('sha256')}",
+            f"Repository: {record.get('repository', {}).get('repo')}",
+            f"Branch: {record.get('repository', {}).get('branch')}",
+            f"Role: {record.get('agent', {}).get('role')}",
+            "Read the signed snapshot and work record before acting. Preserve this session, issue, branch and PR through every correction loop.",
+        )
+    )
+
+
 def start_work_session(layout: Layout, slug: str, work_id: str) -> dict[str, Any]:
     path, record = load_work(layout, slug, work_id)
     if record.get("status") != "in_progress":
         raise ClientError("only IN_PROGRESS work can start or resume its agent session")
+    validate_work_start_record(layout, slug, work_id, record)
     profile = client_configs(layout, slug)["manifest.yaml"].get("profile", {})
     profile_id = (
         str(profile.get("hermes_profile") or "") if isinstance(profile, dict) else ""
@@ -1204,6 +1887,13 @@ def start_work_session(layout: Layout, slug: str, work_id: str) -> dict[str, Any
             command=provider_command(provider, profile_id, layout.client(slug)),
         )
         created = True
+        prompt = work_session_prompt(record)
+        registry.runtime.send_input(runtime["rmux_session"], prompt)
+        work_event(
+            record,
+            "work.context_injected",
+            prompt_sha256=hashlib.sha256(prompt.encode()).hexdigest(),
+        )
     record.setdefault("agent", {})["runtime_id"] = runtime["id"]
     record["status"] = "in_progress"
     work_event(
@@ -1307,8 +1997,10 @@ def create_work(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
         "id": work_id,
         "client_id": slug,
         "title": title,
-        "status": "in_progress",
+        "status": "backlog",
         "linear": {"issue": issue, "status_sync": "pending"},
+        "context": {"complete": False, "fields": {}},
+        "authorization": None,
         "agent": {"role": args.role, "provider": args.provider, "session": session},
         "repository": {
             "repo": args.repo,
@@ -1318,10 +2010,17 @@ def create_work(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
         },
         "environment": {"target": args.target},
         "evidence": {
+            "engineering_review_passed": False,
             "ci_passed": False,
             "qa_passed": False,
-            "security_passed": False,
+            "security_disposition": "pending",
+            "security_decision_id": None,
             "staging_preview": None,
+            "staging_build_version": None,
+            "screenshots": [],
+            "validation_steps": [],
+            "business_review": None,
+            "rollback_plan": None,
             "risk": None,
         },
         "approvals": {"engineering": None, "production": None},
@@ -1331,6 +2030,305 @@ def create_work(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
     }
     work_event(record, "work.created", issue=issue, session=session)
     path = layout.client(slug) / "state" / "work" / f"{work_id}.yaml"
+    atomic_yaml(path, record)
+    return record
+
+
+def update_work_context(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
+    slug = validate_slug(args.slug)
+    path, record = load_work(layout, slug, args.work_id)
+    if record.get("status") != "backlog":
+        raise ClientError("work context can only be finalized in Backlog")
+    client_root = layout.client(slug).resolve()
+    source = Path(args.context_file).expanduser().resolve()
+    try:
+        source.relative_to(client_root)
+    except ValueError as error:
+        raise ClientError("context file must stay inside the client boundary") from error
+    fields = yaml_document(source)
+    workflow = client_configs(layout, slug)["workflow.yaml"]
+    intake = workflow.get("intake", {})
+    required = set(intake.get("product_definition_requires", [])) if isinstance(intake, dict) else set()
+    present = {key for key, value in fields.items() if value not in (None, "", [], {})}
+    missing = sorted(required - present)
+    if missing:
+        raise ClientError("Linear work context is incomplete: " + ", ".join(missing))
+    issue_identifier = str(record.get("linear", {}).get("issue") or "")
+    snapshot = authoritative_linear_snapshot(layout, slug, issue_identifier)
+    snapshot_body = json.dumps(
+        snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    snapshot_digest = hashlib.sha256(snapshot_body.encode()).hexdigest()
+    snapshot_relative = Path("state") / "work" / f"{args.work_id}.linear-snapshot.json"
+    snapshot_path = client_root / snapshot_relative
+    atomic_text(
+        snapshot_path,
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        0o600,
+    )
+    receipt_relative = write_linear_snapshot_receipt(
+        layout,
+        slug,
+        args.work_id,
+        issue=issue_identifier,
+        team_id=str(snapshot["team_id"]),
+        snapshot_sha256=snapshot_digest,
+        updated_at=snapshot["updated_at"],
+    )
+    record["context"] = {
+        "complete": True,
+        "fields": fields,
+        "source": str(source.relative_to(client_root)),
+        "linear_snapshot": {
+            "identifier": issue_identifier,
+            "team_id": snapshot["team_id"],
+            "updated_at": snapshot["updated_at"],
+            "sha256": snapshot_digest,
+            "path": str(snapshot_relative),
+            "receipt": receipt_relative,
+        },
+        "finalized_by": validate_name(args.actor),
+        "finalized_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    work_event(record, "work.context_finalized", actor=args.actor)
+    atomic_yaml(path, record)
+    return record
+
+
+def discord_client_get(layout: Layout, slug: str, endpoint: str) -> dict[str, Any]:
+    secret = layout.secret_file(validate_slug(slug))
+    token = ""
+    for line in secret.read_text().splitlines():
+        match = re.match(r"(?:export\s+)?DISCORD_BOT_TOKEN=(.+)", line)
+        if match:
+            token = match.group(1).strip().strip("'\"")
+            break
+    if not token:
+        raise ClientError("Discord dedicated bot token is unavailable")
+    request = urllib.request.Request(
+        "https://discord.com/api/v10" + endpoint,
+        method="GET",
+        headers={
+            "Authorization": f"Bot {token}",
+            "User-Agent": "AGK-client-control/1",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode())
+    except urllib.error.HTTPError as error:
+        raise ClientError(
+            f"Discord authorization evidence lookup failed (HTTP {error.code})"
+        ) from None
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        raise ClientError("Discord authorization evidence lookup failed") from error
+    if not isinstance(data, dict):
+        raise ClientError("Discord authorization evidence is invalid")
+    return data
+
+
+def authorize_work_start(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
+    slug = validate_slug(args.slug)
+    if not str(args.channel_id).isdigit() or not str(args.message_id).isdigit():
+        raise ClientError("Discord authorization requires numeric channel and message ids")
+    path, record = load_work(layout, slug, args.work_id)
+    if record.get("status") != "backlog":
+        raise ClientError("only Backlog work can be authorized to start")
+    context = record.get("context", {})
+    if not isinstance(context, dict) or context.get("complete") is not True:
+        raise ClientError("READY_FOR_ENGINEERING context is incomplete")
+    integrations = client_configs(layout, slug)["integrations.yaml"]
+    issue = str(record.get("linear", {}).get("issue") or "")
+    linear = integrations.get("linear", {}) if isinstance(integrations, dict) else {}
+    expected_team = str(linear.get("team_id") or "") if isinstance(linear, dict) else ""
+    snapshot_record = context.get("linear_snapshot", {})
+    if (
+        not isinstance(snapshot_record, dict)
+        or str(snapshot_record.get("identifier") or "") != issue
+        or str(snapshot_record.get("team_id") or "") != expected_team
+        or len(str(snapshot_record.get("sha256") or "")) != 64
+    ):
+        raise ClientError("READY_FOR_ENGINEERING requires a verified Linear snapshot")
+    snapshot_relative = Path(str(snapshot_record.get("path") or ""))
+    snapshot_path = (layout.client(slug) / snapshot_relative).resolve()
+    try:
+        snapshot_path.relative_to(layout.client(slug).resolve())
+    except ValueError as error:
+        raise ClientError("Linear snapshot must stay inside the client boundary") from error
+    snapshot = yaml_document(snapshot_path)
+    snapshot_body = json.dumps(
+        snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    if not hmac.compare_digest(
+        hashlib.sha256(snapshot_body.encode()).hexdigest(),
+        str(snapshot_record.get("sha256")),
+    ):
+        raise ClientError("Linear snapshot digest verification failed")
+    if (
+        str(snapshot.get("identifier") or "") != issue
+        or str(snapshot.get("team_id") or "") != expected_team
+    ):
+        raise ClientError("Linear snapshot does not match the authorized issue")
+    receipt_relative = str(snapshot_record.get("receipt") or "")
+    verify_linear_snapshot_receipt(
+        layout,
+        receipt_relative,
+        {
+            "client": slug,
+            "work_id": args.work_id,
+            "issue": issue,
+            "team_id": expected_team,
+            "snapshot_sha256": str(snapshot_record.get("sha256")),
+            "linear_updated_at": snapshot_record.get("updated_at"),
+        },
+    )
+
+    discord = integrations.get("discord", {}) if isinstance(integrations, dict) else {}
+    expected_guild = str(discord.get("guild_id") or "")
+    expected_channel = str(discord.get("channels", {}).get("dev_requests") or "")
+    expected_owner = str(discord.get("owner_user_id") or "")
+    if str(args.channel_id) != expected_channel:
+        raise ClientError("start authorization must originate in dev-requests")
+    channel = discord_client_get(layout, slug, f"/channels/{args.channel_id}")
+    if str(channel.get("guild_id") or "") != expected_guild:
+        raise ClientError("start authorization channel belongs to another Discord guild")
+    message = discord_client_get(
+        layout, slug, f"/channels/{args.channel_id}/messages/{args.message_id}"
+    )
+    author = message.get("author", {})
+    content = str(message.get("content") or "")
+    if (
+        str(message.get("channel_id") or "") != expected_channel
+        or not isinstance(author, dict)
+        or str(author.get("id") or "") != expected_owner
+        or author.get("bot") is True
+    ):
+        raise ClientError("start authorization is not from the configured human owner")
+    authorized_issues = set(
+        re.findall(
+            r"(?<![A-Z0-9])([A-Z][A-Z0-9]{1,15}-[1-9][0-9]*)(?![A-Z0-9])",
+            content.upper(),
+        )
+    )
+    if issue not in authorized_issues or not re.fullmatch(
+        rf"(?i)\s*START\s+{re.escape(issue)}\s*", content
+    ):
+        raise ClientError("Discord message must be the exact START command for this issue")
+    timestamp = dt.datetime.now(dt.timezone.utc).isoformat()
+    context_fields = context.get("fields", {})
+    context_fields = context_fields if isinstance(context_fields, dict) else {}
+    project = str(linear.get("delivery_project_id") or "") if isinstance(linear, dict) else ""
+    scope = context_fields.get("requested_outcome") or record.get("title")
+    constraints = context_fields.get("security_and_data_constraints")
+    if not project or not scope or constraints is None:
+        raise ClientError("start authorization contract is incomplete")
+    message_timestamp = str(message.get("timestamp") or "")
+    if not message_timestamp:
+        raise ClientError("Discord START message timestamp is unavailable")
+    authorization = {
+        "id": f"discord:{args.message_id}",
+        "actor": expected_owner,
+        "actor_id": expected_owner,
+        "source": "discord",
+        "timestamp": timestamp,
+        "channel_id": expected_channel,
+        "message_id": str(args.message_id),
+        "guild_id": expected_guild,
+        "client": slug,
+        "project": project,
+        "issue": issue,
+        "scope": scope,
+        "priority": snapshot.get("priority_label") or snapshot.get("priority") or "unspecified",
+        "constraints": constraints,
+        "at": timestamp,
+        "message_sha256": hashlib.sha256(content.encode()).hexdigest(),
+        "message_timestamp": message_timestamp,
+    }
+    receipt_payload = {"work_id": args.work_id, **authorization}
+    receipt_payload.pop("client", None)
+    authorization["receipt"] = write_start_authorization_receipt(
+        layout, slug, args.work_id, receipt_payload
+    )
+    record["authorization"] = authorization
+    record["status"] = "todo"
+    work_event(record, "work.start_authorized", **authorization)
+    atomic_yaml(path, record)
+    return record
+
+
+def quarantine_legacy_work(
+    layout: Layout,
+    slug: str,
+    work_id: str,
+    *,
+    actor: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Fail closed on work created before governed context and START enforcement."""
+    slug = validate_slug(slug)
+    with work_lock(layout, slug, work_id):
+        return quarantine_legacy_work_locked(
+            layout, slug, work_id, actor=actor, reason=reason
+        )
+
+
+def quarantine_legacy_work_locked(
+    layout: Layout,
+    slug: str,
+    work_id: str,
+    *,
+    actor: str,
+    reason: str,
+) -> dict[str, Any]:
+    path, record = load_work(layout, slug, work_id)
+    if isinstance(record.get("legacy_quarantine"), dict):
+        return record
+
+    context = record.get("context", {})
+    snapshot = context.get("linear_snapshot", {}) if isinstance(context, dict) else {}
+    authorization = record.get("authorization", {})
+    missing = []
+    if not isinstance(context, dict) or context.get("complete") is not True:
+        missing.append("complete_context")
+    if not isinstance(snapshot, dict) or not snapshot.get("receipt"):
+        missing.append("signed_linear_snapshot_receipt")
+    required_authorization = {
+        "actor_id", "source", "timestamp", "client", "project", "issue",
+        "scope", "priority", "constraints", "guild_id", "channel_id", "message_id",
+    }
+    if (
+        not isinstance(authorization, dict)
+        or not required_authorization
+        <= {key for key, value in authorization.items() if value not in (None, "")}
+    ):
+        missing.append("authenticated_start_authorization")
+    if not missing:
+        try:
+            validate_work_start_record(layout, slug, work_id, record)
+        except ClientError:
+            missing.append("invalid_governance_receipts")
+    if not missing:
+        raise ClientError("governed work cannot be quarantined as legacy")
+
+    previous = str(record.get("status") or "unknown")
+    timestamp = dt.datetime.now(dt.timezone.utc).isoformat()
+    record["status"] = "blocked"
+    record["legacy_quarantine"] = {
+        "previous_status": previous,
+        "missing": missing,
+        "actor": validate_name(actor),
+        "reason": validate_name(reason),
+        "at": timestamp,
+        "retroactive_authorization_forbidden": True,
+    }
+    work_event(
+        record,
+        "work.legacy_quarantined",
+        actor=actor,
+        previous=previous,
+        missing=missing,
+        reason=reason,
+    )
     atomic_yaml(path, record)
     return record
 
@@ -1350,21 +2348,100 @@ def transition_work(
     allowed = transitions.get(current, []) if isinstance(transitions, dict) else []
     if target not in allowed:
         raise ClientError(f"invalid work transition: {current} -> {target}")
+    if current not in {"backlog", "todo", "blocked"}:
+        validate_work_start_record(layout, slug, work_id, record)
+    if target == "todo":
+        context = record.get("context", {})
+        if not isinstance(context, dict) or context.get("complete") is not True:
+            raise ClientError("READY_FOR_ENGINEERING context is incomplete")
+        authorization = record.get("authorization", {})
+        required_authorization = {"id", "actor_id", "source", "at"}
+        if (
+            not isinstance(authorization, dict)
+            or not required_authorization
+            <= {key for key, value in authorization.items() if value}
+        ):
+            raise ClientError(
+                "READY_FOR_ENGINEERING requires a verified human authorization record"
+            )
+    if target == "in_progress":
+        validate_work_start_record(layout, slug, work_id, record)
     if target in {"cto_approved", "ready_to_deploy", "production"}:
         raise ClientError(f"{target} requires its dedicated governed command")
-    if target == "ready_for_cto":
-        repository = record.get("repository", {})
-        evidence = record.get("evidence", {})
+    repository = record.get("repository", {})
+    evidence = record.get("evidence", {})
+    if target == "automated_qa" and (
+        not isinstance(evidence, dict)
+        or evidence.get("engineering_review_passed") is not True
+    ):
+        raise ClientError("QA requires passed engineering review evidence")
+    if target == "security_review":
+        missing = []
+        if not isinstance(evidence, dict) or evidence.get("qa_passed") is not True:
+            missing.append("qa_passed")
+        if not isinstance(evidence, dict) or not evidence.get("screenshots"):
+            missing.append("screenshots")
+        if not isinstance(evidence, dict) or not evidence.get("validation_steps"):
+            missing.append("validation_steps")
+        if missing:
+            raise ClientError("Security Review QA evidence is incomplete: " + ", ".join(missing))
+        validate_qa_evidence(layout, slug, work_id, evidence)
+    if target == "staging":
+        validate_qa_evidence(layout, slug, work_id, evidence)
         missing = []
         if not isinstance(repository, dict) or not repository.get("pull_request"):
             missing.append("pull_request")
-        for key in ("ci_passed", "qa_passed", "security_passed", "staging_preview"):
+        if not isinstance(repository, dict) or not repository.get("commit"):
+            missing.append("commit")
+        for key in ("engineering_review_passed", "ci_passed", "qa_passed"):
+            if not isinstance(evidence, dict) or evidence.get(key) is not True:
+                missing.append(key)
+        disposition = evidence.get("security_disposition") if isinstance(evidence, dict) else None
+        if disposition not in {"passed", "not_required"}:
+            missing.append("security disposition")
+        if not isinstance(evidence, dict) or not evidence.get("security_decision_id"):
+            missing.append("security_decision_id")
+        if not isinstance(evidence, dict) or not evidence.get("rollback_plan"):
+            missing.append("rollback_plan")
+        if missing:
+            raise ClientError("STAGING gate is incomplete: " + ", ".join(missing))
+    if target == "business_review":
+        validate_qa_evidence(layout, slug, work_id, evidence)
+        missing = []
+        for key in ("staging_preview", "staging_build_version", "screenshots", "validation_steps"):
             if not isinstance(evidence, dict) or not evidence.get(key):
                 missing.append(key)
+        if missing:
+            raise ClientError("Business Review staging evidence is incomplete: " + ", ".join(missing))
+    if target == "ready_for_cto":
+        missing = []
+        if not isinstance(repository, dict) or not repository.get("pull_request"):
+            missing.append("pull_request")
+        for key in (
+            "engineering_review_passed", "ci_passed", "qa_passed",
+            "staging_preview", "staging_build_version", "screenshots",
+            "validation_steps", "rollback_plan",
+        ):
+            if not isinstance(evidence, dict) or not evidence.get(key):
+                missing.append(key)
+        disposition = evidence.get("security_disposition") if isinstance(evidence, dict) else None
+        if disposition not in {"passed", "not_required"}:
+            missing.append("security_disposition")
+        if not isinstance(evidence, dict) or not evidence.get("security_decision_id"):
+            missing.append("security_decision_id")
+        business = evidence.get("business_review") if isinstance(evidence, dict) else None
+        required_business = {"result", "actor_id", "decision_id", "at"}
+        if (
+            not isinstance(business, dict)
+            or business.get("result") != "approved"
+            or not required_business <= {key for key, value in business.items() if value}
+        ):
+            missing.append("Business Review human decision")
         if missing:
             raise ClientError(
                 "READY_FOR_CTO evidence is incomplete: " + ", ".join(missing)
             )
+        validate_qa_evidence(layout, slug, work_id, evidence)
     if target == "verified":
         evidence = record.get("evidence", {})
         if not isinstance(evidence, dict) or not evidence.get(
@@ -1383,6 +2460,323 @@ def transition_work(
     return record
 
 
+def client_evidence_artifact(
+    layout: Layout,
+    slug: str,
+    raw_path: str,
+    *,
+    suffixes: set[str],
+) -> dict[str, Any]:
+    root = layout.client(validate_slug(slug)).resolve()
+    path = Path(raw_path).expanduser().resolve()
+    try:
+        relative = path.relative_to(root)
+    except ValueError as error:
+        raise ClientError("evidence artifact must stay inside the client boundary") from error
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise ClientError("evidence artifact is missing or empty")
+    if path.suffix.lower() not in suffixes:
+        raise ClientError("evidence artifact has an unsupported file type")
+    image_metadata: dict[str, Any] = {}
+    if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                image.verify()
+            with Image.open(path) as image:
+                image.load()
+                image_metadata = {
+                    "format": str(image.format or "").upper(),
+                    "width": image.width,
+                    "height": image.height,
+                }
+        except Exception as error:
+            raise ClientError("evidence image does not decode") from error
+        if image_metadata["width"] < 1 or image_metadata["height"] < 1:
+            raise ClientError("evidence image has invalid dimensions")
+    return {
+        "path": str(relative),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "bytes": path.stat().st_size,
+        **image_metadata,
+    }
+
+
+def canonical_browser_url(value: str) -> tuple[str, str, int | None, str, str]:
+    parsed = urllib.parse.urlsplit(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ClientError("browser evidence URL is invalid")
+    path = parsed.path.rstrip("/") or "/"
+    return (
+        parsed.scheme.lower(),
+        parsed.hostname.lower(),
+        parsed.port,
+        path,
+        parsed.query,
+    )
+
+
+def structured_browser_urls(value: object) -> Iterator[str]:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"url", "final_url", "page_url", "current_url"} and isinstance(item, str):
+                yield item
+            else:
+                yield from structured_browser_urls(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from structured_browser_urls(item)
+
+
+def verify_browser_session(
+    layout: Layout,
+    slug: str,
+    session_id: str,
+    *,
+    url: str,
+    started_at: float,
+    finished_at: float,
+) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,100}", session_id):
+        raise ClientError("QA browser session id is invalid")
+    manifest = client_configs(layout, slug)["manifest.yaml"]
+    profile = manifest.get("profile", {}) if isinstance(manifest, dict) else {}
+    profile_id = str(profile.get("hermes_profile") or "") if isinstance(profile, dict) else ""
+    db_path = layout.home / ".hermes" / "profiles" / profile_id / "state.db"
+    if not db_path.is_file():
+        raise ClientError("QA browser session store is unavailable")
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        session = conn.execute(
+            "SELECT source, started_at, last_activity_at FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        rows = conn.execute(
+            "SELECT content FROM messages WHERE session_id = ? AND role = 'tool' "
+            "AND tool_name LIKE 'browser%' AND timestamp BETWEEN ? AND ?",
+            (session_id, started_at, finished_at),
+        ).fetchall()
+    except sqlite3.Error as error:
+        raise ClientError("QA browser session evidence is unreadable") from error
+    finally:
+        if conn is not None:
+            conn.close()
+    expected_url = canonical_browser_url(url)
+    exact_matches = 0
+    for row in rows:
+        try:
+            payload = json.loads(str(row[0] or ""))
+        except json.JSONDecodeError:
+            continue
+        for candidate in structured_browser_urls(payload):
+            try:
+                if canonical_browser_url(candidate) == expected_url:
+                    exact_matches += 1
+            except ClientError:
+                continue
+    if (
+        session is None
+        or exact_matches < 1
+        or started_at > finished_at
+        or started_at < float(session[1] or 0) - 5
+        or finished_at > float(session[2] or 0) + 5
+    ):
+        raise ClientError("QA session has no matching browser navigation execution")
+    return {
+        "session_id": session_id,
+        "source": str(session[0]),
+        "browser_tool_calls": exact_matches,
+        "started_at": started_at,
+        "finished_at": finished_at,
+    }
+
+
+def validate_qa_evidence(
+    layout: Layout, slug: str, work_id: str, evidence: dict[str, Any]
+) -> None:
+    screenshots = evidence.get("screenshots", [])
+    if not isinstance(screenshots, list) or not screenshots:
+        raise ClientError("QA evidence has no verified screenshots")
+    runtime = client_configs(layout, slug)["runtime.yaml"]
+    browser_qa = runtime.get("browser_qa", {}) if isinstance(runtime, dict) else {}
+    configured_viewports = browser_qa.get("viewports", []) if isinstance(browser_qa, dict) else []
+    required_viewports = {
+        (
+            str(item.get("id") or ""),
+            int(item.get("width") or 0),
+            int(item.get("height") or 0),
+        )
+        for item in configured_viewports
+        if isinstance(item, dict)
+    }
+    observed_viewports = {
+        (
+            str(item.get("viewport") or ""),
+            int(item.get("width") or 0),
+            int(item.get("height") or 0),
+        )
+        for item in screenshots
+        if isinstance(item, dict)
+    }
+    if not required_viewports or not required_viewports <= observed_viewports:
+        missing = sorted(required_viewports - observed_viewports)
+        raise ClientError(
+            "QA evidence is missing required viewport screenshots: "
+            + ", ".join(f"{name}:{width}x{height}" for name, width, height in missing)
+        )
+    for stored in screenshots:
+        if not isinstance(stored, dict):
+            raise ClientError("QA screenshot evidence is not structured")
+        current = client_evidence_artifact(
+            layout,
+            slug,
+            str(layout.client(slug) / str(stored.get("path") or "")),
+            suffixes={".png", ".jpg", ".jpeg", ".webp"},
+        )
+        if not hmac.compare_digest(
+            str(current.get("sha256") or ""), str(stored.get("sha256") or "")
+        ):
+            raise ClientError("QA screenshot digest verification failed")
+    runtime = client_configs(layout, slug)["runtime.yaml"]
+    browser_qa = runtime.get("browser_qa", {}) if isinstance(runtime, dict) else {}
+    configured_viewports = browser_qa.get("viewports", []) if isinstance(browser_qa, dict) else []
+    required_dimensions = {
+        (int(item["width"]), int(item["height"]))
+        for item in configured_viewports
+        if isinstance(item, dict) and item.get("width") and item.get("height")
+    }
+    captured_dimensions = {
+        (int(item.get("width") or 0), int(item.get("height") or 0))
+        for item in screenshots
+        if isinstance(item, dict)
+    }
+    missing_dimensions = sorted(required_dimensions - captured_dimensions)
+    if required_dimensions and missing_dimensions:
+        raise ClientError(
+            "QA evidence is missing required viewport dimensions: "
+            + ", ".join(f"{width}x{height}" for width, height in missing_dimensions)
+        )
+    steps = evidence.get("validation_steps", [])
+    if (
+        not isinstance(steps, list)
+        or not steps
+        or any(len(str(step).strip()) < 12 for step in steps)
+    ):
+        raise ClientError("QA validation steps are missing or incomplete")
+    provenance = evidence.get("qa_browser_provenance", {})
+    if not isinstance(provenance, dict) or not provenance.get("session_id"):
+        raise ClientError("QA browser provenance is missing")
+    report_stored = provenance.get("report", {})
+    if not isinstance(report_stored, dict):
+        raise ClientError("QA browser report evidence is not structured")
+    report_artifact = client_evidence_artifact(
+        layout,
+        slug,
+        str(layout.client(slug) / str(report_stored.get("path") or "")),
+        suffixes={".json"},
+    )
+    if not hmac.compare_digest(
+        str(report_artifact.get("sha256") or ""),
+        str(report_stored.get("sha256") or ""),
+    ):
+        raise ClientError("QA browser report digest verification failed")
+    report = yaml_document(layout.client(slug) / str(report_stored.get("path")))
+    if (
+        report.get("real_browser_navigation_succeeded") is not True
+        or str(report.get("session_id") or "") != str(provenance.get("session_id"))
+        or str(report.get("url") or "") != str(provenance.get("url") or "")
+    ):
+        raise ClientError("QA browser report no longer matches its provenance")
+    profile_binding = validate_browser_qa_profile(layout, slug, report)
+    if any(
+        str(provenance.get(key) or "") != str(value)
+        for key, value in profile_binding.items()
+    ):
+        raise ClientError("QA browser profile binding no longer matches its provenance")
+    qa_receipt_expected = {
+        "client": slug,
+        "work_id": work_id,
+        "actor": str(provenance.get("actor") or ""),
+        "session_id": str(provenance.get("session_id") or ""),
+        "session_source": str(provenance.get("source") or ""),
+        **profile_binding,
+        "url": str(provenance.get("url") or ""),
+        "started_at": float(provenance.get("started_at") or 0),
+        "finished_at": float(provenance.get("finished_at") or 0),
+        "report_sha256": str(report_stored.get("sha256") or ""),
+        "screenshot_sha256": sorted(
+            str(item.get("sha256"))
+            for item in screenshots
+            if isinstance(item, dict)
+        ),
+        "validation_sha256": hashlib.sha256(
+            json.dumps(steps, ensure_ascii=False, sort_keys=True).encode()
+        ).hexdigest(),
+    }
+    verify_qa_receipt(
+        layout, str(provenance.get("receipt") or ""), qa_receipt_expected
+    )
+    current_session = verify_browser_session(
+        layout,
+        slug,
+        str(provenance["session_id"]),
+        url=str(provenance.get("url") or ""),
+        started_at=float(provenance.get("started_at") or 0),
+        finished_at=float(provenance.get("finished_at") or 0),
+    )
+    if str(current_session.get("source") or "") != str(provenance.get("source") or ""):
+        raise ClientError("QA browser session source no longer matches its receipt")
+
+
+def validate_browser_qa_profile(
+    layout: Layout, slug: str, report: dict[str, Any]
+) -> dict[str, Any]:
+    runtime = client_configs(layout, slug)["runtime.yaml"]
+    browser_qa = runtime.get("browser_qa", {}) if isinstance(runtime, dict) else {}
+    if not isinstance(browser_qa, dict) or browser_qa.get("enabled") is not True:
+        raise ClientError("authenticated browser QA is not enabled for this client")
+    profile_id = str(report.get("browser_profile_id") or "")
+    environment = str(report.get("environment") or "")
+    role = str(report.get("role") or "")
+    principal = str(report.get("authenticated_principal") or "")
+    probe = str(report.get("authentication_probe_sha256") or "")
+    profiles = browser_qa.get("profiles", [])
+    match = next(
+        (
+            item
+            for item in profiles
+            if isinstance(item, dict)
+            and str(item.get("id") or "") == profile_id
+            and str(item.get("environment") or "") == environment
+            and str(item.get("role") or "") == role
+        ),
+        None,
+    ) if isinstance(profiles, list) else None
+    configured_principal = str(match.get("authenticated_principal") or "") if isinstance(match, dict) else ""
+    configured_probe = str(match.get("authentication_probe_sha256") or "") if isinstance(match, dict) else ""
+    if (
+        not isinstance(match, dict)
+        or match.get("authenticated_verified") is not True
+        or environment != "staging"
+        or not principal
+        or not configured_principal
+        or not re.fullmatch(r"[a-fA-F0-9]{64}", probe)
+        or not re.fullmatch(r"[a-fA-F0-9]{64}", configured_probe)
+        or principal != configured_principal
+        or probe.lower() != configured_probe.lower()
+    ):
+        raise ClientError("browser QA profile authentication is unverified or mismatched")
+    return {
+        "browser_profile_id": profile_id,
+        "environment": environment,
+        "role": role,
+        "authenticated_principal": principal,
+        "authentication_probe_sha256": probe.lower(),
+    }
+
+
 def update_evidence(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
     path, record = load_work(layout, args.slug, args.work_id)
     repository = record.setdefault("repository", {})
@@ -1395,23 +2789,161 @@ def update_evidence(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
         repository["commit"] = args.commit
         changed.append("commit")
     for argument, key in (
-        (args.ci, "ci_passed"),
-        (args.qa, "qa_passed"),
-        (args.security, "security_passed"),
-        (args.production_health, "production_health_verified"),
+        (getattr(args, "engineering_review", None), "engineering_review_passed"),
+        (getattr(args, "ci", None), "ci_passed"),
+        (getattr(args, "production_health", None), "production_health_verified"),
     ):
         if argument is not None:
             evidence[key] = argument == "passed"
             changed.append(key)
-    if args.preview is not None:
+    security = getattr(args, "security", None)
+    if security is not None:
+        evidence["security_disposition"] = security
+        changed.append("security_disposition")
+    security_decision_id = getattr(args, "security_decision_id", None)
+    if security_decision_id is not None:
+        evidence["security_decision_id"] = security_decision_id
+        changed.append("security_decision_id")
+    if security == "not_required" and not evidence.get("security_decision_id"):
+        raise ClientError("security not_required requires a decision id")
+    if getattr(args, "preview", None) is not None:
         evidence["staging_preview"] = args.preview
         changed.append("staging_preview")
-    if args.risk is not None:
+    if getattr(args, "staging_build", None) is not None:
+        evidence["staging_build_version"] = args.staging_build
+        changed.append("staging_build_version")
+    screenshots = getattr(args, "screenshot", None) or []
+    if screenshots:
+        artifacts = [
+            client_evidence_artifact(
+                layout,
+                args.slug,
+                screenshot,
+                suffixes={".png", ".jpg", ".jpeg", ".webp"},
+            )
+            for screenshot in screenshots
+        ]
+        runtime = client_configs(layout, args.slug)["runtime.yaml"]
+        browser_qa = runtime.get("browser_qa", {}) if isinstance(runtime, dict) else {}
+        viewport_by_size = {
+            (int(item.get("width") or 0), int(item.get("height") or 0)): str(
+                item.get("id") or ""
+            )
+            for item in browser_qa.get("viewports", [])
+            if isinstance(item, dict)
+        } if isinstance(browser_qa, dict) else {}
+        for artifact in artifacts:
+            viewport = viewport_by_size.get(
+                (int(artifact.get("width") or 0), int(artifact.get("height") or 0))
+            )
+            if not viewport:
+                raise ClientError("QA screenshot does not match a configured viewport")
+            artifact["viewport"] = viewport
+        evidence.setdefault("screenshots", []).extend(artifacts)
+        changed.append("screenshots")
+    validation_steps = getattr(args, "validation_step", None) or []
+    if validation_steps:
+        if any(len(str(step).strip()) < 12 for step in validation_steps):
+            raise ClientError("QA validation steps must be explicit and bounded")
+        evidence.setdefault("validation_steps", []).extend(validation_steps)
+        changed.append("validation_steps")
+    browser_report = getattr(args, "browser_report", None)
+    qa_session_id = str(getattr(args, "qa_session_id", None) or "")
+    if browser_report is not None:
+        report_artifact = client_evidence_artifact(
+            layout, args.slug, browser_report, suffixes={".json"}
+        )
+        report_path = layout.client(args.slug) / report_artifact["path"]
+        report = yaml_document(report_path)
+        if (
+            report.get("real_browser_navigation_succeeded") is not True
+            or str(report.get("session_id") or "") != qa_session_id
+            or str(report.get("work_id") or "") != args.work_id
+            or str(report.get("actor") or "") != str(args.actor)
+            or not str(report.get("url") or "").startswith(("http://", "https://"))
+            or not str(report.get("page_title") or "").strip()
+        ):
+            raise ClientError("QA browser report is incomplete or inconsistent")
+        try:
+            started_at = float(report["started_at"])
+            finished_at = float(report["finished_at"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ClientError("QA browser report timestamps are invalid") from error
+        profile_binding = validate_browser_qa_profile(layout, args.slug, report)
+        provenance = verify_browser_session(
+            layout,
+            args.slug,
+            qa_session_id,
+            url=str(report["url"]),
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+        evidence["qa_browser_provenance"] = {
+            **provenance,
+            **profile_binding,
+            "work_id": args.work_id,
+            "actor": str(args.actor),
+            "url": report["url"],
+            "page_title": report["page_title"],
+            "report": report_artifact,
+        }
+        qa_receipt_payload = {
+            "actor": str(args.actor),
+            "session_id": qa_session_id,
+            "session_source": str(provenance.get("source") or ""),
+            **profile_binding,
+            "url": str(report["url"]),
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "report_sha256": str(report_artifact["sha256"]),
+            "screenshot_sha256": sorted(
+                str(item.get("sha256"))
+                for item in evidence.get("screenshots", [])
+                if isinstance(item, dict)
+            ),
+            "validation_sha256": hashlib.sha256(
+                json.dumps(
+                    evidence.get("validation_steps", []),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest(),
+        }
+        evidence["qa_browser_provenance"]["receipt"] = write_qa_receipt(
+            layout, args.slug, args.work_id, qa_receipt_payload
+        )
+        changed.append("qa_browser_provenance")
+    qa = getattr(args, "qa", None)
+    if qa is not None:
+        if qa == "passed":
+            screenshots_record = evidence.get("screenshots", [])
+            if (
+                not screenshots_record
+                or not all(
+                    isinstance(item, dict) and item.get("path") and item.get("sha256")
+                    for item in screenshots_record
+                )
+                or not evidence.get("validation_steps")
+                or not evidence.get("qa_browser_provenance")
+            ):
+                raise ClientError(
+                    "QA PASS requires verified screenshots, validation steps and browser provenance"
+                )
+            validate_qa_evidence(layout, args.slug, args.work_id, evidence)
+            evidence["qa_passed"] = True
+        else:
+            evidence["qa_passed"] = False
+        changed.append("qa_passed")
+    if getattr(args, "rollback_plan", None) is not None:
+        evidence["rollback_plan"] = args.rollback_plan
+        changed.append("rollback_plan")
+    if getattr(args, "risk", None) is not None:
         evidence["risk"] = args.risk
         changed.append("risk")
-    if args.linear_done:
-        record.setdefault("linear", {})["status_sync"] = "done"
-        changed.append("linear_marked_done")
+    if getattr(args, "linear_done", False):
+        raise ClientError(
+            "Linear Done is authoritative and cannot be supplied as agent evidence"
+        )
     if not changed:
         raise ClientError("no evidence update was provided")
     work_event(record, "work.evidence_updated", actor=args.actor, fields=changed)
@@ -1447,7 +2979,27 @@ def request_changes(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
     return record
 
 
+def require_release_controller_enabled(layout: Layout, slug: str) -> dict[str, Any]:
+    integrations = client_configs(layout, slug)["integrations.yaml"]
+    linear = integrations.get("linear", {}) if isinstance(integrations, dict) else {}
+    controller = linear.get("release_controller", {}) if isinstance(linear, dict) else {}
+    if not isinstance(controller, dict) or controller.get("enabled") is not True:
+        raise ClientError(
+            "release controller is disabled; production approval and deployment fail closed"
+        )
+    if controller.get("operational_acceptance_verified") is not True:
+        raise ClientError(
+            "release controller operational acceptance is incomplete; production remains blocked"
+        )
+    if controller.get("fail_closed") is not True:
+        raise ClientError("release controller configuration is not fail-closed")
+    raise ClientError(
+        "authenticated production approval receipts are not implemented; production remains blocked"
+    )
+
+
 def approve_work(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
+    require_release_controller_enabled(layout, args.slug)
     path, record = load_work(layout, args.slug, args.work_id)
     if record.get("status") != "ready_for_cto":
         raise ClientError("engineering approval requires READY_FOR_CTO")
@@ -1464,6 +3016,7 @@ def approve_work(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
 
 
 def authorize_deploy(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
+    require_release_controller_enabled(layout, args.slug)
     path, record = load_work(layout, args.slug, args.work_id)
     if record.get("status") != "cto_approved":
         raise ClientError("deployment authorization requires CTO_APPROVED")
@@ -1560,6 +3113,7 @@ def apply_review_action_locked(
                 result["session_resume_error"] = str(error)
         return result
 
+    require_release_controller_enabled(layout, slug)
     path, record = load_work(layout, slug, work_id)
     if record.get("status") != "ready_to_deploy":
         raise ClientError("DEPLOY requires READY_TO_DEPLOY")
@@ -1591,7 +3145,9 @@ def apply_review_action_locked(
     }
 
 
-def review_card(record: dict[str, Any]) -> dict[str, Any]:
+def review_card(
+    record: dict[str, Any], *, release_controller_enabled: bool = False
+) -> dict[str, Any]:
     evidence = record.get("evidence", {})
     repo = record.get("repository", {})
     lines = [
@@ -1604,7 +3160,7 @@ def review_card(record: dict[str, Any]) -> dict[str, Any]:
         f"PR · {repo.get('pull_request') or 'pending'}",
         f"CI · {'PASS' if evidence.get('ci_passed') else 'PENDING'}",
         f"QA · {'PASS' if evidence.get('qa_passed') else 'PENDING'}",
-        f"Security · {'PASS' if evidence.get('security_passed') else 'PENDING'}",
+        f"Security · {'PASS' if evidence.get('security_disposition') == 'passed' else 'NOT REQUIRED' if evidence.get('security_disposition') == 'not_required' else 'PENDING'}",
         f"Risk · {evidence.get('risk') or 'unrated'}",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
     ]
@@ -1621,11 +3177,11 @@ def review_card(record: dict[str, Any]) -> dict[str, Any]:
             "custom_id": prefix + ":changes",
         },
     ]
-    if record.get("status") == "ready_for_cto":
+    if release_controller_enabled and record.get("status") == "ready_for_cto":
         buttons.append(
             {"label": "APPROVE", "style": "success", "custom_id": prefix + ":approve"}
         )
-    if record.get("status") == "ready_to_deploy":
+    if release_controller_enabled and record.get("status") == "ready_to_deploy":
         buttons.append(
             {"label": "DEPLOY", "style": "primary", "custom_id": prefix + ":deploy"}
         )
@@ -1643,13 +3199,21 @@ def discord_review_plan(layout: Layout, slug: str, work_id: str) -> dict[str, An
         raise ClientError(
             "Discord review cards require READY_FOR_CTO or READY_TO_DEPLOY"
         )
-    discord = client_configs(layout, slug)["integrations.yaml"].get("discord", {})
+    integrations = client_configs(layout, slug)["integrations.yaml"]
+    discord = integrations.get("discord", {})
     if not isinstance(discord, dict) or not discord.get("enabled"):
         raise ClientError("Discord is not enabled for this client")
     channels = discord.get("channels", {})
-    channel_key = "reviews" if work.get("status") == "ready_for_cto" else "releases"
+    channel_key = "cto_inbox" if work.get("status") == "ready_for_cto" else "releases"
     channel_id = channels.get(channel_key) if isinstance(channels, dict) else None
-    card = review_card(work)
+    linear = integrations.get("linear", {}) if isinstance(integrations, dict) else {}
+    controller = linear.get("release_controller", {}) if isinstance(linear, dict) else {}
+    card = review_card(
+        work,
+        release_controller_enabled=(
+            isinstance(controller, dict) and controller.get("enabled") is True
+        ),
+    )
     revision = sum(
         1
         for event in work.get("events", [])
@@ -1803,6 +3367,7 @@ def start_run_locked(
     if policy.get("human_approval") == "required" and not args.approval_id:
         raise ClientError(f"action requires human approval: {args.action}")
     if args.action == "deploy_production":
+        require_release_controller_enabled(layout, slug)
         production = work.get("approvals", {}).get("production", {})
         if work.get(
             "status"
@@ -1957,10 +3522,13 @@ def command_parser() -> argparse.ArgumentParser:
     init.add_argument("--github-org")
     init.add_argument("--linear-workspace")
     init.add_argument("--linear-team")
+    init.add_argument("--vercel", action="store_true")
+    init.add_argument("--convex", action="store_true")
+    init.add_argument("--google-drive", action="store_true")
     init.add_argument(
         "--discord-mode",
         choices=("shared-command-center", "dedicated-bot"),
-        default="shared-command-center",
+        default="dedicated-bot",
     )
     init.add_argument("--discord-guild")
     init.add_argument("--dry-run", action="store_true")
@@ -2011,6 +3579,21 @@ def command_parser() -> argparse.ArgumentParser:
         choices=("development", "staging", "production"),
         default="development",
     )
+    context_cmd = work_sub.add_parser("context")
+    context_cmd.add_argument("slug")
+    context_cmd.add_argument("work_id")
+    context_cmd.add_argument("--actor", required=True)
+    context_cmd.add_argument("--context-file", required=True)
+    authorize_start = work_sub.add_parser("authorize-start")
+    authorize_start.add_argument("slug")
+    authorize_start.add_argument("work_id")
+    authorize_start.add_argument("--channel-id", required=True)
+    authorize_start.add_argument("--message-id", required=True)
+    quarantine = work_sub.add_parser("quarantine-legacy")
+    quarantine.add_argument("slug")
+    quarantine.add_argument("work_id")
+    quarantine.add_argument("--actor", required=True)
+    quarantine.add_argument("--reason", required=True)
     transition = work_sub.add_parser("transition")
     transition.add_argument("slug")
     transition.add_argument("work_id")
@@ -2027,10 +3610,18 @@ def command_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--actor", required=True)
     evidence.add_argument("--pull-request")
     evidence.add_argument("--commit")
+    evidence.add_argument("--engineering-review", choices=("passed", "failed"))
     evidence.add_argument("--ci", choices=("passed", "failed"))
     evidence.add_argument("--qa", choices=("passed", "failed"))
-    evidence.add_argument("--security", choices=("passed", "failed"))
+    evidence.add_argument("--security", choices=("passed", "failed", "not_required"))
+    evidence.add_argument("--security-decision-id")
     evidence.add_argument("--preview")
+    evidence.add_argument("--staging-build")
+    evidence.add_argument("--screenshot", action="append", default=[])
+    evidence.add_argument("--validation-step", action="append", default=[])
+    evidence.add_argument("--browser-report")
+    evidence.add_argument("--qa-session-id")
+    evidence.add_argument("--rollback-plan")
     evidence.add_argument("--risk", choices=("low", "medium", "high", "critical"))
     evidence.add_argument("--production-health", choices=("passed", "failed"))
     evidence.add_argument("--linear-done", action="store_true")
@@ -2173,6 +3764,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "work":
             if args.work_command == "create":
                 print_json(create_work(layout, args))
+            elif args.work_command == "context":
+                print_json(update_work_context(layout, args))
+            elif args.work_command == "authorize-start":
+                print_json(authorize_work_start(layout, args))
+            elif args.work_command == "quarantine-legacy":
+                print_json(
+                    quarantine_legacy_work(
+                        layout,
+                        args.slug,
+                        args.work_id,
+                        actor=args.actor,
+                        reason=args.reason,
+                    )
+                )
             elif args.work_command == "transition":
                 print_json(
                     transition_work(

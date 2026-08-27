@@ -17,6 +17,10 @@ resolve_launcher() {
 launcher=$(resolve_launcher "${BASH_SOURCE[0]}")
 prefix_root=$(cd "$(dirname "$launcher")/.." && pwd -P)
 install_root=${AGK_TERMINAL_ROOT:-$prefix_root/lib/agk-terminal}
+# USER is not guaranteed to exist in SSH, systemd, gateway, or exec-based
+# launches. The native TUI uses AGK_ENVIRONMENT to select control.db rows, so
+# derive it from the effective Linux identity unless explicitly overridden.
+export AGK_ENVIRONMENT=${AGK_ENVIRONMENT:-$(id -un)}
 export AGK_TERMINAL_ROOT=$install_root
 export PATH="$install_root/bin:$HOME/.local/bin:$PATH"
 

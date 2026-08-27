@@ -62,6 +62,14 @@ def test_install_includes_the_transactional_client_control_plane():
     assert 'scripts/client_control.py' in launcher
 
 
+def test_install_reconciles_all_python_requirements_on_upgrade():
+    source = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert 'if ! "$install_root/venv/bin/python" -c \'import yaml\'' not in source
+    assert '"$install_root/venv/bin/python" -m pip install --disable-pip-version-check' in source
+    assert '-r "$repo_root/requirements.txt"' in source
+
+
 def test_shared_hermes_install_can_pin_and_verify_an_official_commit():
     source = (ROOT / "scripts" / "install-shared-hermes.sh").read_text(
         encoding="utf-8"
