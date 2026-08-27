@@ -4,7 +4,6 @@ import json
 import sys
 from pathlib import Path
 
-
 MODULE = Path(__file__).resolve().parents[1] / "hermes/plugins/platforms/discord/agk_account_usage_monitor.py"
 spec = importlib.util.spec_from_file_location("agk_account_usage_monitor", MODULE)
 assert spec and spec.loader
@@ -76,6 +75,13 @@ def test_state_file_contract_is_profile_local_and_contains_only_message_ids(tmp_
     assert (tmp_path / "discord_usage_monitor.json").stat().st_mode & 0o777 == 0o600
 
 
+def test_state_store_ignores_valid_json_with_non_mapping_root(tmp_path):
+    store = monitor.MessageStateStore(tmp_path)
+    store.path.write_text('["summary", 1]', encoding="utf-8")
+
+    assert store.load() == {}
+
+
 def test_discord_adapter_starts_and_stops_usage_monitor():
     adapter = (Path(__file__).resolve().parents[1] / "hermes/plugins/platforms/discord/adapter.py").read_text(encoding="utf-8")
     assert "DiscordAccountUsageMonitor" in adapter
@@ -109,6 +115,24 @@ def test_alias_registry_joins_owner_names_by_stable_credential_id(tmp_path):
     assert aliases["openai-codex"]["ff5cab"] == "Agentik"
     assert aliases["openai-codex"]["6aedd9"] == "Simono"
     assert aliases["anthropic"]["420097"] == "Loumna"
+
+
+def test_monitor_alias_loading_uses_canonical_validation_and_mode_repair(tmp_path):
+    path = tmp_path / "provider-account-aliases.json"
+    path.write_text(json.dumps({
+        "providers": {
+            "openai-codex": [
+                {"credential_id": "ff5cab", "owner_nickname": "Agentik"},
+                {"credential_id": "bad123", "owner_nickname": "owner@example.com"},
+            ],
+        }
+    }), encoding="utf-8")
+    path.chmod(0o644)
+
+    aliases = monitor.load_owner_aliases(tmp_path)
+
+    assert aliases == {"openai-codex": {"ff5cab": "Agentik"}}
+    assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_voice_channel_name_uses_owner_session_name_and_primary_used_percent():
@@ -255,6 +279,36 @@ def test_voice_channel_sync_reuses_seed_creates_per_account_and_skips_unchanged_
     assert [item[0].name for item in category.guild.created] == ["Simono-OpenAI : 48%"]
     assert state["voice-owner:openai-codex:agentik"] == seed.id
     assert state["voice-owner:openai-codex:simono"] == 9000
+
+
+def test_voice_channel_sync_keeps_unassigned_accounts_distinct_across_refreshes(tmp_path):
+    category = _FakeCategory([])
+    usage_monitor = monitor.DiscordAccountUsageMonitor(
+        _FakeClient([]),
+        monitor.MonitorConfig(123, 456),
+        monitor.MessageStateStore(tmp_path),
+    )
+    rows = [
+        monitor.AccountSnapshot(1, "id-one", "unknown"),
+        monitor.AccountSnapshot(2, "id-two", "unknown"),
+    ]
+    state = {}
+
+    asyncio.run(usage_monitor._sync_voice_channels(
+        category, "openai-codex", "OpenAI", rows, state
+    ))
+    asyncio.run(usage_monitor._sync_voice_channels(
+        category, "openai-codex", "OpenAI", rows, state
+    ))
+
+    assert [item[0].name for item in category.guild.created] == [
+        "Account-id-one-OpenAI : ?%",
+        "Account-id-two-OpenAI : ?%",
+    ]
+    assert state == {
+        "voice:openai-codex:id-one": 9000,
+        "voice:openai-codex:id-two": 9001,
+    }
 
 
 def test_voice_channel_sync_migrates_legacy_credential_binding_to_owner_key(tmp_path):

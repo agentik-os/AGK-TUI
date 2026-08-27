@@ -1,23 +1,22 @@
 """Lightweight redacted OpenAI/Claude quota panels for Discord."""
 from __future__ import annotations
 
-import json
-import math
-import os
 import asyncio
 import importlib.util
+import json
 import logging
+import os
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
 
 try:
-    from .agk_account_control import voice_binding_key
+    from .agk_account_control import AliasRegistry, voice_binding_key
 except ImportError:  # Support direct file loading in focused tests.
     _CONTROL_PATH = Path(__file__).with_name("agk_account_control.py")
     _CONTROL_SPEC = importlib.util.spec_from_file_location("agk_account_control", _CONTROL_PATH)
@@ -25,6 +24,7 @@ except ImportError:  # Support direct file loading in focused tests.
     _CONTROL_MODULE = importlib.util.module_from_spec(_CONTROL_SPEC)
     sys.modules.setdefault(_CONTROL_SPEC.name, _CONTROL_MODULE)
     _CONTROL_SPEC.loader.exec_module(_CONTROL_MODULE)
+    AliasRegistry = _CONTROL_MODULE.AliasRegistry
     voice_binding_key = _CONTROL_MODULE.voice_binding_key
 
 
@@ -53,7 +53,7 @@ class MonitorConfig:
     claude_channel_name: str = "claudecode-all-accounts"
 
     @classmethod
-    def from_extra(cls, extra: dict | None) -> "MonitorConfig":
+    def from_extra(cls, extra: dict | None) -> MonitorConfig:
         values = extra or {}
         interval = max(180, min(3600, int(values.get("usage_monitor_interval_seconds", 300) or 300)))
         return cls(
@@ -77,6 +77,8 @@ class MessageStateStore:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
+            return {}
+        if not isinstance(raw, dict):
             return {}
         return {
             str(k): int(v)
@@ -107,7 +109,7 @@ class MessageStateStore:
         temporary.replace(self.path)
 
 
-def remaining_bar(value: float | int | None) -> str:
+def remaining_bar(value: float | None) -> str:
     if value is None:
         return "░░░░░░░░░░"
     remaining = max(0.0, min(100.0, float(value)))
@@ -116,26 +118,8 @@ def remaining_bar(value: float | int | None) -> str:
 
 
 def load_owner_aliases(hermes_home: Path) -> dict[str, dict[str, str]]:
-    """Load only stable credential-id → owner-name mappings from the redacted registry."""
-    path = Path(hermes_home) / "provider-account-aliases.json"
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return {}
-    result: dict[str, dict[str, str]] = {}
-    providers = payload.get("providers") if isinstance(payload, dict) else {}
-    for provider, rows in (providers or {}).items():
-        mapped: dict[str, str] = {}
-        for row in rows if isinstance(rows, list) else ():
-            if not isinstance(row, dict):
-                continue
-            credential_id = str(row.get("credential_id") or "").strip()
-            owner_name = str(row.get("owner_nickname") or "").strip()
-            if credential_id and owner_name:
-                mapped[credential_id] = owner_name[:64]
-        if mapped:
-            result[str(provider)] = mapped
-    return result
+    """Load canonical, validated stable credential-id → owner-name mappings."""
+    return AliasRegistry(Path(hermes_home) / "provider-account-aliases.json").snapshot()
 
 
 def voice_channel_name(provider_label: str, account: AccountSnapshot) -> str:
@@ -220,8 +204,8 @@ def collect_provider_snapshots(provider: str, aliases: dict[str, str] | None = N
             try:
                 if pool._entry_needs_refresh(entry):
                     entry = pool._refresh_entry(entry, force=False) or entry
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - private provider refresh has no stable error base.
+                logger.warning("Claude credential refresh failed safely: %s", type(exc).__name__)
         raw_status = str(getattr(entry, "last_status", None) or "").lower()
         status = raw_status if raw_status in {"ok", "exhausted", "dead"} else "unknown"
         token = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", None)
@@ -242,7 +226,8 @@ def collect_provider_snapshots(provider: str, aliases: dict[str, str] | None = N
                         remaining,
                         reset_at.isoformat() if reset_at else None,
                     ))
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - provider clients expose no stable error base.
+                logger.warning("Usage fetch failed safely for %s: %s", provider, type(exc).__name__)
                 windows = []
         if windows and status == "unknown":
             status = "ok"
@@ -290,7 +275,8 @@ class DiscordAccountUsageMonitor:
         if channel is None:
             try:
                 channel = await self.client.fetch_channel(channel_id)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - Discord client errors vary by adapter/version.
+                logger.warning("Could not fetch monitor channel safely: %s", type(exc).__name__)
                 return None
         return channel
 
@@ -311,7 +297,8 @@ class DiscordAccountUsageMonitor:
                     category=category,
                     reason="AGK Station account capacity monitor",
                 )
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - Discord client errors vary by adapter/version.
+                logger.warning("Could not create Claude monitor channel safely: %s", type(exc).__name__)
                 return root if hasattr(root, "send") else None
         return None
 
@@ -331,8 +318,8 @@ class DiscordAccountUsageMonitor:
                         category=category,
                         reason="AGK Station account capacity monitor",
                     )
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001 - Discord client errors vary by adapter/version.
+                    logger.warning("Could not create summary channel safely: %s", type(exc).__name__)
         return openai_channel
 
     async def _sync_voice_channels(
@@ -352,12 +339,15 @@ class DiscordAccountUsageMonitor:
         by_id = {int(channel.id): channel for channel in channels if getattr(channel, "id", None)}
         used_ids: set[int] = set()
         for account in rows:
-            key = voice_binding_key(provider, account.owner_name)
             legacy_key = f"voice:{provider}:{account.credential_id}"
+            has_owner = bool(account.owner_name.strip())
+            key = voice_binding_key(provider, account.owner_name) if has_owner else legacy_key
             desired = voice_channel_name(provider_label, account)
             channel = by_id.get(state.get(key, 0))
-            if channel is None:
+            if channel is None and has_owner:
                 channel = by_id.get(state.get(legacy_key, 0))
+            if channel is not None and int(channel.id) in used_ids:
+                channel = None
             if channel is None:
                 owner_prefix = f"{account.owner_name}-".casefold() if account.owner_name else ""
                 channel = next(
@@ -383,18 +373,19 @@ class DiscordAccountUsageMonitor:
                     )
                     channels.append(channel)
                     by_id[int(channel.id)] = channel
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - Discord client errors vary by adapter/version.
                     logger.warning("Could not create quota voice channel safely: %s", type(exc).__name__)
                     continue
             if channel is None:
                 continue
             used_ids.add(int(channel.id))
             state[key] = int(channel.id)
-            state.pop(legacy_key, None)
+            if has_owner:
+                state.pop(legacy_key, None)
             if str(getattr(channel, "name", "")) != desired and hasattr(channel, "edit"):
                 try:
                     await channel.edit(name=desired, reason="AGK Station quota refresh")
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - Discord client errors vary by adapter/version.
                     logger.warning("Could not rename quota voice channel safely: %s", type(exc).__name__)
 
     async def _upsert(self, key: str, channel, title: str, description: str, state: dict[str, int]) -> None:
@@ -404,14 +395,16 @@ class DiscordAccountUsageMonitor:
             import discord
             embed = discord.Embed(title=title, description=description[:4096], color=discord.Color.from_rgb(17, 17, 17))
             embed.set_footer(text="Station · refreshes every 5 minutes · no secrets")
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - optional Discord embed support must fail open.
+            logger.debug("Discord embed construction unavailable: %s", type(exc).__name__)
             embed = None
         message = None
         message_id = state.get(key)
         if message_id and hasattr(channel, "fetch_message"):
             try:
                 message = await channel.fetch_message(message_id)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - Discord client errors vary by adapter/version.
+                logger.debug("Stored monitor message was unavailable: %s", type(exc).__name__)
                 message = None
         if message is not None:
             await message.edit(content=None if embed else description[:1900], embed=embed)
@@ -449,6 +442,6 @@ class DiscordAccountUsageMonitor:
                 await self.refresh_once()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - monitor loop is an intentional fail-safe boundary.
                 logger.warning("Station account usage refresh failed safely: %s", type(exc).__name__)
             await asyncio.sleep(self.config.interval_seconds)

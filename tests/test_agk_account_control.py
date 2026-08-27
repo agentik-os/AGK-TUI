@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-
 MODULE = Path(__file__).resolve().parents[1] / "hermes/plugins/platforms/discord/agk_account_control.py"
 
 
@@ -80,6 +79,81 @@ def test_roster_joins_nickname_by_stable_id_and_redacts_private_fields(
     assert "private-access-token" not in rendered
 
 
+@pytest.mark.parametrize("status", ["ok", "exhausted", "dead", "reconnect required"])
+def test_roster_renderer_preserves_every_safe_account_state(status):
+    account_control = load_account_control()
+    record = account_control.AccountRecord(
+        "openai-codex", "ff5cab", "Agentik", status, 0, ()
+    )
+
+    rendered = account_control.render_account_roster([record])
+
+    assert f"`{status}`" in rendered
+
+
+def test_roster_renderer_uses_provider_labels_and_complete_usage_output():
+    account_control = load_account_control()
+    records = [
+        account_control.AccountRecord(
+            "openai-codex",
+            "ff5cab",
+            "Agentik",
+            "ok",
+            1,
+            (account_control.UsageWindow("Session", 77, "2026-08-28T00:00:00+00:00"),),
+        ),
+        account_control.AccountRecord(
+            "anthropic",
+            "420097",
+            "Loumna",
+            "reconnect required",
+            2,
+            (account_control.UsageWindow("Current week", 96, None),),
+        ),
+    ]
+
+    rendered = account_control.render_account_roster(records)
+
+    assert rendered == (
+        "# Station · Account roster\n"
+        "\n"
+        "**Agentik** · `OpenAI` · `ff5cab` · `ok` · priority 1\n"
+        "- Session · 23% used · 77% remaining · resets 2026-08-28T00:00:00+00:00\n"
+        "\n"
+        "**Loumna** · `Claude` · `420097` · `reconnect required` · priority 2\n"
+        "- Current week · 4% used · 96% remaining\n"
+    )
+
+
+def test_roster_renderer_normalizes_untrusted_public_fields():
+    account_control = load_account_control()
+    record = account_control.AccountRecord(
+        provider="<@provider>",
+        credential_id="eyJhbGciOiJIUzI1NiJ9.payload.signature",
+        owner_name="owner@example.com",
+        status="**ok**",
+        priority="sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+        windows=(
+            account_control.UsageWindow(
+                "**<@unsafe>**",
+                50,
+                "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+            ),
+        ),
+    )
+
+    rendered = account_control.render_account_roster([record])
+
+    assert "Unassigned" in rendered
+    assert "Unknown provider" in rendered
+    assert "`unknown`" in rendered
+    assert "- Limit" in rendered
+    assert "@" not in rendered
+    assert "eyJ" not in rendered
+    assert "sk-proj" not in rendered
+    assert "**ok**" not in rendered
+
+
 def test_alias_registry_rebinds_nickname_atomically(tmp_path):
     account_control = load_account_control()
     registry = account_control.AliasRegistry(tmp_path / "provider-account-aliases.json")
@@ -90,6 +164,38 @@ def test_alias_registry_rebinds_nickname_atomically(tmp_path):
     assert registry.owner_name("openai-codex", "old123") is None
     assert registry.path.stat().st_mode & 0o777 == 0o600
     assert not registry.path.with_name(f".{registry.path.name}.new").exists()
+
+
+def test_alias_registry_repairs_existing_permissive_mode_before_read(tmp_path):
+    account_control = load_account_control()
+    path = tmp_path / "provider-account-aliases.json"
+    path.write_text(
+        '{"providers":{"openai-codex":[{"credential_id":"ff5cab","owner_nickname":"Agentik"}]}}',
+        encoding="utf-8",
+    )
+    path.chmod(0o644)
+
+    snapshot = account_control.AliasRegistry(path).snapshot()
+
+    assert snapshot == {"openai-codex": {"ff5cab": "Agentik"}}
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_alias_registry_rejects_unsafe_owner_nicknames(tmp_path):
+    account_control = load_account_control()
+    registry = account_control.AliasRegistry(tmp_path / "provider-account-aliases.json")
+    unsafe_names = [
+        "owner@example.com",
+        "<@123456789>",
+        "**admin**",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.signature",
+        "sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+        "line\nbreak",
+    ]
+
+    for owner_name in unsafe_names:
+        with pytest.raises(ValueError, match="owner_name"):
+            registry.bind("openai-codex", owner_name, "ff5cab")
 
 
 def test_alias_registry_removes_credential_without_touching_other_owners(tmp_path):
