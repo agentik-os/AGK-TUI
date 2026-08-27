@@ -235,3 +235,64 @@ Quality and security gates:
 
 - No live OAuth login was started; authentication side effects remain deferred to the Task 6 acceptance boundary. Systemd lifecycle, absolute deadline, redaction, reconciliation, FIFO, and cleanup behavior are covered deterministically.
 - No independent subagent was spawned because this Fix Round explicitly prohibited subagents; the parent review remains the independent acceptance boundary.
+
+---
+
+## Fix Round 2 — 2026-08-27
+
+### Status
+
+DONE
+
+### Findings resolved
+
+- Authorization URL filtering now rejects `device_code` and normalized code-bearing key variants such as `device-code` and `deviceCode`. The UI-safe user/device code remains available only through the separately parsed `device_code` result field.
+- Cancellation now accepts only the explicit `systemctl is-active` inactive/not-found outcomes (exit 3 or 4). Active state and indeterminate command, manager, or transport failures fail closed, restore the prior non-starting live state, preserve artifacts, and skip `reset-failed`.
+- A failed `systemd-run` now reconciles both possible reservations deterministically: `starting` becomes `failed`, while a winning `cancelling` intent becomes `cancelled`. The never-created runner unit is cleared and ephemeral FIFO/result/raw-log files are removed.
+
+### TDD evidence
+
+The three adversarial regressions were run before production changes. The expected RED result was:
+
+```text
+3 failed, 9 passed in 0.09s
+```
+
+Failures independently reproduced retention of `device_code=SECRET-DEVICE`, fail-open cancellation on `is-active` exit 1, and a failed-start race stranded in `cancelling`.
+
+After the minimal implementation, the targeted regression command produced:
+
+```text
+12 passed in 0.03s
+```
+
+### Final verification
+
+Focused Task 2 suite:
+
+```text
+39 passed in 0.12s
+```
+
+Affected account-control suites:
+
+```text
+72 passed in 0.19s
+```
+
+Quality and security gates:
+
+- Ruff on the three Task 2 source/test files: `All checks passed!`
+- `py_compile` on the three Task 2 source/test files: exit 0
+- `git diff --check` on the scoped Task 2 diff: exit 0
+- Production-file secret-pattern scan: `0` hits
+
+### Commit
+
+- `318171b fix(auth): close OAuth cancellation gaps`
+  - Exactly the three Task 2 implementation/test files were committed.
+
+### Concerns
+
+- No live OAuth login or transient user-systemd unit was started because either would initiate an authentication side effect. The URL redaction and cancellation interleavings are covered by deterministic adversarial tests.
+- No independent subagent was spawned because this Fix Round explicitly prohibited subagents; the parent review remains the independent acceptance boundary.
