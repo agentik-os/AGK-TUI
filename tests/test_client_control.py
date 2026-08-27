@@ -42,6 +42,9 @@ def layout(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("AGK_CLIENT", raising=False)
+    monkeypatch.delenv("AGK_CONTROL_HOME", raising=False)
+    monkeypatch.delenv("AGK_CLIENT_DIR", raising=False)
     monkeypatch.setenv("AGK_CLIENT_WORKSPACE", str(home / "workspace"))
     monkeypatch.setenv("AGK_TERMINAL_ROOT", str(ROOT))
     return client_control.Layout.current()
