@@ -215,3 +215,53 @@ The three normal-suite skips are the same modal runtime cases exercised separate
 ## Remaining issue
 
 - **Live Discord readback not executed:** after deployment/restart, verify exact guild/category/channel/post IDs, exactly three ACL overwrite targets with only owner/bot allowed, one pinned post, and one persistent registered view.
+
+---
+
+# Fix Round 2 — 2026-08-27
+
+## Verdict
+
+**DONE_WITH_CONCERNS**
+
+The sole open code finding I7 is closed by commit `75c9a4b`. The commit packages only the reviewed Account Control Center startup imports plus guarded `on_ready` registration/reconciliation. No unrelated historical adapter edits were staged or committed.
+
+## Packaging evidence
+
+- Adapter integration commit: `75c9a4ba6d407ca37769983274aad5c020656449` (`fix(discord): register account control center on startup`).
+- Exact commit stat: `hermes/plugins/platforms/discord/adapter.py | 23 +++++++++++++++++++++++` and `1 file changed, 23 insertions(+)`.
+- `git show --format= --name-status 75c9a4b` lists only `M hermes/plugins/platforms/discord/adapter.py`.
+- `git diff --check 75c9a4b^ 75c9a4b` passed.
+- The canonical working adapter SHA-256 was unchanged across packaging: `30111d43d49d2438c705b663f23238756353c41476ac2315677567e969ff97a3` before and after commit.
+- After commit, unrelated adapter work remains preserved as an unstaged `257 insertions(+), 32 deletions(-)` diff.
+- Both `HEAD` and the working adapter contain exactly one relative import, one fallback import, one registration call, and one reconciliation call for the Account Control Center.
+
+## Verification
+
+```text
+# Canonical dirty checkout compilation
+python3 -m py_compile hermes/plugins/platforms/discord/adapter.py \
+  hermes/plugins/platforms/discord/agk_account_control_ui.py \
+  tests/test_agk_account_control_ui.py
+# PASS
+
+# Canonical Task 1–4 + related Discord regression suite
+174 passed, 3 skipped in 0.75s
+
+# Canonical real discord.py modal authorization cases
+3 passed, 66 deselected in 0.13s
+
+# Detached clean checkout at 75c9a4b, dedicated UI/adapter integration suite
+66 passed, 3 skipped in 0.32s
+
+# Detached clean checkout, real discord.py modal authorization cases
+3 passed, 66 deselected in 0.12s
+```
+
+The clean-checkout compilation also passed. The detached worktree was removed after verification.
+
+## Concerns
+
+1. Live Discord deployment/readback remains blocked in this session and still requires operator verification after restart.
+2. The broader clean-checkout regression attempt produced `166 passed, 3 skipped, 2 failed`; both failures are unrelated account-usage-monitor/install assertions whose expected adapter/install changes exist only in the pre-existing dirty checkout. The dedicated Task 4 UI/adapter suite and real `discord.py` cases pass cleanly at the packaged commit.
+3. `tests/test_discord_station_session_ui.py` is untracked and therefore absent from a detached clean checkout; it was included in the canonical dirty-checkout 174-test run but could not be part of the clean-checkout run.
