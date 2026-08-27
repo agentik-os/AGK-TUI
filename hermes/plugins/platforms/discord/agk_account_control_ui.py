@@ -5,11 +5,12 @@ import asyncio
 import json
 import os
 import tempfile
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 try:
     import discord
@@ -29,6 +30,21 @@ ACCOUNT_CONTROL_CHANNEL_ID = 1542563923809796140
 ACCOUNT_CONTROL_MESSAGE_ID = 1542563946135814278
 ACCOUNT_CONTROL_OWNER_ID = 1441423462492016821
 ACCOUNT_CONTROL_CHANNEL_NAME = "account-control"
+_DISCORD_CONTENT_LIMIT = 2000
+_SAFE_DEVICE_CODE = re.compile(r"[A-Za-z0-9-]{1,128}\Z")
+_SAFE_OAUTH_QUERY_KEYS = {
+    "client_id", "response_type", "redirect_uri", "scope",
+    "code_challenge", "code_challenge_method",
+}
+_OAUTH_URL_RULES = {
+    "openai-codex": {
+        "auth.openai.com": {"/codex/device", "/oauth/authorize"},
+    },
+    "anthropic": {
+        "claude.ai": {"/oauth/authorize"},
+        "console.anthropic.com": {"/oauth/authorize"},
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -106,11 +122,119 @@ def _render_records(records: Any) -> str:
         _load, renderer = _load_roster_api()
     except ImportError:
         return "# Station · Account roster\n\nNo connected accounts."
-    return renderer(records)
+    rendered = renderer(records)
+    if len(rendered) <= _DISCORD_CONTENT_LIMIT:
+        return rendered
+    suffix = "\n\n… roster truncated; use the account selector or canonical CLI for remaining rows."
+    return rendered[: _DISCORD_CONTENT_LIMIT - len(suffix)] + suffix
 
 
 def _render(adapter: Any) -> str:
     return _render_records(_load_records(adapter))
+
+
+class _PrePoolSnapshotStore:
+    """Private durable pre-OAuth pool snapshots consumed by Task 3."""
+
+    def __init__(self, hermes_home: Path):
+        self.hermes_home = Path(hermes_home)
+        self.directory = self.hermes_home / "state/account-oauth"
+
+    def pool_ids(self, provider: str) -> tuple[str, ...]:
+        from agent.credential_pool import load_pool
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        token = set_hermes_home_override(self.hermes_home)
+        try:
+            return tuple(str(entry.id) for entry in load_pool(provider).entries())
+        finally:
+            reset_hermes_home_override(token)
+
+    def capture(self, attempt_id: str, provider: str, credential_ids: Any) -> None:
+        if not re.fullmatch(r"[a-f0-9]{32}", str(attempt_id)):
+            raise ValueError("invalid OAuth attempt ID")
+        values = [str(value) for value in credential_ids]
+        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.directory.chmod(0o700)
+        path = self.directory / f"{attempt_id}.pre-pool.json"
+        descriptor, name = tempfile.mkstemp(prefix=".pre-pool.", suffix=".new", dir=self.directory)
+        temporary = Path(name)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump({"version": 1, "provider": provider, "credential_ids": values}, handle)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            path.chmod(0o600)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def read(self, attempt: Any) -> tuple[str, ...]:
+        path = self.directory / f"{attempt.attempt_id}.pre-pool.json"
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            metadata = os.fstat(descriptor)
+            if metadata.st_size > 32_768:
+                raise ValueError("invalid pre-pool snapshot")
+            with os.fdopen(descriptor, encoding="utf-8") as handle:
+                descriptor = -1
+                payload = json.load(handle)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if payload.get("version") != 1 or payload.get("provider") != attempt.provider:
+            raise ValueError("pre-pool snapshot does not match attempt")
+        rows = payload.get("credential_ids")
+        if not isinstance(rows, list):
+            raise ValueError("invalid pre-pool snapshot")
+        return tuple(str(value) for value in rows)
+
+
+def _probe_candidate(provider: str, entry: Any) -> bool:
+    """Verify the exact candidate through the canonical provider usage seam."""
+    from agent.account_usage import fetch_account_usage
+
+    token = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", None)
+    if not token:
+        return False
+    try:
+        return fetch_account_usage(
+            provider,
+            base_url=getattr(entry, "base_url", None),
+            api_key=token,
+        ) is not None
+    except Exception:  # noqa: BLE001 - provider clients expose no common error base
+        return False
+
+
+def _build_account_control_services(adapter: Any) -> Any:
+    """Construct the approved Task 2 runner and Task 3 coordinator for production."""
+    try:
+        from .agk_account_oauth import OAuthAttemptStore, OAuthRunner
+        from .agk_account_transactions import AccountTransactionCoordinator
+        from .agk_account_control import AliasRegistry
+    except ImportError:  # pragma: no cover - direct-file loading
+        from agk_account_oauth import OAuthAttemptStore, OAuthRunner
+        from agk_account_transactions import AccountTransactionCoordinator
+        from agk_account_control import AliasRegistry
+
+    home = _hermes_home(adapter)
+    attempt_store = OAuthAttemptStore(home)
+    runner = OAuthRunner(attempt_store)
+    snapshot_store = _PrePoolSnapshotStore(home)
+    coordinator = AccountTransactionCoordinator(
+        home,
+        attempt_store,
+        AliasRegistry(home / "provider-account-aliases.json"),
+        pre_pool_ids=snapshot_store.read,
+        probe_candidate=_probe_candidate,
+        refresh_surfaces=lambda: None,
+    )
+    return SimpleNamespace(
+        runner=runner, coordinator=coordinator, snapshot_store=snapshot_store
+    )
 
 
 _ViewBase = discord.ui.View if discord else object
@@ -215,6 +339,19 @@ class AccountControlView(_ViewBase):
         """Route every stable component ID through the same fail-closed gate."""
         if not await self._authorized(interaction):
             return
+        try:
+            await self._dispatch_authorized(interaction)
+        except Exception as exc:  # noqa: BLE001 - action seams expose no common error base
+            await self._safe_failure(interaction, exc)
+
+    async def _safe_failure(self, interaction: Any, exc: Exception) -> None:
+        text = f"Account action failed safely ({type(exc).__name__}). Try Refresh or retry."
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
+
+    async def _dispatch_authorized(self, interaction: Any) -> None:
         custom_id = str((getattr(interaction, "data", None) or {}).get("custom_id") or "")
         values = (getattr(interaction, "data", None) or {}).get("values") or []
         if custom_id == "agkacct:provider":
@@ -225,8 +362,8 @@ class AccountControlView(_ViewBase):
             await self._switch(interaction)
         elif custom_id == "agkacct:refresh":
             await interaction.response.defer(ephemeral=True)
-            await self.refresh_message()
-            await interaction.followup.send("Account roster refreshed.", ephemeral=True)
+            outcome = await self.refresh_message()
+            await interaction.followup.send(outcome, ephemeral=True)
         elif custom_id == "agkacct:add":
             if self.selected_provider not in {"openai-codex", "anthropic"}:
                 await interaction.response.send_message("Select a provider first.", ephemeral=True)
@@ -246,7 +383,11 @@ class AccountControlView(_ViewBase):
                     "No active Claude OAuth attempt is selected.", ephemeral=True
                 )
             elif discord:
-                await interaction.response.send_modal(ClaudeCodeModal(self))
+                await interaction.response.send_modal(
+                    ClaudeCodeModal(
+                        self, self.selected_provider, self.selected_attempt_id
+                    )
+                )
             else:
                 await interaction.response.send_message(
                     "Submit the one-time Claude code.", ephemeral=True
@@ -299,14 +440,30 @@ class AccountControlView(_ViewBase):
             )
             return
         await interaction.response.defer(ephemeral=True)
-        await self.adapter._prefer_account_credential(
+        status = await self.adapter._prefer_account_credential(
             self.selected_provider, self.selected_credential_id
         )
         await self.refresh_message()
-        await interaction.followup.send(
-            "Preferred account updated. Automatic quota rotation remains enabled.",
-            ephemeral=True,
-        )
+        if status == "missing":
+            text = "That account no longer exists in the canonical pool."
+        elif status == "unavailable":
+            text = "That account is not eligible to become preferred."
+        elif status == "saved":
+            provider_rows = [
+                row for row in self.records
+                if getattr(row, "provider", None) == self.selected_provider
+            ]
+            verified = bool(provider_rows) and str(
+                getattr(provider_rows[0], "credential_id", "")
+            ) == self.selected_credential_id
+            text = (
+                "Preferred account updated. Automatic quota rotation remains enabled."
+                if verified
+                else "Preference was saved, but canonical readback did not confirm ordering."
+            )
+        else:
+            text = "Account preference returned an unknown safe status; no success was claimed."
+        await interaction.followup.send(text, ephemeral=True)
 
     def _ensure_runner(self) -> Any:
         if self.runner is not None:
@@ -324,6 +481,19 @@ class AccountControlView(_ViewBase):
             return
         await self._start_oauth(interaction, "add", str(owner_name).strip(), None)
 
+    async def start_add_bound(
+        self, interaction: Any, owner_name: str, provider: str
+    ) -> None:
+        if not await self._authorized(interaction):
+            return
+        await self._start_oauth(
+            interaction,
+            "add",
+            str(owner_name).strip(),
+            None,
+            provider=provider,
+        )
+
     async def _request_reconnect(self, interaction: Any) -> None:
         if (
             self.selected_provider not in {"openai-codex", "anthropic"}
@@ -337,7 +507,12 @@ class AccountControlView(_ViewBase):
         if discord:
             await interaction.response.send_message(
                 "Reconnect replaces the selected credential only after verification.",
-                view=ReconnectConfirmView(self),
+                view=ReconnectConfirmView(
+                    self,
+                    self.selected_provider,
+                    self.selected_credential_id,
+                    self.selected_owner_name,
+                ),
                 ephemeral=True,
             )
         else:
@@ -358,22 +533,59 @@ class AccountControlView(_ViewBase):
             interaction, "reconnect", owner_name, self.selected_credential_id
         )
 
+    async def start_reconnect_bound(
+        self,
+        interaction: Any,
+        provider: str,
+        credential_id: str,
+        owner_name: str,
+    ) -> None:
+        if not await self._authorized(interaction):
+            return
+        records = await asyncio.to_thread(_load_records, self.adapter)
+        exact = next(
+            (
+                row for row in records
+                if getattr(row, "provider", None) == provider
+                and str(getattr(row, "credential_id", "")) == credential_id
+                and str(getattr(row, "owner_name", "") or "") == owner_name
+            ),
+            None,
+        )
+        if exact is None:
+            await interaction.response.send_message(
+                "This reconnect control is stale; select the account again.", ephemeral=True
+            )
+            return
+        await self._start_oauth(
+            interaction, "reconnect", owner_name, credential_id, provider=provider
+        )
+
     async def _start_oauth(
         self,
         interaction: Any,
         operation: str,
         owner_name: str,
         credential_id: str | None,
+        *,
+        provider: str | None = None,
     ) -> None:
-        if self.selected_provider not in {"openai-codex", "anthropic"}:
+        stable_provider = provider or self.selected_provider
+        if stable_provider not in {"openai-codex", "anthropic"}:
             await interaction.response.send_message("Select a provider first.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
         runner = self._ensure_runner()
         try:
+            snapshot_store = getattr(self.adapter, "_account_control_snapshot_store", None)
+            before_ids = (
+                await asyncio.to_thread(snapshot_store.pool_ids, stable_provider)
+                if snapshot_store is not None
+                else ()
+            )
             attempt = await asyncio.to_thread(
                 runner.create,
-                self.selected_provider,
+                stable_provider,
                 operation,
                 owner_name,
                 credential_id,
@@ -381,6 +593,13 @@ class AccountControlView(_ViewBase):
                 ACCOUNT_CONTROL_GUILD_ID,
                 self.channel_id,
             )
+            if snapshot_store is not None:
+                await asyncio.to_thread(
+                    snapshot_store.capture,
+                    attempt.attempt_id,
+                    stable_provider,
+                    before_ids,
+                )
             started = await asyncio.to_thread(runner.start, attempt.attempt_id)
         except Exception as exc:  # noqa: BLE001 - runner seams expose no common base
             await interaction.followup.send(
@@ -391,8 +610,8 @@ class AccountControlView(_ViewBase):
         payload = await self._wait_for_oauth_result(runner, attempt)
         text = self._oauth_instructions(attempt, payload)
         kwargs: dict[str, Any] = {"ephemeral": True}
-        if discord and self.selected_provider == "anthropic":
-            kwargs["view"] = ClaudeSubmitView(self)
+        if discord and stable_provider == "anthropic":
+            kwargs["view"] = ClaudeSubmitView(self, stable_provider, attempt.attempt_id)
         await interaction.followup.send(text, **kwargs)
         del started
 
@@ -428,23 +647,36 @@ class AccountControlView(_ViewBase):
     def _oauth_instructions(self, attempt: Any, payload: dict[str, Any]) -> str:
         raw_url = str(payload.get("authorization_url") or "")
         parsed = urlparse(raw_url)
-        forbidden = {"access_token", "refresh_token", "token", "password", "secret"}
         safe_url = ""
-        if parsed.scheme in {"http", "https"} and parsed.netloc:
-            keys = {key.casefold() for key, _value in parse_qsl(parsed.query, keep_blank_values=True)}
-            if not keys.intersection(forbidden):
-                safe_url = raw_url[:1000]
-        device_code = str(payload.get("device_code") or "")[:128]
+        provider = str(getattr(attempt, "provider", "") or "")
+        rules = _OAUTH_URL_RULES.get(provider, {})
+        query = parse_qsl(parsed.query, keep_blank_values=True)
+        keys = {key.casefold() for key, _value in query}
+        if (
+            len(raw_url) <= 1000
+            and parsed.scheme == "https"
+            and parsed.hostname in rules
+            and parsed.port in {None, 443}
+            and parsed.path in rules.get(parsed.hostname, set())
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.fragment
+            and keys <= _SAFE_OAUTH_QUERY_KEYS
+        ):
+            safe_url = urlunparse(
+                ("https", parsed.hostname, parsed.path, "", urlencode(query), "")
+            )
+        raw_device_code = str(payload.get("device_code") or "")
+        device_code = raw_device_code if _SAFE_DEVICE_CODE.fullmatch(raw_device_code) else ""
         lines = [
-            f"Provider: `{self.selected_provider}`",
             f"Alias: `{attempt.owner_name}`",
             f"Expires: `{int(float(attempt.expires_at))}`",
         ]
         if safe_url:
             lines.append(f"Verification URL: {safe_url}")
-        if self.selected_provider == "openai-codex" and device_code:
+        if provider == "openai-codex" and device_code:
             lines.append(f"Device code: `{device_code}`")
-        if self.selected_provider == "anthropic":
+        if provider == "anthropic":
             lines.append("Open the URL, then use **Submit code** once.")
         return "\n".join(lines)
 
@@ -462,55 +694,79 @@ class AccountControlView(_ViewBase):
             ephemeral=True,
         )
 
-    async def submit_claude_code(self, interaction: Any, code: str) -> None:
+    async def submit_claude_code(
+        self,
+        interaction: Any,
+        code: str,
+        *,
+        attempt_id: str | None = None,
+        provider: str | None = None,
+    ) -> None:
         if not await self._authorized(interaction):
             return
-        if self.selected_provider != "anthropic" or not self.selected_attempt_id:
+        stable_attempt_id = attempt_id or self.selected_attempt_id
+        stable_provider = provider or self.selected_provider
+        if (
+            stable_provider != "anthropic"
+            or not stable_attempt_id
+            or (attempt_id is not None and self.selected_attempt_id != attempt_id)
+        ):
             await interaction.response.send_message(
-                "No active Claude OAuth attempt is selected.", ephemeral=True
+                "The selected OAuth attempt changed. Open a new code control.", ephemeral=True
             )
             return
         await interaction.response.defer(ephemeral=True)
-        submitted = await asyncio.to_thread(
-            self._ensure_runner().submit_claude_code,
-            self.selected_attempt_id,
-            str(code),
-            user_id=ACCOUNT_CONTROL_OWNER_ID,
-            channel_id=self.channel_id,
-        )
+        try:
+            submitted = await asyncio.to_thread(
+                self._ensure_runner().submit_claude_code,
+                stable_attempt_id,
+                str(code),
+                user_id=ACCOUNT_CONTROL_OWNER_ID,
+                channel_id=self.channel_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - runner seam has no common error base
+            await self._safe_failure(interaction, exc)
+            return
         await interaction.followup.send(
             "Claude code submitted once." if submitted else "Claude code was rejected or expired.",
             ephemeral=True,
         )
 
-    async def _finalize_succeeded_attempt(self) -> None:
+    async def _finalize_succeeded_attempt(self) -> str:
         if not self.selected_attempt_id or self.coordinator is None or self.runner is None:
-            return
+            return "Account roster refreshed."
         store = getattr(self.runner, "store", None)
         if store is None:
-            return
+            return "Account roster refreshed."
         attempt = await asyncio.to_thread(store.get, self.selected_attempt_id)
         if attempt is None or getattr(attempt, "status", None) != "succeeded":
-            return
+            return "Account roster refreshed."
         result = await asyncio.to_thread(
             self.coordinator.finalize, self.selected_attempt_id
         )
-        if getattr(result, "status", "") in {
-            "committed",
-            "rolled_back",
-            "reconciliation_required",
-            "presentation_reconciliation_pending",
-        }:
+        status = getattr(result, "status", "")
+        if status in {"committed", "rolled_back"}:
             self.selected_attempt_id = ""
+        return {
+            "committed": "Credential transaction committed. Account roster refreshed.",
+            "rolled_back": "Credential transaction rolled back safely. Account roster refreshed.",
+            "reconciliation_required": (
+                "Credential transaction needs attention; manual reconciliation is required."
+            ),
+            "presentation_reconciliation_pending": (
+                "Credential change committed; presentation refresh is pending."
+            ),
+        }.get(status, "Account roster refreshed.")
 
-    async def refresh_message(self) -> None:
-        await self._finalize_succeeded_attempt()
+    async def refresh_message(self) -> str:
+        outcome = await self._finalize_succeeded_attempt()
         self.records = await asyncio.to_thread(_load_records, self.adapter)
         if discord:
             self._build_components()
         content = _render_records(self.records)
         if self.message is not None:
             await self.message.edit(content=content, view=self)
+        return outcome
 
 
 if discord:
@@ -525,9 +781,12 @@ if discord:
         def __init__(self, parent: AccountControlView):
             super().__init__(timeout=300, custom_id="agkacct:add-modal")
             self.parent = parent
+            self.provider = parent.selected_provider
 
         async def on_submit(self, interaction: Any) -> None:
-            await self.parent.start_add(interaction, str(self.owner_name))
+            await self.parent.start_add_bound(
+                interaction, str(self.owner_name), self.provider
+            )
 
 
     class ClaudeCodeModal(discord.ui.Modal, title="Submit Claude code"):
@@ -537,43 +796,85 @@ if discord:
             max_length=4000,
         )
 
-        def __init__(self, parent: AccountControlView):
+        def __init__(
+            self, parent: AccountControlView, provider: str, attempt_id: str
+        ):
             super().__init__(timeout=300, custom_id="agkacct:claude-code-modal")
             self.parent = parent
-            self.attempt_id = parent.selected_attempt_id
+            self.provider = provider
+            self.attempt_id = attempt_id
 
         async def on_submit(self, interaction: Any) -> None:
+            if not await self.parent._authorized(interaction):
+                return
             if self.parent.selected_attempt_id != self.attempt_id:
                 await interaction.response.send_message(
                     "The selected OAuth attempt changed. Open a new code modal.", ephemeral=True
                 )
                 return
-            await self.parent.submit_claude_code(interaction, str(self.code))
+            await self.parent.submit_claude_code(
+                interaction,
+                str(self.code),
+                attempt_id=self.attempt_id,
+                provider=self.provider,
+            )
 
 
     class ReconnectConfirmView(discord.ui.View):
-        def __init__(self, parent: AccountControlView):
+        def __init__(
+            self,
+            parent: AccountControlView,
+            provider: str,
+            credential_id: str,
+            owner_name: str,
+        ):
             super().__init__(timeout=60)
             self.parent = parent
+            self.provider = provider
+            self.credential_id = credential_id
+            self.owner_name = owner_name
             confirm = discord.ui.Button(
                 label="Confirm reconnect",
                 style=discord.ButtonStyle.danger,
                 custom_id="agkacct:confirm-reconnect",
             )
-            confirm.callback = parent.dispatch
+            confirm.callback = self._confirm
             self.add_item(confirm)
+
+        async def _confirm(self, interaction: Any) -> None:
+            await self.parent.start_reconnect_bound(
+                interaction, self.provider, self.credential_id, self.owner_name
+            )
 
 
     class ClaudeSubmitView(discord.ui.View):
-        def __init__(self, parent: AccountControlView):
+        def __init__(
+            self, parent: AccountControlView, provider: str, attempt_id: str
+        ):
             super().__init__(timeout=900)
+            self.parent = parent
+            self.provider = provider
+            self.attempt_id = attempt_id
             submit = discord.ui.Button(
                 label="Submit code",
                 style=discord.ButtonStyle.primary,
                 custom_id="agkacct:claude-code",
             )
-            submit.callback = parent.dispatch
+            submit.callback = self._open_modal
             self.add_item(submit)
+
+        async def _open_modal(self, interaction: Any) -> None:
+            if not await self.parent._authorized(interaction):
+                return
+            if self.parent.selected_attempt_id != self.attempt_id:
+                await interaction.response.send_message(
+                    "The selected OAuth attempt changed. Open a new code control.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_modal(
+                ClaudeCodeModal(self.parent, self.provider, self.attempt_id)
+            )
 else:  # pragma: no cover - placeholders keep direct source tests importable
     OwnerNicknameModal = ClaudeCodeModal = ReconnectConfirmView = ClaudeSubmitView = object
 
@@ -583,83 +884,82 @@ async def _fetch_message(channel: Any, message_id: int | None):
         return None
     try:
         return await channel.fetch_message(int(message_id))
-    except Exception:  # noqa: BLE001 - discord.py exposes multiple not-found types
-        return None
+    except Exception as exc:  # noqa: BLE001 - discord may be optional in source tests
+        not_found = (
+            (discord is not None and isinstance(exc, discord.NotFound))
+            or type(exc).__name__ == "NotFound"
+        )
+        if not_found:
+            return None
+        raise
 
 
-async def reconcile_account_control_channel(guild: Any, adapter: Any) -> AccountControlState:
-    """Adopt or create the single private channel and persistent pinned post."""
+async def _reconcile_account_control_channel(guild: Any, adapter: Any) -> AccountControlState:
+    """Adopt only the exact bound channel/post and enforce its complete ACL."""
     if int(getattr(guild, "id", 0)) != ACCOUNT_CONTROL_GUILD_ID:
         raise PermissionError("account control center belongs to the exact Station guild")
 
-    saved = _read_state(adapter)
     owner = guild.get_member(ACCOUNT_CONTROL_OWNER_ID)
     if owner is None:
         raise RuntimeError("account control owner is not a guild member")
     channel = guild.get_channel(ACCOUNT_CONTROL_CHANNEL_ID)
-    if channel is None and saved is not None:
-        channel = guild.get_channel(saved.channel_id)
     if channel is None:
-        overwrites = {
-            guild.default_role: _permission(view_channel=False),
-            owner: _permission(view_channel=True, read_message_history=True, send_messages=True),
-        }
-        bot_member = getattr(guild, "me", None)
-        if bot_member is not None:
-            overwrites[bot_member] = _permission(
-                view_channel=True,
-                read_message_history=True,
-                send_messages=True,
-                manage_messages=True,
-            )
-        category = guild.get_channel(ACCOUNT_CONTROL_CATEGORY_ID)
-        if category is None and hasattr(guild, "create_category"):
-            category = await guild.create_category("Station", overwrites=overwrites)
-        channel = await guild.create_text_channel(
-            ACCOUNT_CONTROL_CHANNEL_NAME,
-            category=category,
-            overwrites=overwrites,
-            reason="AGK private account control center",
-        )
+        raise RuntimeError("exact account control channel is unavailable; refusing replacement")
 
     if getattr(channel, "guild", guild) is not guild and int(channel.guild.id) != ACCOUNT_CONTROL_GUILD_ID:
         raise PermissionError("account control channel escaped the Station guild")
+    category = guild.get_channel(ACCOUNT_CONTROL_CATEGORY_ID)
+    if category is None:
+        raise RuntimeError("exact account control category is unavailable")
+    channel_category = getattr(channel, "category", None)
+    channel_type = getattr(getattr(channel, "type", None), "name", getattr(channel, "type", None))
+    if (
+        getattr(channel, "name", None) != ACCOUNT_CONTROL_CHANNEL_NAME
+        or int(getattr(channel_category, "id", 0)) != ACCOUNT_CONTROL_CATEGORY_ID
+        or channel_type not in {"text", "text_channel"}
+    ):
+        raise RuntimeError("exact account control channel binding is invalid")
 
-    if hasattr(channel, "set_permissions"):
-        await channel.set_permissions(
-            guild.default_role,
-            view_channel=False,
-            reason="Keep AGK account control private",
-        )
-        await channel.set_permissions(
-            owner,
-            view_channel=True,
-            read_message_history=True,
-            send_messages=True,
-            reason="Authorize exact AGK account owner",
-        )
-        bot_member = getattr(guild, "me", None)
-        if bot_member is not None:
-            await channel.set_permissions(
-                bot_member,
-                view_channel=True,
-                read_message_history=True,
-                send_messages=True,
-                manage_messages=True,
-                reason="Allow AGK account control reconciliation",
-            )
+    exact_overwrites = {
+        guild.default_role: _permission(view_channel=False),
+        owner: _permission(view_channel=True, read_message_history=True, send_messages=True),
+    }
+    bot_member = getattr(guild, "me", None)
+    if bot_member is None:
+        raise RuntimeError("Discord bot member is unavailable")
+    exact_overwrites[bot_member] = _permission(
+        view_channel=True,
+        read_message_history=True,
+        send_messages=True,
+        manage_messages=True,
+    )
+    edited_channel = await channel.edit(
+        overwrites=exact_overwrites,
+        reason="Enforce exact private AGK account control ACL",
+    )
+    if edited_channel is not None:
+        channel = edited_channel
+    applied = getattr(channel, "overwrites", {})
+    expected_ids = {int(target.id) for target in exact_overwrites}
+    applied_by_id = {int(target.id): overwrite for target, overwrite in applied.items()}
+    if set(applied_by_id) != expected_ids:
+        raise PermissionError("account control ACL readback contains unauthorized targets")
+    if (
+        getattr(applied_by_id[int(guild.default_role.id)], "view_channel", None) is not False
+        or getattr(applied_by_id[int(owner.id)], "view_channel", None) is not True
+        or getattr(applied_by_id[int(bot_member.id)], "view_channel", None) is not True
+    ):
+        raise PermissionError("account control ACL readback is not private")
 
     message = await _fetch_message(channel, ACCOUNT_CONTROL_MESSAGE_ID)
-    if message is None and saved is not None and saved.channel_id == int(channel.id):
-        message = await _fetch_message(channel, saved.message_id)
     view = getattr(adapter, "_account_control_view", None)
     if view is None:
         view = AccountControlView(adapter, channel_id=int(channel.id))
         adapter._account_control_view = view
     view.channel_id = int(channel.id)
-    content = _render(adapter)
+    content = await asyncio.to_thread(_render, adapter)
     if message is None:
-        message = await channel.send(content=content, view=view)
+        raise RuntimeError("exact account control post is unavailable; refusing replacement")
     else:
         await message.edit(content=content, view=view)
     if not getattr(message, "pinned", False):
@@ -670,13 +970,35 @@ async def reconcile_account_control_channel(guild: Any, adapter: Any) -> Account
     return state
 
 
+async def reconcile_account_control_channel(guild: Any, adapter: Any) -> AccountControlState:
+    """Serialize reconciliation so overlapping ready events cannot duplicate work."""
+    lock = getattr(adapter, "_account_control_reconcile_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        adapter._account_control_reconcile_lock = lock
+    async with lock:
+        return await _reconcile_account_control_channel(guild, adapter)
+
+
 def register_account_control_center(bot: Any, adapter: Any) -> None:
     """Register the durable view once; reconciliation binds its one message."""
     if getattr(adapter, "_account_control_view_registered", False):
         return
+    runner = getattr(adapter, "_account_control_oauth_runner", None)
+    coordinator = getattr(adapter, "_account_control_coordinator", None)
+    snapshot_store = getattr(adapter, "_account_control_snapshot_store", None)
+    if runner is None or coordinator is None or snapshot_store is None:
+        services = _build_account_control_services(adapter)
+        adapter._account_control_oauth_runner = services.runner
+        adapter._account_control_coordinator = services.coordinator
+        adapter._account_control_snapshot_store = services.snapshot_store
+        runner, coordinator = services.runner, services.coordinator
     view = getattr(adapter, "_account_control_view", None)
     if view is None:
-        view = AccountControlView(adapter)
+        view = AccountControlView(adapter, runner=runner, coordinator=coordinator)
         adapter._account_control_view = view
+    else:
+        view.runner = runner
+        view.coordinator = coordinator
     bot.add_view(view)
     adapter._account_control_view_registered = True
