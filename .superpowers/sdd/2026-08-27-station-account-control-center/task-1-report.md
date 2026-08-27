@@ -278,3 +278,94 @@ Observed: exit code `0`, no output. Added-line security scan: `clean`.
 ### Concerns
 
 None.
+
+---
+
+## Fix Round 2
+
+### Status
+
+DONE
+
+### Finding addressed
+
+- **I2 — remaining secret/Discord-markdown bypass:** usage labels now fail closed to `Limit` when they begin with a recognized secret prefix, match a JWT shape, or contain underscore-based Discord markdown. Owner nickname validation now rejects underscores at both alias-registry ingestion and roster rendering boundaries. The provider monitor reuses the canonical usage-label normalizer, so its Discord panel cannot bypass the roster protection.
+- Existing safe labels remain unchanged; exact-output coverage for `Session` and `Current week` continues to pass.
+
+### Regression tests added
+
+- `test_roster_renderer_rejects_secret_and_underscore_markdown_usage_labels`
+- `test_owner_nickname_rejects_underscore_markdown_at_registry_and_render_boundaries`
+- `test_provider_panel_rejects_secret_and_underscore_markdown_usage_labels`
+
+### TDD evidence — RED
+
+Command:
+
+```bash
+PYTHONPATH=/home/operator/src/hermes-agent uv run --with pytest --with httpx --with pyyaml pytest -q \
+  tests/test_agk_account_control.py::test_roster_renderer_rejects_secret_and_underscore_markdown_usage_labels \
+  tests/test_agk_account_control.py::test_owner_nickname_rejects_underscore_markdown_at_registry_and_render_boundaries \
+  tests/test_agk_account_usage_monitor.py::test_provider_panel_rejects_secret_and_underscore_markdown_usage_labels
+```
+
+Observed before production changes:
+
+```text
+FFFF                                                                     [100%]
+4 failed in 0.14s
+```
+
+The two roster label cases showed allowed-character secret-prefixed and double-underscore labels rendered verbatim. The owner regression showed `DID NOT RAISE ValueError`, and the provider panel also retained both unsafe labels.
+
+### GREEN and quality gates
+
+Focused suite:
+
+```bash
+PYTHONPATH=/home/operator/src/hermes-agent uv run --with pytest --with httpx --with pyyaml pytest -q \
+  tests/test_agk_account_control.py tests/test_agk_account_usage_monitor.py
+```
+
+```text
+.................................                                        [100%]
+33 passed in 0.12s
+```
+
+Scoped lint:
+
+```bash
+uv run --with ruff ruff check \
+  hermes/plugins/platforms/discord/agk_account_control.py \
+  hermes/plugins/platforms/discord/agk_account_usage_monitor.py \
+  tests/test_agk_account_control.py tests/test_agk_account_usage_monitor.py
+```
+
+```text
+All checks passed!
+```
+
+Compilation and whitespace verification:
+
+```bash
+python3 -m py_compile \
+  hermes/plugins/platforms/discord/agk_account_control.py \
+  hermes/plugins/platforms/discord/agk_account_usage_monitor.py \
+  tests/test_agk_account_control.py tests/test_agk_account_usage_monitor.py
+git diff --check -- <the four Task 1 Python paths> task-1-report.md
+```
+
+Observed: exit code `0`, no output.
+
+### Self-review
+
+- Secret-shape checks are semantic rather than relying only on a character allowlist.
+- The only Discord markdown metacharacter previously admitted by these free-text allowlists, underscore, is now rejected.
+- Both Discord roster and provider-panel rendering use the same fail-closed usage-label boundary.
+- Existing safe labels and owner names retain their original rendering.
+- No unrelated dirty-tree path was edited, staged, reset, reformatted, or committed.
+- No reviewer or implementation subagent was spawned, per the explicit task constraint.
+
+### Concerns
+
+None.

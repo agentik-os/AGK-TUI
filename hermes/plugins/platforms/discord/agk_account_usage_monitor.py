@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 try:
-    from .agk_account_control import AliasRegistry, voice_binding_key
+    from .agk_account_control import AliasRegistry, _safe_usage_label, voice_binding_key
 except ImportError:  # Support direct file loading in focused tests.
     _CONTROL_PATH = Path(__file__).with_name("agk_account_control.py")
     _CONTROL_SPEC = importlib.util.spec_from_file_location("agk_account_control", _CONTROL_PATH)
@@ -25,6 +25,7 @@ except ImportError:  # Support direct file loading in focused tests.
     sys.modules.setdefault(_CONTROL_SPEC.name, _CONTROL_MODULE)
     _CONTROL_SPEC.loader.exec_module(_CONTROL_MODULE)
     AliasRegistry = _CONTROL_MODULE.AliasRegistry
+    _safe_usage_label = _CONTROL_MODULE._safe_usage_label
     voice_binding_key = _CONTROL_MODULE.voice_binding_key
 
 
@@ -157,11 +158,12 @@ def render_provider_panel(provider_label: str, accounts: Iterable[AccountSnapsho
         for window in account.windows[:3]:
             remaining = window.remaining_percent
             if remaining is None:
-                lines.append(f"`{remaining_bar(None)}` {window.label} · unavailable")
+                lines.append(f"`{remaining_bar(None)}` {_safe_usage_label(window.label)} · unavailable")
             else:
                 remaining = max(0.0, min(100.0, float(remaining)))
                 lines.append(
-                    f"`{remaining_bar(remaining)}` {window.label} · {round(remaining)}% remaining{_reset_text(window.reset_at)}"
+                    f"`{remaining_bar(remaining)}` {_safe_usage_label(window.label)} · "
+                    f"{round(remaining)}% remaining{_reset_text(window.reset_at)}"
                 )
         lines.append("")
     lines.append("Auto-refresh · lightweight · no credentials displayed")

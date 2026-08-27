@@ -154,6 +154,42 @@ def test_roster_renderer_normalizes_untrusted_public_fields():
     assert "**ok**" not in rendered
 
 
+@pytest.mark.parametrize("unsafe_label", ["sk-proj-allowedchars123", "__hidden__"])
+def test_roster_renderer_rejects_secret_and_underscore_markdown_usage_labels(
+    unsafe_label,
+):
+    account_control = load_account_control()
+    record = account_control.AccountRecord(
+        "openai-codex",
+        "ff5cab",
+        "Agentik",
+        "ok",
+        0,
+        (account_control.UsageWindow(unsafe_label, 50, None),),
+    )
+
+    rendered = account_control.render_account_roster([record])
+
+    assert unsafe_label not in rendered
+    assert "- Limit · 50% used · 50% remaining" in rendered
+
+
+def test_owner_nickname_rejects_underscore_markdown_at_registry_and_render_boundaries(
+    tmp_path,
+):
+    account_control = load_account_control()
+    registry = account_control.AliasRegistry(tmp_path / "provider-account-aliases.json")
+
+    with pytest.raises(ValueError, match="owner_name"):
+        registry.bind("openai-codex", "admin_user", "ff5cab")
+
+    rendered = account_control.render_account_roster(
+        [account_control.AccountRecord("openai-codex", "ff5cab", "admin_user", "ok", 0, ())]
+    )
+    assert "admin_user" not in rendered
+    assert "**Unassigned**" in rendered
+
+
 def test_alias_registry_rebinds_nickname_atomically(tmp_path):
     account_control = load_account_control()
     registry = account_control.AliasRegistry(tmp_path / "provider-account-aliases.json")

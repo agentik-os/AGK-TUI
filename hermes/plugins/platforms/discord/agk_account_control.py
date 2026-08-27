@@ -50,7 +50,7 @@ def _normalize_credential_id(value: object) -> str:
 def _normalize_owner_name(value: object) -> str:
     owner_name = str(value).strip()
     folded = owner_name.casefold()
-    safe_characters = all(character.isalnum() or character in {" ", "-", "_"} for character in owner_name)
+    safe_characters = all(character.isalnum() or character in {" ", "-"} for character in owner_name)
     looks_secret = (
         _JWT.fullmatch(owner_name) is not None
         or folded.startswith(_SECRET_PREFIXES)
@@ -63,10 +63,13 @@ def _normalize_owner_name(value: object) -> str:
 
 def _safe_usage_label(value: object) -> str:
     label = str(value).strip()
+    folded = label.casefold()
+    looks_secret = _JWT.fullmatch(label) is not None or folded.startswith(_SECRET_PREFIXES)
     if (
         not label
         or len(label) > 100
-        or not all(character.isalnum() or character in {" ", "-", "_", "/"} for character in label)
+        or not all(character.isalnum() or character in {" ", "-", "/"} for character in label)
+        or looks_secret
     ):
         return "Limit"
     return label

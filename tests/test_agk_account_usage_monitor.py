@@ -32,6 +32,21 @@ def test_provider_panel_uses_only_account_number_id_status_and_usage():
     assert "token" not in text.lower()
 
 
+def test_provider_panel_rejects_secret_and_underscore_markdown_usage_labels():
+    unsafe_labels = ("sk-proj-allowedchars123", "__hidden__")
+    account = monitor.AccountSnapshot(
+        index=1,
+        credential_id="7dac56",
+        status="ok",
+        windows=tuple(monitor.UsageWindow(label, 50, None) for label in unsafe_labels),
+    )
+
+    text = monitor.render_provider_panel("OpenAI Codex", [account])
+
+    assert all(label not in text for label in unsafe_labels)
+    assert text.count(" Limit · 50% remaining") == 2
+
+
 def test_monitor_config_uses_requested_channels_and_light_interval():
     cfg = monitor.MonitorConfig.from_extra({
         "usage_monitor_channel_id": 1542505218569150585,
