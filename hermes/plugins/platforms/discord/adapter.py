@@ -1064,15 +1064,33 @@ class DiscordAdapter(BasePlatformAdapter):
     # cap are replaced by a short notice.
     MAX_SPLIT_MESSAGES = 8
 
-    async def refresh_account_surfaces(self, *, reason: str) -> None:
-        """Refresh account-control and voice usage surfaces without a restart."""
+    async def refresh_account_surfaces(self, *, reason: str) -> dict[str, str]:
+        """Attempt each account surface once and report class-only failures."""
         logger.info("[%s] Refreshing account surfaces (%s)", self.name, reason)
+        failures: dict[str, str] = {}
         view = getattr(self, "_account_control_view", None)
         if view is not None:
-            await view.refresh_message()
+            try:
+                await view.refresh_message()
+            except Exception as exc:  # noqa: BLE001 - presentation is best effort after commit.
+                failures["persistent_post"] = type(exc).__name__
+                logger.warning(
+                    "[%s] Account persistent-post refresh failed safely: %s",
+                    self.name,
+                    type(exc).__name__,
+                )
         monitor = self._account_usage_monitor
         if monitor is not None:
-            await monitor.refresh_once()
+            try:
+                await monitor.refresh_once()
+            except Exception as exc:  # noqa: BLE001 - monitor providers expose varied errors.
+                failures["usage_monitor"] = type(exc).__name__
+                logger.warning(
+                    "[%s] Account usage-monitor refresh failed safely: %s",
+                    self.name,
+                    type(exc).__name__,
+                )
+        return failures
 
     # Auto-disconnect from voice channel after this many seconds of inactivity.
     # Config key: discord.voice_channel_inactivity_timeout_seconds (0 disables)
