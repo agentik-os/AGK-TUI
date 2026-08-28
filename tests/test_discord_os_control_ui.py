@@ -194,3 +194,42 @@ async def test_dedicated_bot_member_starts_https_secure_input(tmp_path):
     content, kwargs = interaction.response.messages[-1]
     assert content == "Secure Input ready: https://agk-core.tail.example/one-time"
     assert kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_route_launcher_cleans_up_child_on_ready_timeout(monkeypatch):
+    class Stdout:
+        async def readline(self):
+            return b""
+
+    class Process:
+        def __init__(self):
+            self.stdout = Stdout()
+            self.terminated = False
+            self.waited = False
+
+        def terminate(self):
+            self.terminated = True
+
+        async def wait(self):
+            self.waited = True
+            return 0
+
+    process = Process()
+
+    async def create(*_args, **_kwargs):
+        return process
+
+    async def timeout(_awaitable, timeout):
+        assert timeout == 20
+        _awaitable.close()
+        raise __import__("asyncio").TimeoutError
+
+    monkeypatch.setattr(ui.asyncio, "create_subprocess_exec", create)
+    monkeypatch.setattr(ui.asyncio, "wait_for", timeout)
+
+    with pytest.raises(__import__("asyncio").TimeoutError):
+        await ui._default_route_launcher(["/bin/false"])
+
+    assert process.terminated is True
+    assert process.waited is True

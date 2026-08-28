@@ -340,7 +340,12 @@ async def _default_route_launcher(installer_argv: list[str]) -> str:
     )
     if process.stdout is None:
         raise RuntimeError("Secure Input did not start")
-    line = await asyncio.wait_for(process.stdout.readline(), timeout=20)
+    try:
+        line = await asyncio.wait_for(process.stdout.readline(), timeout=20)
+    except asyncio.TimeoutError:
+        process.terminate()
+        await process.wait()
+        raise
     try:
         payload = json.loads(line.decode("utf-8"))
     except (UnicodeError, ValueError) as exc:

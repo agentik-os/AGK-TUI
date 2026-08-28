@@ -304,6 +304,12 @@ def test_agk_cli_and_future_install_expose_secure_input():
     assert 'install -m 0755 "$repo_root/scripts/install-discord-token.py"' in install
 
 
+def test_ready_receipt_is_flushed_for_gateway_pipe_consumers():
+    source = (ROOT / "scripts/tailnet_secure_input.py").read_text(encoding="utf-8")
+    ready_line = next(line for line in source.splitlines() if '"status": "READY"' in line)
+    assert "flush=True" in ready_line
+
+
 def test_secure_input_requires_station_magicdns_https():
     assert secure.require_https_url("https://station.tailnet.ts.net/route", "station.tailnet.ts.net") == (
         "https://station.tailnet.ts.net/route"

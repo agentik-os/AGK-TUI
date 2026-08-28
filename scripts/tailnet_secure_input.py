@@ -292,7 +292,7 @@ def main() -> int:
             lease.close()
             raise SystemExit(str(exc)) from exc
         transport = "tailscale-serve-https"
-    print(json.dumps({"status": "READY", "url": url, "expires_in_seconds": ttl, "transport": transport}))
+    print(json.dumps({"status": "READY", "url": url, "expires_in_seconds": ttl, "transport": transport}), flush=True)
     timer = threading.Timer(ttl, server.shutdown); timer.daemon = True; timer.start()
     try: server.serve_forever(poll_interval=.25)
     finally: timer.cancel(); server.server_close(); lease.close()
