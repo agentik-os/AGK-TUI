@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlencode
 
 import yaml
 
@@ -52,6 +53,67 @@ class OsControlRecord:
     discord_mode: str
     discord_state: str
     lifecycle_state: str
+
+
+@dataclass(frozen=True)
+class DedicatedBotState:
+    os_id: str
+    owner_environment: str
+    profile_id: str
+    application_id: str
+    guild_id: str
+    guild_member: bool
+
+
+@dataclass(frozen=True)
+class SecureInputRequest:
+    target: Path
+    allowed_root: Path
+    installer: tuple[str, ...]
+
+
+def allowed_os_actions(state: DedicatedBotState) -> set[str]:
+    base = {"refresh", "back", "close"}
+    if not state.guild_member:
+        return base | {"oauth"}
+    return base | {"secure-input", "doctor"}
+
+
+def oauth_invite_url(state: DedicatedBotState) -> str:
+    if not state.application_id.isdigit() or not state.guild_id.isdigit():
+        raise CatalogError("invalid Discord identity")
+    permissions = 2147601472
+    return "https://discord.com/oauth2/authorize?" + urlencode({
+        "client_id": state.application_id,
+        "permissions": str(permissions),
+        "scope": "bot applications.commands",
+        "guild_id": state.guild_id,
+        "disable_guild_select": "true",
+    })
+
+
+def create_os_secure_input(
+    state: DedicatedBotState,
+    *,
+    roots: Mapping[str, Path],
+    install_root: Path,
+) -> SecureInputRequest:
+    if not state.guild_member:
+        raise CatalogError("Discord guild membership is required")
+    root = roots.get(state.owner_environment)
+    if root is None or not root.is_dir() or root.is_symlink() or not _ID.fullmatch(state.profile_id):
+        raise CatalogError("unsafe OS profile root")
+    profile = root / "profiles" / state.profile_id
+    if profile.is_symlink():
+        raise CatalogError("unsafe OS profile target")
+    installer = (
+        str(install_root / "scripts/install-discord-token.py"),
+        "--target", str(profile / ".env"),
+        "--allowed-root", str(profile),
+        "--expected-guild", state.guild_id,
+        "--expected-application", state.application_id,
+    )
+    return SecureInputRequest(profile / ".env", profile, installer)
 
 
 def canonical_owner(os_id: str) -> str:

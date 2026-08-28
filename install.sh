@@ -194,6 +194,8 @@ install -d -m 0755 "$install_root/bin" "$install_root/scripts" "$install_root/co
   "$install_root/agents" "$bin_dir"
 install -m 0755 "$agk_tui_binary" "$install_root/bin/agk-tui"
 install -m 0755 "$repo_root/scripts/agk_control.py" "$install_root/scripts/agk_control.py"
+install -m 0755 "$repo_root/scripts/tailnet_secure_input.py" "$install_root/scripts/tailnet_secure_input.py"
+install -m 0755 "$repo_root/scripts/install-discord-token.py" "$install_root/scripts/install-discord-token.py"
 install -m 0755 "$repo_root/scripts/provider.sh" "$install_root/scripts/provider.sh"
 install -m 0755 "$repo_root/scripts/doctor.sh" "$install_root/scripts/doctor.sh"
 install -m 0755 "$repo_root/scripts/sync-hermes.sh" "$install_root/scripts/sync-hermes.sh"
