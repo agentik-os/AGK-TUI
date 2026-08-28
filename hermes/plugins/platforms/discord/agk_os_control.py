@@ -195,6 +195,26 @@ def _profile_state(root: Path, profile_id: str) -> str:
     return "ready" if all(path.is_file() and not path.is_symlink() for path in required) else "incomplete"
 
 
+def _profile_agent_binding(root: Path, profile_id: str, package_agents: tuple[str, ...]) -> tuple[tuple[str, ...], str]:
+    profile = root / "profiles" / profile_id
+    distribution_path = profile / "distribution.yaml"
+    distribution = _manifest(distribution_path) if distribution_path.is_file() and not distribution_path.is_symlink() else {}
+    declared = distribution.get("agent_ids")
+    agents = tuple(str(value) for value in declared if _ID.fullmatch(str(value))) if isinstance(declared, list) else package_agents
+    if not agents:
+        return (), "missing"
+    if not profile.is_dir() or profile.is_symlink() or not isinstance(declared, list):
+        return agents, "declared"
+    for agent_id in agents:
+        manifest_path = profile / "agents" / agent_id / "agent.yaml"
+        if not manifest_path.is_file() or manifest_path.is_symlink():
+            return agents, "incomplete"
+        manifest = _manifest(manifest_path)
+        if manifest.get("id") != agent_id or manifest.get("profile") != profile_id:
+            return agents, "incomplete"
+    return agents, "ready"
+
+
 def _discord_mode(os_id: str) -> str:
     if os_id == "nutrition-os":
         return "dedicated"
@@ -211,7 +231,8 @@ def build_os_catalog(paths: CatalogPaths) -> list[OsControlRecord]:
     for os_id, package in sorted(packages.items()):
         owner = canonical_owner(os_id)
         profile_state = _profile_state(paths.profile_roots[owner], os_id)
-        agents = tuple(str(value) for value in (package.get("agents") or []) if str(value).strip())
+        package_agents = tuple(str(value) for value in (package.get("agents") or []) if str(value).strip())
+        agents, agent_state = _profile_agent_binding(paths.profile_roots[owner], os_id, package_agents)
         mode = _discord_mode(os_id)
         rows.append(OsControlRecord(
             os_id=os_id,
@@ -222,7 +243,7 @@ def build_os_catalog(paths: CatalogPaths) -> list[OsControlRecord]:
             profile_id=os_id,
             profile_state=profile_state,
             agent_ids=agents,
-            agent_state="declared" if agents else "missing",
+            agent_state=agent_state,
             discord_mode=mode,
             discord_state="owner-prerequisite" if mode == "dedicated" else ("route-required" if mode == "environment" else "disabled"),
             lifecycle_state="staged" if profile_state != "ready" else "active",

@@ -91,3 +91,24 @@ def test_symlinked_profile_root_is_rejected(tmp_path):
     roots["private"] = link
     with pytest.raises(control.CatalogError, match="profile root"):
         control.build_os_catalog(control.CatalogPaths(paths.central_registry, paths.private_registry, roots))
+
+
+def test_catalog_reads_canonical_agent_binding_from_profile_distribution(tmp_path):
+    paths = make_paths(tmp_path)
+    profile = paths.profile_roots["operator"] / "profiles/builder-os"
+    agent = profile / "agents/master-os-builder"
+    agent.mkdir(parents=True)
+    (profile / "config.yaml").write_text("model: gpt-test\n")
+    (profile / "SOUL.md").write_text("# Builder\n")
+    (profile / "distribution.yaml").write_text(yaml.safe_dump({
+        "profile_id": "builder-os", "owner_environment": "operator",
+        "agent_ids": ["master-os-builder"],
+    }))
+    (agent / "agent.yaml").write_text(yaml.safe_dump({
+        "id": "master-os-builder", "profile": "builder-os",
+    }))
+
+    builder = next(row for row in control.build_os_catalog(paths) if row.os_id == "builder-os")
+
+    assert builder.agent_ids == ("master-os-builder",)
+    assert builder.agent_state == "ready"
