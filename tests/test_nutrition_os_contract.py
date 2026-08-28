@@ -40,7 +40,7 @@ def test_agentik_commands_fall_back_when_invocation_context_api_is_unavailable()
 
 
 def test_global_rule_defines_everywhere_as_hermes_agk_discord():
-    rules = yaml.safe_load(Path("/etc/agk-terminal/rules.yaml").read_text(encoding="utf-8"))["rules"]
+    rules = yaml.safe_load((ROOT / "config/rules.yaml").read_text(encoding="utf-8"))["rules"]
     scope_rule = next(rule for rule in rules if rule["id"] == "agk-everywhere-scope")
     content = scope_rule["content"].lower()
     assert all(layer in content for layer in ("hermes", "agk", "discord"))
@@ -48,10 +48,11 @@ def test_global_rule_defines_everywhere_as_hermes_agk_discord():
 
 
 def test_global_rule_publishes_actionable_links_to_contextual_discord_channel():
-    for rules_path in (
-        Path("/etc/agk-terminal/rules.yaml"),
-        Path(__file__).resolve().parents[1] / "config" / "rules.yaml",
-    ):
+    rules_paths = [ROOT / "config/rules.yaml"]
+    system_rules = Path("/etc/agk-terminal/rules.yaml")
+    if system_rules.is_file():
+        rules_paths.append(system_rules)
+    for rules_path in rules_paths:
         rules = yaml.safe_load(rules_path.read_text(encoding="utf-8"))["rules"]
         link_rule = next(rule for rule in rules if rule["id"] == "discord-actionable-links")
         content = link_rule["content"].lower()
