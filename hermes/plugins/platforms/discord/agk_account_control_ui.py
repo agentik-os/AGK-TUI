@@ -415,10 +415,11 @@ class AccountControlView(_ViewBase):
         self.selected_provider = provider
         self.selected_credential_id = ""
         self.selected_owner_name = ""
+        await interaction.response.defer()
         self.records = await asyncio.to_thread(_load_records, self.adapter)
         if discord:
             self._build_components()
-        await interaction.response.edit_message(content=_render_records(self.records), view=self)
+        await interaction.edit_original_response(content=_render_records(self.records), view=self)
 
     async def _select_account(self, interaction: Any, values: list[Any]) -> None:
         credential_id = str(values[0]) if values else ""

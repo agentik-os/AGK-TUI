@@ -201,9 +201,13 @@ class FakeInteraction:
         self.response = FakeResponse()
         self.followup = SimpleNamespace(send=self._followup)
         self.followups = []
+        self.original_edits = []
 
     async def _followup(self, content=None, **kwargs):
         self.followups.append((content, kwargs))
+
+    async def edit_original_response(self, **kwargs):
+        self.original_edits.append(kwargs)
 
 
 class SpyRunner:
@@ -278,6 +282,20 @@ async def test_every_callback_rechecks_owner_guild_and_channel(tmp_path, custom_
     assert interaction.response.messages[-1][1]["ephemeral"] is True
     assert runner.calls == []
     assert adapter.prefer_calls == []
+
+
+@pytest.mark.asyncio
+async def test_provider_selection_acknowledges_before_roster_refresh(tmp_path):
+    adapter = FakeAdapter(tmp_path)
+    adapter.records = ()
+    view = ui.AccountControlView(adapter, runner=SpyRunner())
+    interaction = FakeInteraction("agkacct:provider", values=["openai-codex"])
+
+    await view.dispatch(interaction)
+
+    assert interaction.response.messages[0] == ("defer", {})
+    assert len(interaction.original_edits) == 1
+    assert interaction.original_edits[0]["view"] is view
 
 
 @pytest.mark.asyncio
