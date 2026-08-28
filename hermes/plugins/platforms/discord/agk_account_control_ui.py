@@ -53,6 +53,11 @@ class AccountControlState:
     message_id: int
 
 
+@dataclass(frozen=True)
+class _FallbackSnowflake:
+    id: int
+
+
 def _hermes_home(adapter: Any) -> Path:
     configured = getattr(adapter, "hermes_home", None)
     if configured is not None:
@@ -107,6 +112,11 @@ def _write_state(adapter: Any, state: AccountControlState) -> None:
 
 def _permission(**values):
     return discord.PermissionOverwrite(**values) if discord else SimpleNamespace(**values)
+
+
+def _snowflake(snowflake_id: int):
+    """Build an exact Discord overwrite target without relying on member cache."""
+    return discord.Object(id=int(snowflake_id)) if discord else _FallbackSnowflake(int(snowflake_id))
 
 
 def _load_records(adapter: Any):
@@ -905,9 +915,7 @@ async def _reconcile_account_control_channel(guild: Any, adapter: Any) -> Accoun
     if int(getattr(guild, "id", 0)) != ACCOUNT_CONTROL_GUILD_ID:
         raise PermissionError("account control center belongs to the exact Station guild")
 
-    owner = guild.get_member(ACCOUNT_CONTROL_OWNER_ID)
-    if owner is None:
-        raise RuntimeError("account control owner is not a guild member")
+    owner = guild.get_member(ACCOUNT_CONTROL_OWNER_ID) or _snowflake(ACCOUNT_CONTROL_OWNER_ID)
     channel = guild.get_channel(ACCOUNT_CONTROL_CHANNEL_ID)
     if channel is None:
         raise RuntimeError("exact account control channel is unavailable; refusing replacement")

@@ -143,6 +143,24 @@ async def test_reconcile_fails_closed_when_exact_channel_is_missing(tmp_path):
     assert guild.created_channels == []
 
 
+@pytest.mark.asyncio
+async def test_reconcile_uses_exact_owner_snowflake_when_member_cache_is_empty(tmp_path):
+    guild = FakeGuild(existing=True)
+    guild.get_member = lambda _member_id: None
+    adapter = FakeAdapter(tmp_path)
+
+    state = await reconcile_account_control_channel(guild, adapter)
+
+    assert state.channel_id == ACCOUNT_CONTROL_CHANNEL_ID
+    channel = guild.get_channel(ACCOUNT_CONTROL_CHANNEL_ID)
+    assert {int(target.id) for target in channel.overwrites} == {
+        int(guild.default_role.id),
+        ACCOUNT_CONTROL_OWNER_ID,
+        int(guild.me.id),
+    }
+    assert channel.can_view(ACCOUNT_CONTROL_OWNER_ID) is True
+
+
 class FakeResponse:
     def __init__(self):
         self.messages = []
