@@ -170,9 +170,16 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "registry": result["registry"],
+                "actions": result["actions"],
                 "meeting_count": result["meeting_count"],
                 "events": result["discord"]["events"],
                 "meeting_post_count": len(result["discord"]["meeting_posts"]),
+                "forum_created": sum(
+                    status == "created" for status in result["forum"].values()
+                ),
+                "forum_updated": sum(
+                    status == "updated" for status in result["forum"].values()
+                ),
             },
             sort_keys=True,
         )

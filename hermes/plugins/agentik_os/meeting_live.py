@@ -9,13 +9,15 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlencode
 
 try:
+    from .meeting_actions import AtomicMeetingActions, build_action_map
+    from .meeting_forum import sync_meeting_forum
     from .meeting_publication import sync_discord
     from .meeting_registry import (
         AtomicMeetingRegistry,
@@ -25,6 +27,11 @@ try:
     )
 except ImportError:  # Direct loading for the installed runner or focused tests.
     try:
+        from meeting_actions import (  # type: ignore[no-redef]
+            AtomicMeetingActions,
+            build_action_map,
+        )
+        from meeting_forum import sync_meeting_forum  # type: ignore[no-redef]
         from meeting_publication import sync_discord  # type: ignore[no-redef]
         from meeting_registry import (  # type: ignore[no-redef]
             AtomicMeetingRegistry,
@@ -33,6 +40,11 @@ except ImportError:  # Direct loading for the installed runner or focused tests.
             merge_meetings,
         )
     except ImportError:
+        from agk_meeting_actions import (  # type: ignore[no-redef]
+            AtomicMeetingActions,
+            build_action_map,
+        )
+        from agk_meeting_forum import sync_meeting_forum  # type: ignore[no-redef]
         from agk_meeting_publication import sync_discord  # type: ignore[no-redef]
         from agk_meeting_registry import (  # type: ignore[no-redef]
             AtomicMeetingRegistry,
@@ -327,6 +339,136 @@ class PersistentDiscordMeetingClient:
             "content": str(message.get("content") or ""),
         }
 
+    def ensure_forum_tags(self, forum_id: int, names: Iterable[str]) -> dict[str, str]:
+        desired = list(names)
+        channel = self.transport.request("GET", f"/channels/{forum_id}")
+        rows = channel.get("available_tags")
+        existing = rows if isinstance(rows, list) else []
+        by_name = {
+            str(row.get("name")): str(row.get("id"))
+            for row in existing
+            if isinstance(row, dict) and row.get("name") and row.get("id")
+        }
+        missing = [name for name in desired if name not in by_name]
+        if missing:
+            channel = self.transport.request(
+                "PATCH",
+                f"/channels/{forum_id}",
+                {
+                    "available_tags": [
+                        *[row for row in existing if isinstance(row, dict)],
+                        *({"name": name, "moderated": False} for name in missing),
+                    ]
+                },
+            )
+            by_name = {
+                str(row.get("name")): str(row.get("id"))
+                for row in channel.get("available_tags", [])
+                if isinstance(row, dict) and row.get("name") and row.get("id")
+            }
+        if any(name not in by_name for name in desired):
+            raise RuntimeError("Discord forum tags readback failed")
+        return {name: by_name[name] for name in desired}
+
+    def list_forum_post_ids(self, forum_id: int) -> set[str]:
+        prefix = f"{forum_id}:"
+        return {
+            key[len(prefix) :]
+            for key in self._load_state()["posts"]
+            if key.startswith(prefix)
+        }
+
+    def get_forum_control_post(self, forum_id: int, key: str) -> dict[str, Any] | None:
+        base = self.get_forum_post(forum_id, key)
+        if base is None:
+            return None
+        thread = self.transport.request("GET", f"/channels/{base['thread_id']}")
+        message = self.transport.request(
+            "GET", f"/channels/{base['thread_id']}/messages/{base['message_id']}"
+        )
+        return {
+            **base,
+            "tag_ids": [str(value) for value in thread.get("applied_tags", [])],
+            "components": message.get("components") or [],
+        }
+
+    def create_forum_control_post(
+        self,
+        forum_id: int,
+        key: str,
+        title: str,
+        content: str,
+        tag_ids: list[str],
+        components: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        row = self.transport.request(
+            "POST",
+            f"/channels/{forum_id}/threads",
+            {
+                "name": title,
+                "auto_archive_duration": 10080,
+                "applied_tags": tag_ids,
+                "message": {
+                    "content": content,
+                    "components": components,
+                    "allowed_mentions": {"parse": []},
+                },
+            },
+        )
+        message = row.get("message")
+        if not isinstance(message, dict):
+            raise TypeError("Discord forum creation omitted starter message")
+        thread_id = int(row["id"])
+        message_id = int(message["id"])
+        state = self._load_state()
+        state["posts"][self._post_key(forum_id, key)] = {
+            "thread_id": thread_id,
+            "message_id": message_id,
+        }
+        self._save_state(state)
+        return {
+            "thread_id": thread_id,
+            "message_id": message_id,
+            "title": str(row.get("name") or ""),
+            "content": str(message.get("content") or ""),
+            "tag_ids": [str(value) for value in row.get("applied_tags", [])],
+            "components": message.get("components") or [],
+        }
+
+    def update_forum_control_post(
+        self,
+        forum_id: int,
+        key: str,
+        thread_id: int,
+        message_id: int,
+        title: str,
+        content: str,
+        tag_ids: list[str],
+        components: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        thread = self.transport.request(
+            "PATCH",
+            f"/channels/{thread_id}",
+            {"name": title, "applied_tags": tag_ids, "archived": False},
+        )
+        message = self.transport.request(
+            "PATCH",
+            f"/channels/{thread_id}/messages/{message_id}",
+            {
+                "content": content,
+                "components": components,
+                "allowed_mentions": {"parse": []},
+            },
+        )
+        return {
+            "thread_id": thread_id,
+            "message_id": message_id,
+            "title": str(thread.get("name") or ""),
+            "content": str(message.get("content") or ""),
+            "tag_ids": [str(value) for value in thread.get("applied_tags", [])],
+            "components": message.get("components") or [],
+        }
+
 
 def run_live_sync(
     *,
@@ -334,21 +476,37 @@ def run_live_sync(
     discord: PersistentDiscordMeetingClient,
     registry_path: Path,
     now: datetime,
+    actions_path: Path | None = None,
     horizon_days: int = 30,
 ) -> dict[str, Any]:
     if not 1 <= horizon_days <= 90:
         raise ValueError("horizon_days must be between 1 and 90")
     start = _utc(now)
     end = start + timedelta(days=horizon_days)
+    cal_payload = source.fetch_cal(start=start, end=end)
+    google_payload = source.fetch_google(start=start, end=end)
     meetings = merge_meetings(
         [
-            *ingest_cal_payload(source.fetch_cal(start=start, end=end)),
-            *ingest_google_payload(source.fetch_google(start=start, end=end)),
+            *ingest_cal_payload(cal_payload),
+            *ingest_google_payload(google_payload),
         ]
     )
     changed = AtomicMeetingRegistry(registry_path).update(meetings)
+    actions_changed = AtomicMeetingActions(
+        actions_path or registry_path.with_name("actions.json")
+    ).update(
+        build_action_map(
+            meetings,
+            cal_payload=cal_payload,
+            google_payload=google_payload,
+            cal_account=source.cal_account,
+            google_account=source.google_account,
+        )
+    )
     return {
         "registry": "updated" if changed else "unchanged",
+        "actions": "updated" if actions_changed else "unchanged",
         "meeting_count": len(meetings),
         "discord": sync_discord(discord, meetings, now=start),
+        "forum": sync_meeting_forum(discord, meetings, now=start),
     }

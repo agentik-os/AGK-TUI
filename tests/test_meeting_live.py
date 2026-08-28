@@ -101,7 +101,26 @@ def test_composio_source_normalizes_cal_and_paginates_google() -> None:
 class FakeDiscordTransport:
     def __init__(self) -> None:
         self.messages: dict[tuple[str, str], dict] = {}
-        self.channels: dict[str, dict] = {}
+        self.channels: dict[str, dict] = {
+            str(registry.MEETINGS_FORUM_ID): {
+                "id": str(registry.MEETINGS_FORUM_ID),
+                "name": "meetings",
+                "type": 15,
+                "available_tags": [
+                    {"id": str(index + 1), "name": name, "moderated": False}
+                    for index, name in enumerate(
+                        (
+                            "Upcoming",
+                            "In progress",
+                            "Past",
+                            "Canceled",
+                            "Report ready",
+                            "Recording missing",
+                        )
+                    )
+                ],
+            }
+        }
         self.calls: list[tuple[str, str]] = []
         self.next_id = 1000
 
@@ -140,11 +159,13 @@ class FakeDiscordTransport:
                 "id": thread_id,
                 "parent_id": str(registry.MEETINGS_FORUM_ID),
                 "name": payload["name"],
+                "applied_tags": payload.get("applied_tags", []),
             }
             self.messages[(thread_id, message_id)] = {
                 "id": message_id,
                 "channel_id": thread_id,
                 "content": payload["message"]["content"],
+                "components": payload["message"].get("components", []),
             }
             return {
                 **self.channels[thread_id],
@@ -156,12 +177,22 @@ class FakeDiscordTransport:
             and "/messages/" not in path
         ):
             thread_id = path.split("/")[2]
+            if thread_id == str(registry.MEETINGS_FORUM_ID):
+                tags = []
+                for index, tag in enumerate(payload["available_tags"]):
+                    tags.append({**tag, "id": str(tag.get("id") or index + 1)})
+                self.channels[thread_id]["available_tags"] = tags
+                return self.channels[thread_id]
             self.channels[thread_id]["name"] = payload["name"]
+            self.channels[thread_id]["applied_tags"] = payload.get(
+                "applied_tags", self.channels[thread_id].get("applied_tags", [])
+            )
             return self.channels[thread_id]
         if method == "PATCH" and "/messages/" in path:
             parts = path.split("/")
             row = self.messages[(parts[2], parts[4])]
             row["content"] = payload["content"]
+            row["components"] = payload.get("components", row.get("components", []))
             return row
         if method == "GET" and path.startswith("/channels/"):
             return self.channels[path.split("/")[2]]
@@ -227,7 +258,7 @@ def test_live_sync_is_idempotent_with_provider_and_discord_seams(
         now=now,
         horizon_days=30,
     )
-    call_count = len(transport.calls)
+    write_count = sum(method in {"POST", "PATCH", "DELETE"} for method, _ in transport.calls)
     second = live.run_live_sync(
         source=source,
         discord=client,
@@ -240,4 +271,6 @@ def test_live_sync_is_idempotent_with_provider_and_discord_seams(
     assert first["discord"]["events"] == "created"
     assert second["registry"] == "unchanged"
     assert second["discord"]["events"] == "unchanged"
-    assert len(transport.calls) == call_count + 1  # one exact GET readback, no write
+    assert sum(
+        method in {"POST", "PATCH", "DELETE"} for method, _ in transport.calls
+    ) == write_count

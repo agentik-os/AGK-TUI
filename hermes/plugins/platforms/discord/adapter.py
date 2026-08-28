@@ -171,6 +171,7 @@ try:
         reconcile_account_control_channel,
         register_account_control_center,
     )
+    from .agk_meeting_control_ui import register_meeting_control
     from .agk_os_control_ui import records_from_snapshot, register_os_control_center
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
@@ -182,6 +183,7 @@ except ImportError:
         reconcile_account_control_channel,
         register_account_control_center,
     )
+    from agk_meeting_control_ui import register_meeting_control
     from agk_os_control_ui import records_from_snapshot, register_os_control_center
 
 from gateway.config import Platform, PlatformConfig
@@ -1483,6 +1485,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         lambda: records_from_snapshot(snapshot),
                         owner_ids={int(value) for value in adapter_self._allowed_user_ids},
                     )
+                    register_meeting_control(adapter_self._client)
 
                 try:
                     register_account_control_center(adapter_self._client, adapter_self)
