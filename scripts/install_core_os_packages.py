@@ -75,6 +75,15 @@ def _checksum(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _version_key(value: object) -> tuple[int, int, int, str]:
+    text = str(value or "")
+    core, _, suffix = text.partition("-")
+    numbers = core.split("+")[0].split(".")
+    if len(numbers) != 3 or any(not item.isdigit() for item in numbers):
+        return (0, 0, 0, text)
+    return (int(numbers[0]), int(numbers[1]), int(numbers[2]), suffix)
+
+
 def _entry(manifest: dict[str, Any], package_dir: Path) -> dict[str, Any]:
     files = _files(package_dir)
     entry = {key: manifest[key] for key in (
@@ -115,6 +124,7 @@ def install_packages(source: Path, registry: Path) -> list[str]:
         for item in existing if isinstance(item, dict)
     }
     installed = []
+    installed_ids: set[str] = set()
     for package_source in sorted(path for path in source.iterdir() if path.is_dir()):
         manifest = _manifest(package_source / "manifest.yaml")
         if manifest["id"] != package_source.name:
@@ -135,6 +145,12 @@ def install_packages(source: Path, registry: Path) -> list[str]:
                 shutil.rmtree(staging, ignore_errors=True)
         by_identity[(manifest["id"], version)] = _entry(manifest, target)
         installed.append(f"{manifest['id']}@{version}")
+        installed_ids.add(manifest["id"])
+    for package_id in installed_ids:
+        versions = [item for (item_id, _), item in by_identity.items() if item_id == package_id]
+        newest = max(versions, key=lambda item: _version_key(item.get("version")))
+        for item in versions:
+            item["status"] = "active" if item is newest else "superseded"
     final = sorted(by_identity.values(), key=lambda item: (str(item.get("id")), str(item.get("version"))))
     payload = {"schema_version": 1, "packages": final}
     handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=state_root, prefix=".index.", delete=False)

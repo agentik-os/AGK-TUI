@@ -37,9 +37,13 @@ def test_installs_versioned_packages_and_preserves_existing_registry(tmp_path):
     registry = tmp_path / "registry"
     (registry / "state").mkdir(parents=True)
     (registry / "packages" / "existing" / "1.0.0").mkdir(parents=True)
+    (registry / "packages" / "research-os" / "0.0.9").mkdir(parents=True)
     (registry / "state" / "index.json").write_text(json.dumps({
         "schema_version": 1,
-        "packages": [{"id": "existing", "version": "1.0.0"}],
+        "packages": [
+            {"id": "existing", "version": "1.0.0"},
+            {"id": "research-os", "version": "0.0.9", "status": "active"},
+        ],
     }))
 
     result = module.install_packages(source, registry)
@@ -47,8 +51,10 @@ def test_installs_versioned_packages_and_preserves_existing_registry(tmp_path):
     assert (registry / "packages" / "research-os" / "0.1.0" / "manifest.yaml").is_file()
     index = json.loads((registry / "state" / "index.json").read_text())
     assert {(item["id"], item["version"]) for item in index["packages"]} == {
-        ("existing", "1.0.0"), ("research-os", "0.1.0"),
+        ("existing", "1.0.0"), ("research-os", "0.0.9"), ("research-os", "0.1.0"),
     }
+    versions = {item["version"]: item["status"] for item in index["packages"] if item["id"] == "research-os"}
+    assert versions == {"0.0.9": "superseded", "0.1.0": "active"}
 
 
 def test_reconciles_core_assignments_without_dropping_existing_records(tmp_path):
