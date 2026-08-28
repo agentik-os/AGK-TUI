@@ -284,8 +284,14 @@ class AccountControlView(_ViewBase):
         provider = discord.ui.Select(
             placeholder="Choose OpenAI or Claude",
             options=[
-                discord.SelectOption(label="OpenAI / ChatGPT", value="openai-codex"),
-                discord.SelectOption(label="Anthropic / Claude", value="anthropic"),
+                discord.SelectOption(
+                    label="OpenAI / ChatGPT", value="openai-codex",
+                    default=self.selected_provider == "openai-codex",
+                ),
+                discord.SelectOption(
+                    label="Anthropic / Claude", value="anthropic",
+                    default=self.selected_provider == "anthropic",
+                ),
             ],
             custom_id="agkacct:provider",
             row=0,
@@ -305,6 +311,7 @@ class AccountControlView(_ViewBase):
                 )[:100],
                 value=str(getattr(record, "credential_id", ""))[:100],
                 description=f"Status: {getattr(record, 'status', 'unknown')}"[:100],
+                default=str(getattr(record, "credential_id", "")) == self.selected_credential_id,
             )
             for record in matching
             if getattr(record, "credential_id", None)
@@ -327,7 +334,14 @@ class AccountControlView(_ViewBase):
             ("Refresh", "agkacct:refresh", discord.ButtonStyle.secondary, 3),
             ("Close session", "agkacct:close", discord.ButtonStyle.danger, 3),
         ):
-            button = discord.ui.Button(label=label, style=style, custom_id=custom_id, row=row)
+            disabled = (
+                custom_id == "agkacct:add" and not self.selected_provider
+                or custom_id in {"agkacct:switch", "agkacct:reconnect"} and not self.selected_credential_id
+                or custom_id == "agkacct:close" and not self.selected_attempt_id
+            )
+            button = discord.ui.Button(
+                label=label, style=style, custom_id=custom_id, row=row, disabled=disabled
+            )
             button.callback = self.dispatch
             self.add_item(button)
 
@@ -442,6 +456,8 @@ class AccountControlView(_ViewBase):
             return
         self.selected_credential_id = credential_id
         self.selected_owner_name = str(getattr(selected, "owner_name", "") or "")
+        if discord:
+            self._build_components()
         await interaction.response.edit_message(content=_render_records(self.records), view=self)
 
     async def _switch(self, interaction: Any) -> None:

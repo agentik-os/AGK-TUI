@@ -284,6 +284,46 @@ async def test_every_callback_rechecks_owner_guild_and_channel(tmp_path, custom_
     assert adapter.prefer_calls == []
 
 
+def test_component_states_follow_provider_account_and_oauth_selection(tmp_path):
+    view = ui.AccountControlView(FakeAdapter(tmp_path), runner=SpyRunner())
+    view.records = (
+        SimpleNamespace(
+            provider="openai-codex", credential_id="credential-42",
+            owner_name="Agentik", status="ok", priority=0, windows=(),
+        ),
+    )
+
+    def controls():
+        return {item.custom_id: item for item in view.children}
+
+    view._build_components()
+    initial = controls()
+    assert initial["agkacct:account"].disabled is True
+    assert initial["agkacct:add"].disabled is True
+    assert initial["agkacct:switch"].disabled is True
+    assert initial["agkacct:reconnect"].disabled is True
+    assert initial["agkacct:close"].disabled is True
+    assert initial["agkacct:refresh"].disabled is False
+
+    view.selected_provider = "openai-codex"
+    view._build_components()
+    provider = controls()
+    assert next(option for option in provider["agkacct:provider"].options if option.value == "openai-codex").default is True
+    assert provider["agkacct:account"].disabled is False
+    assert provider["agkacct:add"].disabled is False
+    assert provider["agkacct:switch"].disabled is True
+    assert provider["agkacct:reconnect"].disabled is True
+
+    view.selected_credential_id = "credential-42"
+    view.selected_attempt_id = "a" * 32
+    view._build_components()
+    account = controls()
+    assert next(option for option in account["agkacct:account"].options if option.value == "credential-42").default is True
+    assert account["agkacct:switch"].disabled is False
+    assert account["agkacct:reconnect"].disabled is False
+    assert account["agkacct:close"].disabled is False
+
+
 @pytest.mark.asyncio
 async def test_provider_selection_acknowledges_before_roster_refresh(tmp_path):
     adapter = FakeAdapter(tmp_path)
