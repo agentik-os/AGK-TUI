@@ -1,0 +1,29 @@
+model:
+  provider: openai-codex
+  default: gpt-5.6-sol
+fallback_providers:
+  - provider: agk-gemma-local
+    model: gemma4:26b
+terminal:
+  cwd: .
+  home_mode: profile
+memory:
+  memory_enabled: true
+  user_profile_enabled: false
+security:
+  redact_secrets: true
+platforms:
+  discord:
+    enabled: false
+model_aliases:
+  gemma4:
+    model: gemma4:26b
+    provider: agk-gemma-local
+    base_url: http://127.0.0.1:11434/v1
+providers:
+  agk-gemma-local:
+    api: http://127.0.0.1:11434/v1
+    transport: chat_completions
+    default_model: gemma4:26b
+    context_length: 262144
+    discover_models: true

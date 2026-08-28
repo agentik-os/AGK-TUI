@@ -36,3 +36,18 @@ def test_master_builder_uses_the_same_profile_agent_and_discord_invariants():
     gates = "\n".join(integrate["gates"])
     assert "provider and independently usable fallback" in gates
     assert "doctor and rollback" in gates
+
+
+def test_builder_package_embeds_its_canonical_hermes_profile_and_agent_binding():
+    profile = BUILDER / "profile"
+    assert (profile / "distribution.yaml").is_file()
+    assert (profile / "config.yaml").is_file()
+    assert (profile / "SOUL.md").is_file()
+    assert (profile / "skills/verified-builder/SKILL.md").is_file()
+    distribution = yaml.safe_load((profile / "distribution.yaml").read_text())
+    assert distribution["profile_id"] == "builder-os"
+    assert distribution["owner_environment"] == "operator"
+    assert distribution["provider"]["primary"] == "openai-codex"
+    assert distribution["provider"]["fallback"] == "agk-gemma-local"
+    agent = yaml.safe_load((ROOT / "hermes/agents/master-os-builder/agent.yaml").read_text())
+    assert agent["profile"] == "builder-os"
