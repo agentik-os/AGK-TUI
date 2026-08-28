@@ -58,7 +58,7 @@ Linux homes are trust domains. A non-default profile exists in exactly one ownin
 - Operator owns global infrastructure, Builder OS, Evaluation OS and trusted audit/control profiles.
 - Agentik owns organisation OS products, including Research OS, Strategy OS and YouTube OS.
 - Mission owns Collective and every client profile, including DentistryGPT.
-- Private owns Nutrition OS and personal OS products.
+- Private owns the 13 Personal OS products and their private runtime state.
 
 `default` is reserved for the environment control profile in each home. Every OS and client has one dedicated named profile under its canonical owner. Agents bind to that profile; an agent name is not automatically a separate profile. Environment/project/client assignments grant scoped access to the canonical OS through AGK and never copy its profile, memories, sessions, OAuth state or token.
 
@@ -207,7 +207,7 @@ The migration is preview-first, ownership-aware and non-destructive.
 - Operator exposes `default` and `nutrition-os`, although Nutrition is a personal OS and belongs under Private.
 - Agentik has specialist profiles such as `agk-architect`, `evidence-auditor`, `oracle` and `product-strategy`, but the registry OS IDs do not have canonical same-name profiles.
 - Mission correctly contains `default`, `collective` and the DentistryGPT client profile.
-- Private contains `default` and three personal distributions.
+- Private contains `default` and three legacy aggregate distributions, while 13 dedicated OS profile distributions exist only in the staged workspace and 0/13 are installed live.
 - Core OS assignments are copied across environments even though profile ownership is unresolved.
 - Fleet-copied agent manifests contain invalid local profile references in some homes.
 - Nutrition's assignment still names `1.0.1` while the active package/profile is `1.1.0`.
@@ -218,6 +218,7 @@ The migration is preview-first, ownership-aware and non-destructive.
 - Evaluation OS -> Operator profile `evaluation-os`; owning agent `evidence-auditor`; Discord disabled by default.
 - Research OS -> Agentik profile `research-os`; owning agent `oracle`; Discord disabled by default.
 - Strategy OS -> Agentik profile `strategy-os`; owning agent `product-strategy`; Discord disabled by default.
+- Personal OS -> Private owns exactly 13 canonical profiles: `alignment-os`, `decision-os`, `goal-life-strategy-os`, `habit-tracker-os`, `health-energy-os`, `identity-shift-os`, `intuitive-os`, `journal-os`, `mentor-os`, `mindset-os`, `nutrition-os`, `oto100m-os`, and `social-intelligence-os`.
 - Nutrition OS -> Private profile `nutrition-os`; owning agent `nutrition-specialist`; dedicated bot mode remains blocked until owner OAuth installs application `1542135948475637861` into AGK and Private-local Secure Input validates a replacement token.
 - YouTube OS -> Agentik profile `youtube-os`; preserve its existing state and classify/register its package before activation.
 - Collective -> Mission profile `collective`.
@@ -230,7 +231,11 @@ Agentik profiles `agk-architect`, `evidence-auditor`, `oracle` and `product-stra
 
 Profiles `brand-guardian`, `content-director`, `growth-community`, `story-journal` and `vat-worker` must be classified as OS, standalone agent, worker or deprecated before any rename or archive. No name-based merge is allowed.
 
-Private profiles `personal-mentor`, `personal-operator` and `personal-strategist` remain Private-only. They must gain explicit personal-OS registry identities or be classified as non-OS profiles; they are never copied to another home.
+Private profiles `personal-mentor`, `personal-operator` and `personal-strategist` are legacy aggregate profiles, not canonical OS identities. They currently group the 13 OS skills into mentor/operator/strategy bundles. Preserve them during migration as rollback aliases, install the 13 already-built dedicated distributions, migrate the exact canonical sessions with the staged hash-bound script, verify 13/13 doctors and runtime bindings, then quarantine the aggregates. Never delete them before dedicated-profile acceptance.
+
+The historical `food-os` candidate is not a fourteenth active Personal OS. Current nutrition functionality is owned by `nutrition-os`. The release count `14/14` means 13 OS archives plus one Recovery Center archive.
+
+Task 9 already provides 13 complete profile distributions, a dry-run/apply/rollback migration, exact session/channel mappings and 43 focused plus 319 full passing tests. Its source and staged fixture passed, but live state remained intentionally `0 dedicated profiles` and `0 live AGK runtimes` under `BLOCKED_OPERATOR_AND_OWNER_APPROVAL`. Reuse and revalidate this package rather than rebuilding the profiles from scratch.
 
 Nutrition migration from Operator to Private is a staged ownership transfer, not a filesystem copy. Build and doctor the Private profile first, request the dedicated bot token again through Private-local Secure Input, verify Discord and state migration through an explicit sanitized export, then quarantine the Operator legacy profile. Never copy `.env`, `auth.json`, raw state databases or OAuth credentials across homes.
 
