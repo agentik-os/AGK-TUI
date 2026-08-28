@@ -144,6 +144,7 @@ try:
         reconcile_account_control_channel,
         register_account_control_center,
     )
+    from .agk_os_control_ui import records_from_snapshot, register_os_control_center
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
     from agk_client_reviews import register_agk_client_review_listener
@@ -153,6 +154,7 @@ except ImportError:
         reconcile_account_control_channel,
         register_account_control_center,
     )
+    from agk_os_control_ui import records_from_snapshot, register_os_control_center
 
 from gateway.config import Platform, PlatformConfig
 
@@ -1435,6 +1437,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
+
+                hermes_home = _Path(os.environ.get("HERMES_HOME", "")).resolve()
+                if hermes_home == _Path("/home/operator/.hermes"):
+                    snapshot = _Path("/var/lib/agk-terminal/fleet/fleet-snapshot.json")
+                    register_os_control_center(
+                        adapter_self._client,
+                        lambda: records_from_snapshot(snapshot),
+                        owner_ids={int(value) for value in adapter_self._allowed_user_ids},
+                    )
 
                 try:
                     register_account_control_center(adapter_self._client, adapter_self)
