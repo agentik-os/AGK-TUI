@@ -820,6 +820,20 @@ def test_roster_render_is_bounded_to_discord_content_limit(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_safe_failure_logs_traceback_but_keeps_discord_redacted(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ui.logger, "exception", lambda *args, **kwargs: calls.append((args, kwargs)))
+    view = ui.AccountControlView(FakeAdapter(tmp_path), runner=SpyRunner())
+    interaction = FakeInteraction("agkacct:switch")
+
+    await view._safe_failure(interaction, ImportError("private provider body"))
+
+    assert calls and calls[0][1]["exc_info"] is not None
+    assert "private provider body" not in interaction.response.messages[-1][0]
+    assert "ImportError" in interaction.response.messages[-1][0]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["switch", "refresh", "close", "claude"])
 async def test_handled_action_failures_are_redacted_and_ephemeral(tmp_path, action):
     class FailingRunner(SpyRunner):

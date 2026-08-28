@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import tempfile
 import re
@@ -11,6 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+logger = logging.getLogger(__name__)
 
 try:
     import discord
@@ -369,6 +372,10 @@ class AccountControlView(_ViewBase):
             await self._safe_failure(interaction, exc)
 
     async def _safe_failure(self, interaction: Any, exc: Exception) -> None:
+        logger.exception(
+            "Account Control callback failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
         text = f"Account action failed safely ({type(exc).__name__}). Try Refresh or retry."
         if interaction.response.is_done():
             await interaction.followup.send(text, ephemeral=True)

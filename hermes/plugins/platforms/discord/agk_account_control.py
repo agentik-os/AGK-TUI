@@ -85,6 +85,39 @@ def _safe_reset_at(value: object) -> str | None:
     return parsed.isoformat()
 
 
+def prefer_eligible_credential(
+    provider: str,
+    credential_id: str,
+    *,
+    pool_loader=None,
+    pool_writer=None,
+) -> str:
+    """Move one eligible credential to priority zero and verify disk readback."""
+    provider = _normalize_provider(provider)
+    credential_id = _normalize_credential_id(credential_id)
+    if pool_loader is None or pool_writer is None:
+        from agent.credential_pool import load_pool
+        from hermes_cli.auth import write_credential_pool
+
+        pool_loader = pool_loader or load_pool
+        pool_writer = pool_writer or write_credential_pool
+    entries = sorted(pool_loader(provider).entries(), key=lambda entry: int(entry.priority))
+    selected = next((entry for entry in entries if str(entry.id) == credential_id), None)
+    if selected is None:
+        return "missing"
+    if str(getattr(selected, "last_status", "") or "").casefold() not in {"", "ok"}:
+        return "unavailable"
+    ordered = [selected, *(entry for entry in entries if entry is not selected)]
+    payloads = []
+    for priority, entry in enumerate(ordered):
+        payload = dict(entry.to_dict())
+        payload["priority"] = priority
+        payloads.append(payload)
+    pool_writer(provider, payloads)
+    readback = sorted(pool_loader(provider).entries(), key=lambda entry: int(entry.priority))
+    return "saved" if readback and str(readback[0].id) == credential_id else "unavailable"
+
+
 @dataclass(frozen=True)
 class UsageWindow:
     label: str

@@ -6719,7 +6719,10 @@ class DiscordAdapter(BasePlatformAdapter):
         return {credential_id: usage for credential_id, usage in rows if credential_id}
 
     async def _prefer_account_credential(self, provider: str, credential_id: str) -> str:
-        from hermes_cli.auth import prefer_eligible_credential
+        try:
+            from .agk_account_control import prefer_eligible_credential
+        except ImportError:
+            from agk_account_control import prefer_eligible_credential
         return await asyncio.to_thread(prefer_eligible_credential, provider, credential_id)
 
     async def _remove_account_credential(self, provider: str, credential_id: str) -> bool:

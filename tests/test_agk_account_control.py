@@ -249,3 +249,59 @@ def test_voice_binding_key_is_owner_keyed_and_case_insensitive():
     assert account_control.voice_binding_key("openai-codex", "Agentik") == (
         "voice-owner:openai-codex:agentik"
     )
+
+
+def test_prefer_eligible_credential_reorders_atomically_and_reads_back():
+    module = load_account_control()
+    written = []
+
+    class Entry:
+        def __init__(self, credential_id, priority, status="ok"):
+            self.id = credential_id
+            self.priority = priority
+            self.last_status = status
+
+        def to_dict(self):
+            return {"id": self.id, "priority": self.priority, "last_status": self.last_status}
+
+    current = [Entry("first", 0), Entry("second", 1)]
+
+    def load(_provider):
+        rows = current if not written else [
+            Entry(row["id"], row["priority"], row.get("last_status")) for row in written[-1]
+        ]
+        return type("Pool", (), {"entries": lambda self: rows})()
+
+    def write(_provider, rows):
+        written.append(rows)
+
+    status = module.prefer_eligible_credential(
+        "openai-codex", "second", pool_loader=load, pool_writer=write
+    )
+
+    assert status == "saved"
+    assert [(row["id"], row["priority"]) for row in written[-1]] == [
+        ("second", 0), ("first", 1),
+    ]
+
+
+def test_prefer_eligible_credential_rejects_missing_or_unavailable():
+    module = load_account_control()
+
+    class Entry:
+        id = "exhausted"
+        priority = 0
+        last_status = "exhausted"
+
+        def to_dict(self):
+            return {"id": self.id, "priority": self.priority, "last_status": self.last_status}
+
+    load = lambda _provider: type("Pool", (), {"entries": lambda self: [Entry()]})()
+    writer = lambda *_args: (_ for _ in ()).throw(AssertionError("must not write"))
+
+    assert module.prefer_eligible_credential(
+        "openai-codex", "missing", pool_loader=load, pool_writer=writer
+    ) == "missing"
+    assert module.prefer_eligible_credential(
+        "openai-codex", "exhausted", pool_loader=load, pool_writer=writer
+    ) == "unavailable"
