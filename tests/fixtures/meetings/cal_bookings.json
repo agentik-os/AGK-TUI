@@ -1,0 +1,26 @@
+{
+  "bookings": [
+    {
+      "uid": "cal-booking-100",
+      "eventUid": "shared-event@example.com",
+      "title": "Client discovery",
+      "startTime": "2026-08-29T09:00:00Z",
+      "endTime": "2026-08-29T09:30:00Z",
+      "status": "ACCEPTED",
+      "organizer": {"email": "Owner@Agentik-OS.com"},
+      "attendees": [{"email": "client@example.net"}],
+      "location": "https://meet.google.com/abc-defg-hij?authuser=0",
+      "metadata": {"api_key": "must-never-leak", "notes": "safe"}
+    },
+    {
+      "uid": "cal-booking-200",
+      "title": "Zoom review",
+      "startTime": "2026-08-29T12:00:00Z",
+      "endTime": "2026-08-29T13:00:00Z",
+      "status": "ACCEPTED",
+      "organizer": {"email": "owner@agentik-os.com"},
+      "attendees": [],
+      "location": "https://us02web.zoom.us/j/123456?pwd=super-secret"
+    }
+  ]
+}
