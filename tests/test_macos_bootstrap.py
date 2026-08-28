@@ -32,6 +32,15 @@ def test_macos_bootstrap_is_valid_and_stays_single_user():
     assert "repair-rmux-daemon.sh" in source
 
 
+def test_macos_bootstrap_installs_the_client_control_plane_contract():
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    assert '"$install_root/client"' in source
+    assert "client_control.py" in source
+    assert 'cp -R "$repo_root/client" "$install_root/client"' in source
+    assert "client-init client-doctor client-status client-env provision-client" in source
+
+
 def test_launchers_derive_their_install_root_from_the_prefix():
     for launcher in (ROOT / "bin/agk", ROOT / "bin/agk-terminal"):
         source = launcher.read_text(encoding="utf-8")

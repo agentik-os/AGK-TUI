@@ -43,12 +43,13 @@ def active_rules() -> list[dict]:
 
 
 def rules_prompt(_session_info: dict | None = None) -> str:
-    rules = active_rules()
-    if not rules:
+    if not active_rules():
         return ""
-    rendered = ["AGK operator rules (apply to every provider session):"]
-    for rule in rules:
-        title = str(rule.get("title") or rule.get("id") or "Rule").strip()
-        content = str(rule.get("content") or "").strip()
-        rendered.append(f"- {title}: {content}")
-    return "\n".join(rendered)
+    # Full canonical rules remain in the registry. Inject only the compact invariant
+    # so dedicated completion, owner, UI and inter-agent sections fit the aggregate
+    # Hermes plugin prompt budget.
+    return (
+        "AGK rules active: resolve intent; plan and independently verify; preserve user work; "
+        "verify the live runtime; isolate profiles; treat Station scope as Hermes+AGK+Discord; "
+        "publish only safe contextual links."
+    )
