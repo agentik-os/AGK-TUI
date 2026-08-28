@@ -194,20 +194,22 @@ class OsControlView(discord.ui.View):
         if record is None or record.discord_mode != "dedicated":
             await interaction.response.send_message("Dedicated Discord mode is not enabled.", ephemeral=True)
             return
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         try:
             persist_application_id(self.state_path, record.os_id, application_id)
             member = await self.membership_checker(interaction, str(application_id))
             if not member:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Authorize the bot in AGK, then press Discord again: " + oauth_invite_url(str(application_id)),
                     ephemeral=True,
                 )
                 return
             url = await self.route_launcher(secure_input_installer_argv(record, str(application_id)))
         except (OSError, ValueError, RuntimeError, asyncio.TimeoutError):
-            await interaction.response.send_message("Discord setup failed safely. Refresh and retry.", ephemeral=True)
+            await interaction.followup.send("Discord setup failed safely. Refresh and retry.", ephemeral=True)
             return
-        await interaction.response.send_message(f"Secure Input ready: {url}", ephemeral=True)
+        await interaction.followup.send(f"Secure Input ready: {url}", ephemeral=True)
 
     @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, row=2)
     async def refresh(self, interaction: discord.Interaction, _button: discord.ui.Button):
