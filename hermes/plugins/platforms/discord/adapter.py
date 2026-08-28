@@ -26,6 +26,7 @@ import time
 import traceback
 from collections import defaultdict
 from contextlib import suppress
+from copy import copy
 from typing import Callable, Dict, List, Optional, Any, Tuple
 from urllib.parse import quote, urljoin
 
@@ -38,6 +39,15 @@ logger = logging.getLogger(__name__)
 
 _DISCORD_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
 _DISCORD_URL_LABEL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _account_usage_progress_bar(used_percent: Optional[float], *, width: int = 10) -> str:
+    """Render one bounded fixed-width Discord usage gauge."""
+    if used_percent is None:
+        return "─" * width
+    used = max(0.0, min(100.0, float(used_percent)))
+    filled = int(round((used / 100.0) * width))
+    return "█" * filled + "░" * (width - filled)
 
 
 def _format_discord_markdown_link(label: str, url: str) -> str:
@@ -55,6 +65,22 @@ def _format_discord_markdown_link(label: str, url: str) -> str:
     escaped_label = _DISCORD_MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
     escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
     return f"[{escaped_label}](<{escaped_url}>)"
+
+
+def _without_synthetic_resume_sender(event: Any) -> Any:
+    """Keep an internal blank resume event blank in shared Discord sessions."""
+    if not (
+        getattr(event, "internal", False)
+        and not str(getattr(event, "text", "") or "").strip()
+    ):
+        return event
+    source = getattr(event, "source", None)
+    if source is None or not getattr(source, "user_name", None):
+        return event
+    normalized = copy(event)
+    normalized.source = copy(source)
+    normalized.source.user_name = None
+    return normalized
 
 
 class _Snowflake:
@@ -138,6 +164,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 try:
     from .ffmpeg_utils import resolve_ffmpeg_executable
     from .agk_client_reviews import register_agk_client_review_listener
+    from .agk_session_control_ui import register_station_session_commands
     from .agk_account_usage_monitor import DiscordAccountUsageMonitor, MonitorConfig
     from .agk_account_control_ui import (
         ACCOUNT_CONTROL_GUILD_ID,
@@ -148,6 +175,7 @@ try:
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
     from agk_client_reviews import register_agk_client_review_listener
+    from agk_session_control_ui import register_station_session_commands
     from agk_account_usage_monitor import DiscordAccountUsageMonitor, MonitorConfig
     from agk_account_control_ui import (
         ACCOUNT_CONTROL_GUILD_ID,
@@ -1054,6 +1082,11 @@ class DiscordAdapter(BasePlatformAdapter):
     - Reaction-based feedback
     """
 
+    # Restarts are an infrastructure event, not a request for human steering.
+    # Resume from the first unfinished step instead of asking the Discord user
+    # to type "continue" in every interrupted channel/thread.
+    interactive_resume = False
+
     # Discord message limits
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
@@ -1065,6 +1098,9 @@ class DiscordAdapter(BasePlatformAdapter):
     # incident delivered 60,698 chars as 31 messages).  Chunks beyond the
     # cap are replaced by a short notice.
     MAX_SPLIT_MESSAGES = 8
+
+    async def handle_message(self, event: Any) -> None:
+        await super().handle_message(_without_synthetic_resume_sender(event))
 
     async def refresh_account_surfaces(self, *, reason: str) -> dict[str, str]:
         """Attempt each account surface once and report class-only failures."""
@@ -1160,6 +1196,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
         self._account_usage_monitor: Optional[DiscordAccountUsageMonitor] = None
+        self._channel_cleanup_task: Optional[asyncio.Task] = None
         self._command_sync_retry_task: Optional[asyncio.Task] = None
         self._empty_content_notice_at: Dict[str, float] = {}
         # WebSocket-level liveness probe. Discord REST and Gateway are distinct
@@ -1474,6 +1511,12 @@ class DiscordAdapter(BasePlatformAdapter):
                             adapter_self._client, monitor_config
                         )
                     adapter_self._account_usage_monitor.start()
+                cleanup_ids = adapter_self.config.extra.get("cleanup_channel_ids") or []
+                if cleanup_ids and (adapter_self._channel_cleanup_task is None or adapter_self._channel_cleanup_task.done()):
+                    adapter_self._channel_cleanup_task = asyncio.create_task(
+                        adapter_self._cleanup_configured_channel_ids(),
+                        name="agk-discord-channel-cleanup",
+                    )
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -1686,7 +1729,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 mentioned.bot and mentioned != self._client.user
                 for mentioned in message.mentions
             )
-            if other_bots_mentioned and not raw_self_mention:
+            human_active_thread_reference = (
+                not getattr(message.author, "bot", False)
+                and isinstance(message.channel, getattr(discord, "Thread", ()))
+                and str(message.channel.id) in self._threads
+                and not self._discord_thread_require_mention()
+            )
+            if (
+                other_bots_mentioned
+                and not raw_self_mention
+                and not human_active_thread_reference
+            ):
                 return False, False
             ignore_no_mention = os.getenv(
                 "DISCORD_IGNORE_NO_MENTION", "true"
@@ -2237,6 +2290,13 @@ class DiscordAdapter(BasePlatformAdapter):
         if self._account_usage_monitor is not None:
             await self._account_usage_monitor.stop()
             self._account_usage_monitor = None
+        if self._channel_cleanup_task and not self._channel_cleanup_task.done():
+            self._channel_cleanup_task.cancel()
+            try:
+                await self._channel_cleanup_task
+            except asyncio.CancelledError:
+                pass
+        self._channel_cleanup_task = None
         # Clean up all active voice connections *before* cancelling the bot task.
         # leave_voice_channel() ends in `await vc.disconnect()`, and discord.py's
         # VoiceClient.disconnect() sends a voice state update over the main
@@ -3386,13 +3446,14 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception:
                 plugin_names = set(); agentik_names = set()
             core_priority = {
+                "station-sessions": 0,
                 "clear": 0,
                 "panel": 1,
                 "account": 2,
                 "model": 3,
             }
             core_names = {
-                "help", "status", "new", "stop", "resume", "sessions", "model",
+                "station-sessions", "help", "status", "new", "stop", "resume", "sessions", "model",
                 "sethome", "clear", "undo", "approve", "deny", "queue",
                 "background", "context", "skills", "mcp", "restart", "version", "account", "panel",
             }
@@ -4037,6 +4098,54 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    def _channel_cleanup_state_path(self) -> _Path:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / "discord_channel_cleanup_state.json"
+
+    async def _delete_discord_channel_tree(self, channel_id: int, expected_guild_id: int) -> dict:
+        if not self._client:
+            raise RuntimeError("Discord client unavailable")
+        channel = self._client.get_channel(int(channel_id))
+        if channel is None:
+            channel = await self._client.fetch_channel(int(channel_id))
+        if getattr(channel, "guild", None) is None or int(channel.guild.id) != int(expected_guild_id):
+            raise RuntimeError("channel is not inside the exact expected guild")
+        children = list(channel.channels if hasattr(channel, "channels") else ())
+        deleted_children = 0
+        for child in children:
+            if getattr(child, "guild", None) is None or int(child.guild.id) != int(expected_guild_id):
+                raise RuntimeError("child channel escaped expected guild")
+            await child.delete(reason="Owner-authorized AGK Station cleanup")
+            deleted_children += 1
+        await channel.delete(reason="Owner-authorized AGK Station cleanup")
+        return {"channel_id": int(channel_id), "deleted_children": deleted_children}
+
+    async def _cleanup_configured_channel_ids(self) -> None:
+        ids = self.config.extra.get("cleanup_channel_ids") or []
+        expected_guild_id = int(self.config.extra.get("cleanup_expected_guild_id", 0) or 0)
+        if not expected_guild_id or not isinstance(ids, list):
+            return
+        path = self._channel_cleanup_state_path()
+        try:
+            state = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except Exception:
+            state = {}
+        completed = {str(value) for value in state.get("completed", [])}
+        failures = dict(state.get("failures") or {})
+        for raw in ids:
+            value = str(raw)
+            if not value.isdigit() or value in completed:
+                continue
+            try:
+                result = await self._delete_discord_channel_tree(int(value), expected_guild_id)
+                completed.add(value)
+                failures.pop(value, None)
+                logger.info("[Discord] Station cleanup deleted channel/category %s with %s child channel(s)", value, result["deleted_children"])
+            except Exception as exc:
+                failures[value] = type(exc).__name__
+                logger.warning("[Discord] Station cleanup blocked for channel/category %s (%s)", value, type(exc).__name__)
+        atomic_json_write(path, {"completed": sorted(completed), "failures": failures, "updated_at": time.time()}, indent=2)
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete one Discord message by id (best effort)."""
@@ -6544,6 +6653,71 @@ class DiscordAdapter(BasePlatformAdapter):
             "Choose a Hermes command category.", view=PanelView(), ephemeral=True,
         )
 
+    async def _fetch_account_usage_for_entries(self, provider: str, entries: list) -> dict[str, dict]:
+        """Fetch redacted per-credential usage with bounded concurrency/timeouts."""
+        semaphore = asyncio.Semaphore(3)
+
+        async def fetch_one(entry) -> tuple[str, dict]:
+            credential_id = str(getattr(entry, "id", "") or "")
+            access_token = getattr(entry, "access_token", None)
+            if not access_token:
+                return credential_id, {
+                    "available": False,
+                    "windows": [],
+                    "unavailable_reason": "Usage unavailable for this credential source.",
+                }
+
+            def fetch() -> dict:
+                from agent.account_usage import fetch_account_usage
+
+                snapshot = fetch_account_usage(
+                    provider,
+                    base_url=getattr(entry, "base_url", None),
+                    api_key=access_token,
+                )
+                if snapshot is None:
+                    return {
+                        "available": False,
+                        "windows": [],
+                        "unavailable_reason": "Provider did not expose account usage.",
+                    }
+                windows = []
+                for window in getattr(snapshot, "windows", ()) or ():
+                    used_raw = getattr(window, "used_percent", None)
+                    used = (
+                        None
+                        if used_raw is None
+                        else max(0.0, min(100.0, float(used_raw)))
+                    )
+                    reset_at = getattr(window, "reset_at", None)
+                    windows.append({
+                        "label": str(getattr(window, "label", "Limit") or "Limit"),
+                        "used_percent": used,
+                        "remaining_percent": None if used is None else 100.0 - used,
+                        "reset_at": reset_at.isoformat() if reset_at else None,
+                    })
+                return {
+                    "available": bool(windows),
+                    "windows": windows,
+                    "unavailable_reason": (
+                        None if windows else "Provider did not expose account usage."
+                    ),
+                }
+
+            async with semaphore:
+                try:
+                    result = await asyncio.wait_for(asyncio.to_thread(fetch), timeout=15)
+                except Exception:
+                    result = {
+                        "available": False,
+                        "windows": [],
+                        "unavailable_reason": "Usage refresh failed.",
+                    }
+            return credential_id, result
+
+        rows = await asyncio.gather(*(fetch_one(entry) for entry in entries))
+        return {credential_id: usage for credential_id, usage in rows if credential_id}
+
     async def _prefer_account_credential(self, provider: str, credential_id: str) -> str:
         from hermes_cli.auth import prefer_eligible_credential
         return await asyncio.to_thread(prefer_eligible_credential, provider, credential_id)
@@ -6582,6 +6756,10 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         tree = self._client.tree
+        try:
+            register_station_session_commands(self, tree)
+        except Exception as exc:
+            logger.warning("Station Session Control Center registration failed: %s", exc)
         # Dynamic Views are the durable public surface. Future profile bots
         # inherit this policy when sync-hermes installs the adapter.
         ui_only = str(
@@ -6609,6 +6787,10 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="panel", description="Open the interactive Hermes command center")
         async def slash_panel(interaction: discord.Interaction):
             await self._send_command_panel_interaction(interaction)
+
+        @tree.command(name="settings", description="Manage provider accounts, usage, and rotation")
+        async def slash_settings(interaction: discord.Interaction):
+            await self._send_account_picker_interaction(interaction)
 
         async def account_autocomplete(interaction: discord.Interaction, current: str):
             allowed, _reason = self._evaluate_slash_authorization(interaction)
@@ -6997,7 +7179,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # to preserve the slash UX for deployments that intentionally allow
         # everyone in the guild.
         if ui_only:
-            allowed_ui_commands = {"panel", "settings", "clear"}
+            allowed_ui_commands = {"station-sessions", "panel", "settings", "clear"}
             for registered in list(tree.get_commands()):
                 if getattr(registered, "name", "") not in allowed_ui_commands:
                     tree.remove_command(registered.name)
@@ -8690,6 +8872,52 @@ class DiscordAdapter(BasePlatformAdapter):
                 color=discord.Color.blue(),
             )
 
+        def provider_usage_embed(
+            provider: str,
+            label: str,
+            entries: list,
+            usage_by_id: dict[str, dict],
+        ):
+            lines = [
+                "Select an account to prefer. Automatic quota rotation remains enabled.",
+                "",
+            ]
+            if not entries:
+                lines.append("No connected account in this pool yet.")
+            for index, entry in enumerate(entries):
+                credential_id = str(getattr(entry, "id", "") or "")
+                lines.append(
+                    f"**Account {index + 1}** [`{credential_id}`] · `{entry_status(entry)}`"
+                )
+                usage = usage_by_id.get(credential_id) or {}
+                windows = usage.get("windows") or []
+                if not windows:
+                    lines.append("`──────────` Usage unavailable")
+                for window in windows[:3]:
+                    used = window.get("used_percent")
+                    remaining = window.get("remaining_percent")
+                    bar = _account_usage_progress_bar(used)
+                    if used is None or remaining is None:
+                        text = f"`{bar}` {window.get('label') or 'Limit'} · unavailable"
+                    else:
+                        text = (
+                            f"`{bar}` {window.get('label') or 'Limit'} · "
+                            f"TKN {round(float(used))}% used · {round(float(remaining))}% remaining"
+                        )
+                    reset_at = window.get("reset_at")
+                    if reset_at:
+                        text += f" · reset `{reset_at}`"
+                    lines.append(text)
+                lines.append("")
+            description = "\n".join(lines).strip()
+            if len(description) > 4000:
+                description = description[:3999] + _DISCORD_ELLIPSIS
+            return discord.Embed(
+                title=f"⚙ {label} Accounts & Usage",
+                description=description,
+                color=discord.Color.blue(),
+            )
+
         adapter = self
 
         class AccountPanelView(discord.ui.View):
@@ -8861,7 +9089,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not await self._authorized(component_interaction):
                     return
                 provider = component_interaction.data["values"][0]
-                self._build_account_controls(provider)
                 label = dict((
                     ("openai-codex", "OpenAI / ChatGPT"),
                     ("anthropic", "Anthropic / Claude"),
@@ -8869,16 +9096,14 @@ class DiscordAdapter(BasePlatformAdapter):
                     ("nous", "Nous"),
                 )).get(provider, "Provider")
                 entries = self.entries.get(provider) or []
-                description = (
-                    "Select the account to prefer. Automatic quota rotation remains enabled."
-                    if entries
-                    else "No connected account in this pool yet."
+                await component_interaction.response.defer()
+                usage_by_id = await adapter._fetch_account_usage_for_entries(
+                    provider, entries
                 )
-                await component_interaction.response.edit_message(
-                    embed=discord.Embed(
-                        title=f"🔐 {label}",
-                        description=description,
-                        color=discord.Color.blue(),
+                self._build_account_controls(provider)
+                await component_interaction.edit_original_response(
+                    embed=provider_usage_embed(
+                        provider, label, entries, usage_by_id
                     ),
                     view=self,
                 )
@@ -9226,7 +9451,9 @@ class DiscordAdapter(BasePlatformAdapter):
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
-        #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
+        #   discord.auto_thread: Compatibility opt-in for auto-threading mentions (default: false).
+        #   Station keeps normal work in the current channel/session; automatic
+        #   Discord threads are reserved for the station_interagent broker.
 
         thread_id = None
         parent_channel_id = None
@@ -9314,7 +9541,11 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
             skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
+            # Off by default: normal turns continue in their existing
+            # channel/session. Only an explicit compatibility opt-in may use
+            # Hermes auto-threading; Station inter-agent threads are created by
+            # the dedicated broker, outside this inbound-message path.
+            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "false").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
@@ -10453,8 +10684,7 @@ def _define_discord_view_classes() -> None:
 
             if self._model_page > 0:
                 prev_btn = discord.ui.Button(
-                    label="◀ Previous",
-                    style=discord.ButtonStyle.grey,
+                    label="◀ Previous", style=discord.ButtonStyle.grey,
                     custom_id="model_page_prev",
                 )
                 prev_btn.callback = self._on_model_page_prev
@@ -10462,8 +10692,7 @@ def _define_discord_view_classes() -> None:
 
             if self._model_page + 1 < page_count:
                 next_btn = discord.ui.Button(
-                    label="Next ▶",
-                    style=discord.ButtonStyle.grey,
+                    label="Next ▶", style=discord.ButtonStyle.grey,
                     custom_id="model_page_next",
                 )
                 next_btn.callback = self._on_model_page_next
@@ -10538,27 +10767,16 @@ def _define_discord_view_classes() -> None:
                 view=self,
             )
 
-        async def _change_model_page(
-            self,
-            interaction: discord.Interaction,
-            delta: int,
-        ):
+        async def _change_model_page(self, interaction: discord.Interaction, delta: int):
             if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
-                )
+                await interaction.response.send_message("You're not authorized~", ephemeral=True)
                 return
-
             provider = next(
-                (p for p in self.providers if p["slug"] == self._selected_provider),
-                None,
+                (p for p in self.providers if p["slug"] == self._selected_provider), None
             )
             if not provider:
-                await interaction.response.send_message(
-                    "Provider selection expired.", ephemeral=True
-                )
+                await interaction.response.send_message("Provider selection expired.", ephemeral=True)
                 return
-
             models = provider.get("models", [])
             pages = max(1, (len(models) + 24) // 25)
             target_page = max(0, min(self._model_page + delta, pages - 1))
