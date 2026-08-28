@@ -9,7 +9,7 @@ cargo clippy --locked --manifest-path "$repo_root/apps/agk-tui/Cargo.toml" --all
 cargo test --locked --manifest-path "$repo_root/apps/agk-tui/Cargo.toml"
 export PYTHONPATH="/opt/agk-terminal/hermes-agent${PYTHONPATH:+:$PYTHONPATH}"
 if command -v uv >/dev/null 2>&1; then
-  uv run --no-project --with pytest==9.0.2 --with pytest-asyncio --with httpx \
+  uv run --no-project --with pytest==9.0.2 --with pytest-asyncio --with httpx --with discord.py \
     --with PyYAML==6.0.3 python -m pytest -q "$repo_root/tests"
 elif python3 -c 'import pytest, pytest_asyncio, httpx, yaml' >/dev/null 2>&1; then
   python3 -m pytest -q "$repo_root/tests"

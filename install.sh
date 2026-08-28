@@ -189,11 +189,12 @@ else
 fi
 
 install -d -m 0755 "$install_root/bin" "$install_root/scripts" "$install_root/config" "$install_root/rmux" \
-  "$install_root/client" \
+  "$install_root/client" "$install_root/os-packages" \
   "$install_root/hermes/plugins/platforms" "$install_root/hermes/dashboard-themes" \
   "$install_root/agents" "$bin_dir"
 install -m 0755 "$agk_tui_binary" "$install_root/bin/agk-tui"
 install -m 0755 "$repo_root/scripts/agk_control.py" "$install_root/scripts/agk_control.py"
+install -m 0755 "$repo_root/scripts/os_profile_migration.py" "$install_root/scripts/os_profile_migration.py"
 install -m 0755 "$repo_root/scripts/tailnet_secure_input.py" "$install_root/scripts/tailnet_secure_input.py"
 install -m 0755 "$repo_root/scripts/install-discord-token.py" "$install_root/scripts/install-discord-token.py"
 install -m 0755 "$repo_root/scripts/provider.sh" "$install_root/scripts/provider.sh"
@@ -227,6 +228,8 @@ install -m 0644 "$repo_root/hermes/dashboard-themes/agentik-shadcn.yaml" \
 install -m 0644 "$repo_root/hermes/dashboard-themes/agentik-shadcn-light.yaml" \
   "$install_root/hermes/dashboard-themes/agentik-shadcn-light.yaml"
 cp -a "$repo_root/hermes/agents/master-os-builder" "$install_root/agents/"
+rm -rf "$install_root/os-packages"
+cp -a "$repo_root/os-packages" "$install_root/os-packages"
 rm -rf "$install_root/client"
 cp -a "$repo_root/client" "$install_root/client"
 install -m 0644 "$repo_root/rmux/rmux.conf" "$install_root/rmux/rmux.conf"

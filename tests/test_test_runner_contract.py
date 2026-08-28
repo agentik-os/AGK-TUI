@@ -10,5 +10,6 @@ def test_full_test_runner_declares_account_control_runtime_dependencies():
 
     assert "pytest-asyncio" in script
     assert "httpx" in script
+    assert "discord.py" in script
     assert "/opt/agk-terminal/hermes-agent" in script
     assert "PYTHONPATH" in script

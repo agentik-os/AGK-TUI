@@ -88,11 +88,11 @@ def test_default_resume_commands_use_documented_cli(monkeypatch):
     assert agk.default_command("codex", "X-1") == ["/verified/codex", "resume", "X-1"]
 
 
-def test_openrouter_sessions_pin_the_supported_model(monkeypatch):
+def test_explicit_openrouter_sessions_use_auto_not_ox_alpha(monkeypatch):
     monkeypatch.setattr(agk.shutil, "which", lambda name: f"/verified/{name}")
     monkeypatch.delenv("AGK_OPENROUTER_MODEL", raising=False)
     assert agk.default_command("openrouter") == [
-        "/verified/hermes", "--provider", "openrouter", "--model", "stealth/ox-alpha"
+        "/verified/hermes", "--provider", "openrouter", "--model", "openrouter/auto"
     ]
 
 
