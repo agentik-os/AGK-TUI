@@ -159,6 +159,8 @@ async def test_reconcile_uses_exact_owner_snowflake_when_member_cache_is_empty(t
         int(guild.me.id),
     }
     assert channel.can_view(ACCOUNT_CONTROL_OWNER_ID) is True
+    message = channel.messages[ACCOUNT_CONTROL_MESSAGE_ID]
+    assert message.edits[-1]["embeds"] == []
 
 
 class FakeResponse:

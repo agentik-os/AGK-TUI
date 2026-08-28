@@ -781,7 +781,7 @@ class AccountControlView(_ViewBase):
             self._build_components()
         content = _render_records(self.records)
         if self.message is not None:
-            await self.message.edit(content=content, view=self)
+            await self.message.edit(content=content, embeds=[], view=self)
         return outcome
 
 
@@ -975,7 +975,7 @@ async def _reconcile_account_control_channel(guild: Any, adapter: Any) -> Accoun
     if message is None:
         raise RuntimeError("exact account control post is unavailable; refusing replacement")
     else:
-        await message.edit(content=content, view=view)
+        await message.edit(content=content, embeds=[], view=view)
     if not getattr(message, "pinned", False):
         await message.pin(reason="Persistent AGK account control center")
     view.message = message

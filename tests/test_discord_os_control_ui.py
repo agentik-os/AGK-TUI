@@ -51,8 +51,9 @@ class Response:
 
 
 class Interaction:
-    def __init__(self, user_id):
+    def __init__(self, user_id, guild_id=1541131439599386644):
         self.user = type("User", (), {"id": user_id})()
+        self.guild_id = guild_id
         self.response = Response()
 
 
@@ -62,6 +63,15 @@ async def test_every_callback_rechecks_owner_authorization():
     interaction = Interaction(2)
     assert await view.interaction_check(interaction) is False
     assert interaction.response.messages == [("Not authorized", {"ephemeral": True})]
+
+
+@pytest.mark.asyncio
+async def test_owner_is_allowed_only_in_exact_agk_guild():
+    view = ui.OsControlView([record(1)], owner_ids={1})
+    assert await view.interaction_check(Interaction(1)) is True
+    wrong_guild = Interaction(1, guild_id=999999999999999999)
+    assert await view.interaction_check(wrong_guild) is False
+    assert wrong_guild.response.messages[-1] == ("Not authorized", {"ephemeral": True})
 
 
 class Tree:
@@ -105,3 +115,82 @@ def test_snapshot_loader_ignores_assignment_rows_without_explicit_owner(tmp_path
     assert [(row.os_id, row.owner_environment) for row in rows] == [
         ("builder-os", "operator"), ("mindset-os", "private"),
     ]
+
+
+def test_private_secure_input_installer_is_owner_scoped_and_application_bound(tmp_path):
+    row = ui.OsViewRecord(
+        os_id="nutrition-os", name="Nutrition OS", version="0.3.0",
+        owner_environment="private", profile_id="nutrition-os", profile_state="ready",
+        agent_state="ready", discord_mode="dedicated", discord_state="owner-prerequisite",
+        doctor_state="ready",
+    )
+
+    argv = ui.secure_input_installer_argv(row, "1542135948475637861")
+
+    assert argv[:5] == ["sudo", "-n", "-u", "private", "env"]
+    assert "HOME=/home/private" in argv
+    assert "--target" in argv
+    assert "/home/private/.hermes/profiles/nutrition-os/.env" in argv
+    assert argv[-2:] == ["--expected-application", "1542135948475637861"]
+
+
+def test_public_application_state_persists_only_public_ids(tmp_path):
+    path = tmp_path / "state.json"
+    ui.persist_application_id(path, "nutrition-os", "1542135948475637861")
+    payload = __import__("json").loads(path.read_text())
+    assert payload == {"applications": {"nutrition-os": "1542135948475637861"}, "schema": "agk.os-control-public.v1"}
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert "token" not in path.read_text().lower()
+
+
+@pytest.mark.asyncio
+async def test_dedicated_bot_absent_returns_locked_oauth_url(tmp_path):
+    row = ui.OsViewRecord(
+        os_id="nutrition-os", name="Nutrition OS", version="0.3.0",
+        owner_environment="private", profile_id="nutrition-os", profile_state="ready",
+        agent_state="ready", discord_mode="dedicated", discord_state="owner-prerequisite",
+        doctor_state="ready",
+    )
+
+    async def missing(_interaction, _application_id):
+        return False
+
+    view = ui.OsControlView([row], owner_ids={1}, state_path=tmp_path / "state.json", membership_checker=missing)
+    interaction = Interaction(1)
+    await view.complete_discord_setup(interaction, "1542135948475637861")
+
+    content, kwargs = interaction.response.messages[-1]
+    assert "https://discord.com/oauth2/authorize?" in content
+    assert "guild_id=1541131439599386644" in content
+    assert "client_id=1542135948475637861" in content
+    assert kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_dedicated_bot_member_starts_https_secure_input(tmp_path):
+    row = ui.OsViewRecord(
+        os_id="nutrition-os", name="Nutrition OS", version="0.3.0",
+        owner_environment="private", profile_id="nutrition-os", profile_state="ready",
+        agent_state="ready", discord_mode="dedicated", discord_state="owner-prerequisite",
+        doctor_state="ready",
+    )
+    captured = []
+
+    async def present(_interaction, _application_id):
+        return True
+
+    async def launch(argv):
+        captured.append(argv)
+        return "https://agk-core.tail.example/one-time"
+
+    view = ui.OsControlView(
+        [row], owner_ids={1}, state_path=tmp_path / "state.json",
+        membership_checker=present, route_launcher=launch,
+    )
+    interaction = Interaction(1)
+    await view.complete_discord_setup(interaction, "1542135948475637861")
+
+    assert captured and captured[0][-2:] == ["--expected-application", "1542135948475637861"]
+    content, kwargs = interaction.response.messages[-1]
+    assert content == "Secure Input ready: https://agk-core.tail.example/one-time"
+    assert kwargs["ephemeral"] is True
