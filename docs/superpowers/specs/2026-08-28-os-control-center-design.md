@@ -51,6 +51,19 @@ An OS may be marked `active` only when all required objects are present and veri
 - no Discord route or token;
 - package/profile/agent lifecycle remains valid.
 
+### 3.2 Canonical ownership and location
+
+Linux homes are trust domains. A non-default profile exists in exactly one owning home and is never copied merely to make it visible elsewhere.
+
+- Operator owns global infrastructure, Builder OS, Evaluation OS and trusted audit/control profiles.
+- Agentik owns organisation OS products, including Research OS, Strategy OS and YouTube OS.
+- Mission owns Collective and every client profile, including DentistryGPT.
+- Private owns Nutrition OS and personal OS products.
+
+`default` is reserved for the environment control profile in each home. Every OS and client has one dedicated named profile under its canonical owner. Agents bind to that profile; an agent name is not automatically a separate profile. Environment/project/client assignments grant scoped access to the canonical OS through AGK and never copy its profile, memories, sessions, OAuth state or token.
+
+Hermes' native profile list remains local by design. AGK Fleet and `/os` provide the complete cross-home catalog with environment, Linux owner, profile kind, OS/client binding, gateway and doctor status.
+
 ## 4. Registry schema
 
 Each current-version OS registry entry gains a normalized runtime section:
@@ -87,6 +100,8 @@ runtime_contract:
 
 Rules:
 - profile and agent fields are mandatory for every active OS;
+- each OS has one canonical owner/profile; assignments outside that home are access grants, not profile copies;
+- client profiles may exist only under Mission and personal profiles only under Private;
 - Discord application IDs are public metadata;
 - tokens and credential-derived values never enter the registry;
 - current version is one registry row per OS; previous package bytes remain as rollback artifacts outside the active index;
@@ -181,19 +196,45 @@ Each profile declares:
 - OS registry identity;
 - optional Discord home channel and gateway.
 
-At least one registry-backed owning agent must reference the profile and OS. Installation is incomplete if the agent manifest, prompt or profile binding is missing.
+At least one registry-backed owning agent must reference the profile and OS. Installation is incomplete if the agent manifest, prompt, environment scope or profile binding is missing. Fleet-copied agent catalogs must not claim a local profile that does not exist; remote OS access resolves through the canonical owner binding.
 
-## 10. Migration of current OS inventory
+## 10. Migration of current profile inventory
 
-The migration is preview-first and non-destructive.
+The migration is preview-first, ownership-aware and non-destructive.
 
-- Builder OS: dedicated profile `builder-os`; owning agent `master-os-builder`; environment bot by default.
-- Evaluation OS: dedicated profile `evaluation-os`; owning agent `evidence-auditor`; Discord disabled by default.
-- Research OS: dedicated profile `research-os`; owning agent `oracle`; Discord disabled by default.
-- Strategy OS: dedicated profile `strategy-os`; owning agent `product-strategy`; Discord disabled by default.
-- Nutrition OS: preserve dedicated profile `nutrition-os`; owning agent `nutrition-specialist`; dedicated bot mode remains blocked until owner OAuth installs application `1542135948475637861` into AGK, then Secure Input validates and stores the token.
+### 10.1 Current findings
 
-Existing profile data, secrets, memories, sessions and OAuth state are preserved. Migration never silently activates a new Discord bot or channel.
+- Operator exposes `default` and `nutrition-os`, although Nutrition is a personal OS and belongs under Private.
+- Agentik has specialist profiles such as `agk-architect`, `evidence-auditor`, `oracle` and `product-strategy`, but the registry OS IDs do not have canonical same-name profiles.
+- Mission correctly contains `default`, `collective` and the DentistryGPT client profile.
+- Private contains `default` and three personal distributions.
+- Core OS assignments are copied across environments even though profile ownership is unresolved.
+- Fleet-copied agent manifests contain invalid local profile references in some homes.
+- Nutrition's assignment still names `1.0.1` while the active package/profile is `1.1.0`.
+
+### 10.2 Target ownership map
+
+- Builder OS -> Operator profile `builder-os`; owning agent `master-os-builder`; optional role `agk-architect`; environment bot by default.
+- Evaluation OS -> Operator profile `evaluation-os`; owning agent `evidence-auditor`; Discord disabled by default.
+- Research OS -> Agentik profile `research-os`; owning agent `oracle`; Discord disabled by default.
+- Strategy OS -> Agentik profile `strategy-os`; owning agent `product-strategy`; Discord disabled by default.
+- Nutrition OS -> Private profile `nutrition-os`; owning agent `nutrition-specialist`; dedicated bot mode remains blocked until owner OAuth installs application `1542135948475637861` into AGK and Private-local Secure Input validates a replacement token.
+- YouTube OS -> Agentik profile `youtube-os`; preserve its existing state and classify/register its package before activation.
+- Collective -> Mission profile `collective`.
+- DentistryGPT -> Mission profile `clientdentistrygptee881c`, with normalized client/distribution metadata and display name.
+- Future clients -> exactly one Mission-local `client-<slug>-<stable-id>` profile and owning client agent.
+
+### 10.3 Legacy specialist and personal profiles
+
+Agentik profiles `agk-architect`, `evidence-auditor`, `oracle` and `product-strategy` are candidate state sources for their mapped OS profile. Migrate with Hermes export/import or distribution semantics inside Agentik, preserve the legacy profile as a rollback alias, and archive it only after the canonical OS profile passes doctor.
+
+Profiles `brand-guardian`, `content-director`, `growth-community`, `story-journal` and `vat-worker` must be classified as OS, standalone agent, worker or deprecated before any rename or archive. No name-based merge is allowed.
+
+Private profiles `personal-mentor`, `personal-operator` and `personal-strategist` remain Private-only. They must gain explicit personal-OS registry identities or be classified as non-OS profiles; they are never copied to another home.
+
+Nutrition migration from Operator to Private is a staged ownership transfer, not a filesystem copy. Build and doctor the Private profile first, request the dedicated bot token again through Private-local Secure Input, verify Discord and state migration through an explicit sanitized export, then quarantine the Operator legacy profile. Never copy `.env`, `auth.json`, raw state databases or OAuth credentials across homes.
+
+Existing profile data, secrets, memories, sessions and OAuth state are preserved within their owner boundary. Migration never silently activates a new Discord bot or channel.
 
 ## 11. Failure handling
 
@@ -243,6 +284,9 @@ Existing profile data, secrets, memories, sessions and OAuth state are preserved
 - verify Secure Input using a non-production dummy credential path where safe;
 - for an already authorized real bot, verify identity, websocket, inbound non-empty text, authorization, inference, outbound response and native readback;
 - exercise rollback and confirm no unrelated gateway PID changes.
+- verify the global Fleet catalog equals the union of the four local Hermes profile inventories without duplicates;
+- verify each active OS resolves to one canonical profile under its declared owner;
+- verify every client resolves to one Mission-local profile and no client profile exists in another home;
 
 ## 14. Rollout
 
@@ -265,6 +309,9 @@ No fleet-wide gateway restart is permitted. Reload only the exact gateway whose 
 The mission is complete only when:
 
 - every active OS has a dedicated Hermes profile and owning agent;
+- every OS profile exists only in its canonical owner home while remote assignments resolve through AGK;
+- every client has exactly one Mission-local profile and owning agent;
+- Fleet `/os` exposes the complete cross-home catalog while native Hermes profile lists remain local;
 - every OS has an explicit Discord mode;
 - Builder OS enforces the contract;
 - `/os` is a real dynamic Discord View;
