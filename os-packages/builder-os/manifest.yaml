@@ -1,0 +1,26 @@
+schema_version: "1.0"
+id: builder-os
+name: Builder OS
+version: 0.2.0
+description: Verified delivery system for architecture, implementation, testing, review, deployment, and rollback.
+scope: [global, operator, agentik, mission, private, client, project, session]
+status: active
+license: AGK-internal
+dependencies: [strategy-os@0.1.0]
+capabilities: [architecture, test-driven implementation, code review, deployment, rollback, runtime-contract]
+skills: [verified-builder]
+workflows: [build-cycle, os-runtime-delivery]
+agents: [agk-architect, master-os-builder]
+tools: [terminal, file, coding, delegation, kanban]
+commands: [build plan, build verify]
+knowledge: [README.md]
+evals: [evals/cases.json]
+runtime_contract:
+  required:
+    - canonical-owner
+    - hermes-profile
+    - owning-agent
+    - provider-fallback
+    - discord-mode
+    - doctor
+    - rollback
