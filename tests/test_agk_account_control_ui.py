@@ -742,7 +742,8 @@ async def test_bound_reconnect_rejects_stale_account_context(tmp_path):
     )
 
     assert runner.calls == []
-    assert "stale" in interaction.response.messages[-1][0].lower()
+    assert interaction.response.messages[0] == ("defer", {"ephemeral": True})
+    assert "stale" in interaction.followups[-1][0].lower()
 
 
 @pytest.mark.asyncio

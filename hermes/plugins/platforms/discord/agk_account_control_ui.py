@@ -553,6 +553,7 @@ class AccountControlView(_ViewBase):
     ) -> None:
         if not await self._authorized(interaction):
             return
+        await interaction.response.defer(ephemeral=True)
         records = await asyncio.to_thread(_load_records, self.adapter)
         exact = next(
             (
@@ -564,7 +565,7 @@ class AccountControlView(_ViewBase):
             None,
         )
         if exact is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "This reconnect control is stale; select the account again.", ephemeral=True
             )
             return
@@ -583,9 +584,13 @@ class AccountControlView(_ViewBase):
     ) -> None:
         stable_provider = provider or self.selected_provider
         if stable_provider not in {"openai-codex", "anthropic"}:
-            await interaction.response.send_message("Select a provider first.", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send("Select a provider first.", ephemeral=True)
+            else:
+                await interaction.response.send_message("Select a provider first.", ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         runner = self._ensure_runner()
         try:
             snapshot_store = getattr(self.adapter, "_account_control_snapshot_store", None)
