@@ -145,3 +145,11 @@ def test_agk_help_documents_interactive_session_and_setup_surfaces():
     assert result.returncode == 0, result.stderr
     for command in ("agk new", "agk close", "agk provider", "agk composio", "agk topology"):
         assert command in result.stdout
+
+
+def test_agk_interactive_launcher_runs_tui_directly_at_the_current_terminal_size():
+    source = AGK.read_text(encoding="utf-8")
+
+    assert 'exec "$install_root/bin/agk-tui"' in source
+    assert "session=station-tui" not in source
+    assert "rmux new-session -A" not in source
