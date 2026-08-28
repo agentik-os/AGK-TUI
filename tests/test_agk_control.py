@@ -315,6 +315,7 @@ def test_public_single_user_environment_config(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("USER", "public-user")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("AGK_ENVIRONMENT", raising=False)
     monkeypatch.setenv("AGK_ENV_CONFIG", str(config))
     env = agk.Environment.current()
     assert env.name == "mission"
@@ -327,6 +328,7 @@ def test_public_environment_rejects_unknown_scope(tmp_path, monkeypatch):
     config.write_text("environment: super-root\n", encoding="utf-8")
     monkeypatch.setenv("USER", "public-user")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("AGK_ENVIRONMENT", raising=False)
     monkeypatch.setenv("AGK_ENV_CONFIG", str(config))
     try:
         agk.Environment.current()

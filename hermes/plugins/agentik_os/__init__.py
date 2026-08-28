@@ -7,8 +7,11 @@ and their command grammar without adding model-tool schema to the core.
 from __future__ import annotations
 
 from .commands import AgentikCommandService
+from .nutrition_command import dispatch as dispatch_nutrition
 from .runtime_tool import RUNTIME_TOOL_SCHEMA, handle_runtime, runtime_available
 from .agent_registry import AGENT_TOOL_SCHEMA, AgentCommandService, agent_router_prompt, handle_agent
+from .owner_context import owner_context_prompt
+from .interagent import INTERAGENT_TOOL_SCHEMA, broker_available, handle_interagent, interagent_prompt
 from .rules import rules_prompt
 
 
@@ -21,6 +24,18 @@ def register(ctx) -> None:
             description=service.description(name),
             args_hint="<action> [target] [options]",
         )
+    ctx.register_command(
+        "nutrition",
+        handler=dispatch_nutrition,
+        description="Operate the active Nutrition OS cycle.",
+        args_hint="status|plan|shop|prep|next|audit|reset [options]",
+    )
+    ctx.register_command(
+        "food",
+        handler=dispatch_nutrition,
+        description="Compatibility alias for the active Nutrition OS cycle.",
+        args_hint="status|plan|shop|prep|next|audit|reset [options]",
+    )
     ctx.register_tool(
         name="agentik_runtime",
         toolset="terminal",
@@ -46,15 +61,24 @@ def register(ctx) -> None:
         description="Specialized Hermes agents backed by persistent AGK/RMUX runtimes.",
         emoji="🤖",
     )
-    ctx.register_system_prompt_section(
-        "agentik.agent-router",
-        agent_router_prompt,
-        position="after_memory",
-        max_chars=1400,
+    ctx.register_tool(
+        name="station_interagent",
+        toolset="terminal",
+        schema=INTERAGENT_TOOL_SCHEMA,
+        handler=handle_interagent,
+        check_fn=broker_available,
+        description="UID-authenticated non-secret team messaging across Station agents, administered by Operator.",
+        emoji="↔",
     )
     ctx.register_system_prompt_section(
-        "agentik.global-rules",
-        rules_prompt,
-        position="after_memory",
-        max_chars=4000,
+        "agentik.agent-router", agent_router_prompt, position="after_memory", max_chars=1400,
+    )
+    ctx.register_system_prompt_section(
+        "agentik.global-rules", rules_prompt, position="after_memory", max_chars=3999,
+    )
+    ctx.register_system_prompt_section(
+        "agentik.owner-context", owner_context_prompt, position="after_memory", max_chars=3999,
+    )
+    ctx.register_system_prompt_section(
+        "agentik.interagent", interagent_prompt, position="after_memory", max_chars=1200,
     )
