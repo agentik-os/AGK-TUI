@@ -39,7 +39,10 @@ def records_from_snapshot(path: Path) -> list[OsViewRecord]:
         for item in station.get("os") or []:
             if not isinstance(item, dict) or not item.get("id"):
                 continue
-            owner = str(item.get("owner_environment") or environment)
+            owner_value = item.get("owner_environment")
+            if not owner_value:
+                continue
+            owner = str(owner_value)
             if owner != environment:
                 continue
             record = OsViewRecord(

@@ -84,3 +84,24 @@ def test_register_adds_exact_os_application_command():
     command, override = bot.tree.commands[0]
     assert command.name == "os"
     assert override is True
+
+
+def test_snapshot_loader_ignores_assignment_rows_without_explicit_owner(tmp_path):
+    snapshot = tmp_path / "fleet.json"
+    snapshot.write_text(__import__("json").dumps({"organisations": {
+        "operator": {"os": [{
+            "id": "builder-os", "name": "Builder OS", "version": "0.2.0",
+            "owner_environment": "operator", "profile_state": "ready", "agent_state": "ready",
+        }]},
+        "private": {"os": [
+            {"id": "builder-os", "name": "Builder OS", "version": "0.2.0", "assigned": True},
+            {"id": "mindset-os", "name": "Mindset OS", "version": "0.3.0",
+             "owner_environment": "private", "profile_state": "ready", "agent_state": "ready"},
+        ]},
+    }}))
+
+    rows = ui.records_from_snapshot(snapshot)
+
+    assert [(row.os_id, row.owner_environment) for row in rows] == [
+        ("builder-os", "operator"), ("mindset-os", "private"),
+    ]
