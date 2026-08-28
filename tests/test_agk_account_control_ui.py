@@ -595,6 +595,7 @@ async def test_add_starts_one_openai_attempt_and_exposes_only_allowlisted_instru
     runner = SpyRunner()
     view = ui.AccountControlView(adapter, runner=runner)
     view.selected_provider = "openai-codex"
+    view.message = FakeMessage(ACCOUNT_CONTROL_MESSAGE_ID)
     interaction = FakeInteraction("agkacct:add")
 
     await view.start_add(interaction, "Agentik")
@@ -622,6 +623,9 @@ async def test_add_starts_one_openai_attempt_and_exposes_only_allowlisted_instru
     assert "2000" in response
     assert "must-not-leak" not in response
     assert "access_token" not in response
+    close = next(item for item in view.children if item.custom_id == "agkacct:close")
+    assert close.disabled is False
+    assert view.message.edits[-1]["view"] is view
 
 
 @pytest.mark.asyncio
@@ -890,10 +894,14 @@ async def test_close_cancels_only_selected_live_attempt(tmp_path):
     runner = SpyRunner()
     view = ui.AccountControlView(FakeAdapter(tmp_path), runner=runner)
     view.selected_attempt_id = "b" * 32
+    view.message = FakeMessage(ACCOUNT_CONTROL_MESSAGE_ID)
 
     await view.dispatch(FakeInteraction("agkacct:close"))
 
     assert runner.calls == [("cancel", "b" * 32)]
+    close = next(item for item in view.children if item.custom_id == "agkacct:close")
+    assert close.disabled is True
+    assert view.message.edits[-1]["view"] is view
 
 
 @pytest.mark.asyncio

@@ -639,6 +639,10 @@ class AccountControlView(_ViewBase):
             )
             return
         self.selected_attempt_id = attempt.attempt_id
+        if discord:
+            self._build_components()
+        if self.message is not None:
+            await self.message.edit(view=self)
         payload = await self._wait_for_oauth_result(runner, attempt)
         text = self._oauth_instructions(attempt, payload)
         kwargs: dict[str, Any] = {"ephemeral": True}
@@ -721,6 +725,10 @@ class AccountControlView(_ViewBase):
         cancelled = await asyncio.to_thread(self._ensure_runner().cancel, attempt_id)
         if cancelled:
             self.selected_attempt_id = ""
+            if discord:
+                self._build_components()
+            if self.message is not None:
+                await self.message.edit(view=self)
         await interaction.followup.send(
             "OAuth attempt closed." if cancelled else "OAuth attempt was already closed.",
             ephemeral=True,
