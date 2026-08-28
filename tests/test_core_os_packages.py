@@ -71,7 +71,8 @@ def test_reconciles_core_assignments_without_dropping_existing_records(tmp_path)
         path = operator if org == "operator" else homes / org / ".agentik" / "os-assignments.yaml"
         rows = yaml.safe_load(path.read_text())["assignments"]
         refs = {row["os"] for row in rows if row["target"] == org}
-        assert {"research-os@0.1.0", "strategy-os@0.1.0", "builder-os@0.1.0", "evaluation-os@0.1.0"}.issubset(refs)
+        assert {"research-os@0.1.0", "strategy-os@0.1.0", "builder-os@0.2.0", "evaluation-os@0.1.0"}.issubset(refs)
+        assert "builder-os@0.1.0" not in refs
         if org != "operator":
             assert "custom-os@9.0.0" in refs
 

@@ -82,6 +82,7 @@ def test_install_packages_os_control_center_and_builder_runtime_contract():
 
     for asset in (
         "os_profile_migration.py",
+        "install_core_os_packages.py",
         "tailnet_secure_input.py",
         "install-discord-token.py",
         'cp -a "$repo_root/os-packages" "$install_root/os-packages"',

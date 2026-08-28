@@ -155,7 +155,7 @@ def install_packages(source: Path, registry: Path) -> list[str]:
 CORE_REFERENCES = (
     "research-os@0.1.0",
     "strategy-os@0.1.0",
-    "builder-os@0.1.0",
+    "builder-os@0.2.0",
     "evaluation-os@0.1.0",
 )
 
@@ -192,6 +192,11 @@ def reconcile_fleet_assignments(homes_root: Path, operator_path: Path) -> None:
             document = {}
         rows = document.get("assignments") if isinstance(document, dict) else []
         records = [dict(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+        core_ids = {reference.split("@", 1)[0] for reference in CORE_REFERENCES}
+        records = [
+            row for row in records
+            if str(row.get("os") or "").split("@", 1)[0] not in core_ids
+        ]
         for reference in CORE_REFERENCES:
             record = {"os": reference, "scope": "environment", "target": organisation}
             if record not in records:
