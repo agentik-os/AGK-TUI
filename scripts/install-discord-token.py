@@ -787,6 +787,9 @@ def install_token(
             "DISCORD_FREE_RESPONSE_CHANNELS": str(home_channel),
             "DISCORD_REQUIRE_MENTION": "true",
             "DISCORD_MESSAGE_CONTENT_INTENT": "true",
+            "DISCORD_ALLOW_ALL_USERS": "false",
+            "DISCORD_ALLOW_BOTS": "mentions",
+            "DISCORD_BOTS_REQUIRE_INLINE_MENTION": "true",
         })
     output = _replace_env_values(current, updates)
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

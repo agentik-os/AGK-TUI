@@ -210,6 +210,46 @@ def test_managed_env_keys_are_deduplicated_and_cannot_override_later():
     ]
 
 
+def test_installer_persists_loop_safe_bot_admission_defaults(tmp_path, monkeypatch):
+    profile = tmp_path / ".hermes/profiles/nutrition-os"
+    profile.mkdir(parents=True)
+    (profile / "distribution.yaml").write_text(
+        "owner_environment: private\nprofile_id: nutrition-os\nos_id: nutrition-os\nversion: 0.3.0\n",
+        encoding="utf-8",
+    )
+    target = profile / ".env"
+    target.write_text("", encoding="utf-8")
+    monkeypatch.setattr(installer, "validate_discord_token", lambda _secret: {
+        "id": "1542135948475637861",
+        "username": "Nutrition OS",
+        "application_id": "1542135948475637861",
+        "guilds": ["1541131439599386644"],
+    })
+
+    installer.install_token(
+        "secret",
+        target,
+        expected_guild="1541131439599386644",
+        expected_application="1542135948475637861",
+        allowed_root=profile,
+        home_channel="1542137541572956193",
+        profile_id="nutrition-os",
+        expected_os_id="nutrition-os",
+        expected_os_version="0.3.0",
+        preflight=lambda **_kwargs: None,
+        finalizer=lambda **_kwargs: None,
+    )
+
+    values = dict(
+        line.split("=", 1)
+        for line in target.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    assert values["DISCORD_ALLOW_ALL_USERS"] == "false"
+    assert values["DISCORD_ALLOW_BOTS"] == "mentions"
+    assert values["DISCORD_BOTS_REQUIRE_INLINE_MENTION"] == "true"
+
+
 def test_proc_start_time_parser_handles_parenthesized_comm_with_spaces():
     raw = "123 (hermes gateway worker) " + " ".join(["S"] + ["0"] * 18 + ["987654"])
     assert installer._parse_proc_start_time(raw) == 987654
