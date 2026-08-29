@@ -21,6 +21,8 @@ def load(name: str, path: Path):
 
 registry = load("agk_meeting_registry", MODULE_DIR / "meeting_registry.py")
 publication = load("agk_meeting_publication", MODULE_DIR / "meeting_publication.py")
+actions = load("agk_meeting_actions", MODULE_DIR / "meeting_actions.py")
+forum = load("agk_meeting_forum", MODULE_DIR / "meeting_forum.py")
 live = load("agk_meeting_live", MODULE_DIR / "meeting_live.py")
 
 
@@ -236,6 +238,26 @@ def test_persistent_discord_client_creates_reads_and_updates_exact_targets(
     assert (tmp_path / "publication-state.json").stat().st_mode & 0o777 == 0o600
 
 
+def test_persistent_client_discards_stale_discord_handles(tmp_path: Path) -> None:
+    transport = FakeDiscordTransport()
+    state_path = tmp_path / "publication-state.json"
+    client = live.PersistentDiscordMeetingClient(transport, state_path)
+
+    surface = client.create_surface(registry.EVENTS_CHANNEL_ID, "upcoming", "first")
+    del transport.messages[(str(registry.EVENTS_CHANNEL_ID), str(surface["message_id"]))]
+    assert client.get_surface(registry.EVENTS_CHANNEL_ID, "upcoming") is None
+
+    post = client.create_forum_post(
+        registry.MEETINGS_FORUM_ID, "meeting:one", "Review", "report"
+    )
+    del transport.channels[str(post["thread_id"])]
+    assert client.get_forum_post(registry.MEETINGS_FORUM_ID, "meeting:one") is None
+
+    state = json.loads(state_path.read_text())
+    assert state["surfaces"] == {}
+    assert state["posts"] == {}
+
+
 def test_live_sync_is_idempotent_with_provider_and_discord_seams(
     tmp_path: Path,
 ) -> None:
@@ -268,9 +290,13 @@ def test_live_sync_is_idempotent_with_provider_and_discord_seams(
     )
 
     assert first["registry"] == "updated"
-    assert first["discord"]["events"] == "created"
+    assert first["discord"]["events"] == "disabled"
     assert second["registry"] == "unchanged"
-    assert second["discord"]["events"] == "unchanged"
+    assert second["discord"]["events"] == "disabled"
+    assert all(
+        f"/channels/{registry.EVENTS_CHANNEL_ID}" not in path
+        for _method, path in transport.calls
+    )
     assert sum(
         method in {"POST", "PATCH", "DELETE"} for method, _ in transport.calls
     ) == write_count

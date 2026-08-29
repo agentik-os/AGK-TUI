@@ -102,6 +102,10 @@ class DiscordRestTransport:
         try:
             with self.open_request(request, timeout=30) as response:
                 raw = response.read()
+        except urllib.error.HTTPError as exc:
+            if method == "GET" and exc.code == 404:
+                raise KeyError(path) from None
+            raise RuntimeError("Discord API request failed") from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise RuntimeError("Discord API request failed") from exc
         if not raw:

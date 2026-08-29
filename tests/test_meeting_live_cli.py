@@ -4,7 +4,10 @@ import importlib.util
 import json
 import subprocess
 import sys
+import urllib.error
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "meeting_registry_live.py"
@@ -75,6 +78,17 @@ def test_discord_transport_keeps_token_only_in_authorization_header() -> None:
     assert observed["headers"]["Authorization"] == "Bot private-token"
     assert b"private-token" not in observed["data"]
     assert "private-token" not in observed["url"]
+
+
+def test_discord_transport_maps_get_404_to_missing_resource() -> None:
+    module = load_script()
+
+    def open_request(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+    transport = module.DiscordRestTransport("private-token", open_request=open_request)
+    with pytest.raises(KeyError):
+        transport.request("GET", "/channels/456/messages/123")
 
 
 def test_live_cli_imports_in_a_fresh_python_process() -> None:

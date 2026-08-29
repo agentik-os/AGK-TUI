@@ -218,13 +218,19 @@ class PersistentDiscordMeetingClient:
 
     def get_surface(self, channel_id: int, key: str) -> dict[str, Any] | None:
         state = self._load_state()
-        saved = state["surfaces"].get(self._surface_key(channel_id, key))
+        state_key = self._surface_key(channel_id, key)
+        saved = state["surfaces"].get(state_key)
         if not isinstance(saved, dict) or not isinstance(saved.get("message_id"), int):
             return None
         message_id = saved["message_id"]
-        row = self.transport.request(
-            "GET", f"/channels/{channel_id}/messages/{message_id}"
-        )
+        try:
+            row = self.transport.request(
+                "GET", f"/channels/{channel_id}/messages/{message_id}"
+            )
+        except KeyError:
+            state["surfaces"].pop(state_key, None)
+            self._save_state(state)
+            return None
         if str(row.get("channel_id")) != str(channel_id) or str(row.get("id")) != str(
             message_id
         ):
@@ -257,17 +263,23 @@ class PersistentDiscordMeetingClient:
 
     def get_forum_post(self, forum_id: int, key: str) -> dict[str, Any] | None:
         state = self._load_state()
-        saved = state["posts"].get(self._post_key(forum_id, key))
+        state_key = self._post_key(forum_id, key)
+        saved = state["posts"].get(state_key)
         if not isinstance(saved, dict):
             return None
         thread_id = saved.get("thread_id")
         message_id = saved.get("message_id")
         if not isinstance(thread_id, int) or not isinstance(message_id, int):
             return None
-        thread = self.transport.request("GET", f"/channels/{thread_id}")
-        message = self.transport.request(
-            "GET", f"/channels/{thread_id}/messages/{message_id}"
-        )
+        try:
+            thread = self.transport.request("GET", f"/channels/{thread_id}")
+            message = self.transport.request(
+                "GET", f"/channels/{thread_id}/messages/{message_id}"
+            )
+        except KeyError:
+            state["posts"].pop(state_key, None)
+            self._save_state(state)
+            return None
         if (
             str(thread.get("id")) != str(thread_id)
             or str(thread.get("parent_id")) != str(forum_id)
@@ -507,6 +519,6 @@ def run_live_sync(
         "registry": "updated" if changed else "unchanged",
         "actions": "updated" if actions_changed else "unchanged",
         "meeting_count": len(meetings),
-        "discord": sync_discord(discord, meetings, now=start),
+        "discord": {"events": "disabled", "meeting_posts": {}},
         "forum": sync_meeting_forum(discord, meetings, now=start),
     }
