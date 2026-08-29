@@ -116,8 +116,13 @@ def completion_available(): return _harness_path().is_file()
 
 async def handle_completion(args:dict, **_kwargs):
  from tools.registry import tool_error,tool_result
+ action=str(args.get("action") or "")
+ if action=="add_requirement":
+  for field in ("prompt_id","mission_id"):
+   if not str(args.get(field) or "").strip():
+    return tool_error(f"{field} is required for add_requirement")
  try:
-  action=str(args.get("action") or ""); store=open_store()
+  store=open_store()
   try:
    if action=="archive":
     value=store.archive_prompt(str(args.get("text") or ""),source=str(args.get("source") or "agent"),session_id=str(args.get("session_id") or "unknown"),profile=str(args.get("profile") or "default")); return tool_result({"success":True,"prompt_id":value})

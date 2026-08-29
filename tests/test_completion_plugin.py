@@ -50,6 +50,19 @@ def test_completion_handler_accepts_registry_context_and_executes(tmp_path,monke
  assert json.loads(result)["success"] is True
 
 
+def test_add_requirement_reports_missing_graph_identifiers_without_keyerror(tmp_path,monkeypatch):
+ module=load()
+ monkeypatch.setenv("HERMES_HOME",str(tmp_path/".hermes"))
+ monkeypatch.setenv("AGK_TERMINAL_ROOT",str(ROOT))
+ monkeypatch.syspath_prepend("/opt/agk-terminal/hermes-agent")
+ result=asyncio.run(module.handle_completion({
+  "action":"add_requirement","mission_id":"MISS-test","text":"Verify recovery",
+ }))
+ payload=json.loads(result)
+ assert payload["error"]=="prompt_id is required for add_requirement"
+ assert "KeyError" not in payload["error"]
+
+
 def test_completion_tool_is_registered_as_async():
  source=PLUGIN_INIT.read_text()
  block=source[source.index('name="agk_completion"'):source.index('emoji="✓"')]
