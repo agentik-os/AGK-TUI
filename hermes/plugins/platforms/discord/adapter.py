@@ -171,7 +171,11 @@ try:
         reconcile_account_control_channel,
         register_account_control_center,
     )
-    from .agk_os_control_ui import records_from_snapshot, register_os_control_center
+    from .agk_os_control_ui import (
+        records_from_snapshot,
+        register_os_control_center,
+        station_ui_command_names,
+    )
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
     from agk_client_reviews import register_agk_client_review_listener
@@ -182,7 +186,7 @@ except ImportError:
         reconcile_account_control_channel,
         register_account_control_center,
     )
-    from agk_os_control_ui import records_from_snapshot, register_os_control_center
+    from agk_os_control_ui import records_from_snapshot, register_os_control_center, station_ui_command_names
 
 from gateway.config import Platform, PlatformConfig
 
@@ -1232,6 +1236,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._disconnecting = False
         self._missed_message_backfill_task: Optional[asyncio.Task] = None
         from hermes_constants import get_hermes_home
+        self._hermes_home = get_hermes_home().resolve()
         from plugins.platforms.discord.recovery import DiscordRecoveryStore
         self._discord_recovery_store = DiscordRecoveryStore(get_hermes_home())
         # Dedup cache: prevents duplicate bot responses when Discord
@@ -1475,15 +1480,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
 
-                hermes_home = _Path(os.environ.get("HERMES_HOME", "")).resolve()
-                if hermes_home == _Path("/home/operator/.hermes"):
-                    snapshot = _Path("/var/lib/agk-terminal/fleet/fleet-snapshot.json")
-                    register_os_control_center(
-                        adapter_self._client,
-                        lambda: records_from_snapshot(snapshot),
-                        owner_ids={int(value) for value in adapter_self._allowed_user_ids},
-                    )
-
                 try:
                     register_account_control_center(adapter_self._client, adapter_self)
                     account_guild = adapter_self._client.get_guild(ACCOUNT_CONTROL_GUILD_ID)
@@ -1688,6 +1684,21 @@ class DiscordAdapter(BasePlatformAdapter):
             return False, False
         if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
             return False, False
+
+        # A per-profile channel allowlist is an ingress boundary for every
+        # guild event, including bot-authored inter-agent mentions. Previously
+        # this gate lived only inside _is_allowed_user(), so bot messages could
+        # wake a dedicated OS from arbitrary channels. DMs remain available.
+        if not isinstance(message.channel, discord.DMChannel):
+            parent_id = self._get_parent_channel_id(message.channel)
+            channel_keys = self._discord_channel_keys(message, parent_id)
+            allowed_channels = self._get_allowed_channels()
+            if (
+                allowed_channels
+                and "*" not in allowed_channels
+                and not (channel_keys & allowed_channels)
+            ):
+                return False, False
 
         role_authorized = False
         if getattr(message.author, "bot", False):
@@ -6759,6 +6770,21 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         tree = self._client.tree
+        hermes_home = self._hermes_home
+        if hermes_home == _Path("/home/private/.hermes"):
+            snapshot = _Path("/var/lib/agk-terminal/fleet/fleet-snapshot.json")
+            raw_owners = self.config.extra.get("allow_admin_from") or []
+            if isinstance(raw_owners, str):
+                raw_owners = [value.strip() for value in raw_owners.split(",")]
+            owner_ids = {
+                int(value) for value in raw_owners
+                if str(value).strip().isdigit()
+            }
+            register_os_control_center(
+                self._client,
+                lambda: records_from_snapshot(snapshot),
+                owner_ids=owner_ids,
+            )
         try:
             register_station_session_commands(self, tree)
         except Exception as exc:
@@ -7182,7 +7208,8 @@ class DiscordAdapter(BasePlatformAdapter):
         # to preserve the slash UX for deployments that intentionally allow
         # everyone in the guild.
         if ui_only:
-            allowed_ui_commands = {"station-sessions", "panel", "settings", "clear"}
+            hermes_home = self._hermes_home
+            allowed_ui_commands = station_ui_command_names(hermes_home)
             for registered in list(tree.get_commands()):
                 if getattr(registered, "name", "") not in allowed_ui_commands:
                     tree.remove_command(registered.name)

@@ -87,6 +87,27 @@ def test_route_state_terminal_status_covers_use_expiry_and_attempt_exhaustion():
     assert state.terminal_status == "EXPIRED"
 
 
+def test_submission_finishing_after_ttl_can_never_be_installed():
+    now = [100.0]
+    state = secure.RouteState("route", "csrf", ttl_seconds=10, clock=lambda: now[0])
+    assert state.begin_submission("csrf")
+    now[0] = 111.0
+    assert state.finish_submission(True) is False
+    assert state.used is False
+    assert state.terminal_status == "EXPIRED"
+
+
+def test_installer_never_starts_without_full_timeout_budget_remaining():
+    now = [100.0]
+    short = secure.RouteState("short", "csrf", ttl_seconds=60, clock=lambda: now[0])
+    full = secure.RouteState("full", "csrf", ttl_seconds=1800, clock=lambda: now[0])
+    required = secure.INSTALLER_TIMEOUT_SECONDS + secure.INSTALLER_START_MARGIN_SECONDS
+    assert not short.installation_window_available(required)
+    assert full.installation_window_available(required)
+    assert not short.begin_submission("csrf", required_seconds=required)
+    assert full.begin_submission("csrf", required_seconds=required)
+
+
 def test_body_parser_rejects_oversize_and_never_returns_csrf_as_secret():
     with pytest.raises(secure.IntakeError):
         secure.parse_submission(b"x" * 9000, 8192)
@@ -310,6 +331,16 @@ def test_ready_receipt_is_flushed_for_gateway_pipe_consumers():
     assert "flush=True" in ready_line
 
 
+def test_installer_timeout_covers_worst_case_finalization_and_rollback():
+    discord_validation = 45
+    service_preflight = 30
+    finalization = (6 * 30) + 180 + 120 + 30
+    rollback = 270
+    worst_case = discord_validation + service_preflight + finalization + rollback
+    assert secure.INSTALLER_TIMEOUT_SECONDS >= worst_case
+    assert secure.INSTALLER_TIMEOUT_SECONDS < 1800
+
+
 def test_secure_input_requires_station_magicdns_https():
     assert secure.require_https_url("https://station.tailnet.ts.net/route", "station.tailnet.ts.net") == (
         "https://station.tailnet.ts.net/route"
@@ -328,6 +359,25 @@ def test_no_serve_requires_explicit_test_environment():
         secure.validate_transport_mode(True, {})
     secure.validate_transport_mode(True, {"AGK_SECURE_INPUT_TEST_ONLY": "1"})
     secure.validate_transport_mode(False, {})
+
+
+def test_secure_input_accepts_only_canonical_private_installer_argv():
+    root = "/home/private/.hermes/profiles/nutrition-os"
+    argv = [
+        "/usr/bin/env", "-i", "HOME=/home/private", "HERMES_HOME=/home/private/.hermes",
+        "XDG_RUNTIME_DIR=/run/user/1003", "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1003/bus",
+        "PATH=/home/private/.local/bin:/opt/agk-terminal/hermes-agent/venv/bin:/usr/local/bin:/usr/bin:/bin",
+        "/usr/local/lib/agk-terminal/scripts/install-discord-token.py",
+        "--target", root + "/.env", "--allowed-root", root,
+        "--expected-guild", "1541131439599386644",
+        "--expected-application", "1542135948475637861",
+        "--expected-os-id", "nutrition-os", "--expected-os-version", "0.3.0",
+        "--profile-id", "nutrition-os", "--home-channel", "1542137541572956193",
+    ]
+    assert secure.validate_installer_argv(argv) == argv
+    for tampered in (["sudo", *argv[1:]], [*argv, "extra"], [*argv[:9], "/tmp/escape", *argv[10:]]):
+        with pytest.raises(secure.IntakeError):
+            secure.validate_installer_argv(tampered)
 
 
 def test_terminal_response_schedules_shutdown_even_when_send_fails():

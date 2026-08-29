@@ -8,6 +8,7 @@ import pytest
 
 ROOT = Path(__file__).parents[1]
 MODULE = ROOT / "hermes/plugins/platforms/discord/agk_os_control_ui.py"
+ADAPTER = ROOT / "hermes/plugins/platforms/discord/adapter.py"
 SPEC = importlib.util.spec_from_file_location("agk_os_control_ui_tested", MODULE)
 assert SPEC and SPEC.loader
 ui = importlib.util.module_from_spec(SPEC)
@@ -111,6 +112,24 @@ def test_register_adds_exact_os_application_command():
     assert override is True
 
 
+@pytest.mark.asyncio
+async def test_initial_os_slash_rejects_before_loading_fleet_snapshot():
+    bot = Bot()
+    loads = []
+    ui.register_os_control_center(
+        bot,
+        lambda: loads.append("loaded") or [record(1)],
+        owner_ids={1},
+    )
+    command, _override = bot.tree.commands[0]
+    interaction = Interaction(2)
+
+    await command.callback(interaction)
+
+    assert loads == []
+    assert interaction.response.messages == [("Not authorized", {"ephemeral": True})]
+
+
 def test_snapshot_loader_ignores_assignment_rows_without_explicit_owner(tmp_path):
     snapshot = tmp_path / "fleet.json"
     snapshot.write_text(__import__("json").dumps({"organisations": {
@@ -140,13 +159,33 @@ def test_private_secure_input_installer_is_owner_scoped_and_application_bound(tm
         doctor_state="ready",
     )
 
-    argv = ui.secure_input_installer_argv(row, "1542135948475637861")
+    argv = ui.secure_input_installer_argv(
+        row, "1542135948475637861", "1542137541572956193",
+        record_validator=lambda _row: Path("/home/private/.hermes/profiles/nutrition-os"),
+    )
 
-    assert argv[:5] == ["sudo", "-n", "-u", "private", "env"]
+    assert argv[:2] == ["/usr/bin/env", "-i"]
     assert "HOME=/home/private" in argv
+    assert "HERMES_HOME=/home/private/.hermes" in argv
+    assert "XDG_RUNTIME_DIR=/run/user/1003" in argv
+    assert "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1003/bus" in argv
     assert "--target" in argv
     assert "/home/private/.hermes/profiles/nutrition-os/.env" in argv
-    assert argv[-2:] == ["--expected-application", "1542135948475637861"]
+    assert argv[argv.index("--expected-os-id") + 1] == "nutrition-os"
+    assert argv[argv.index("--expected-os-version") + 1] == "0.3.0"
+    assert argv[argv.index("--profile-id") + 1] == "nutrition-os"
+    assert argv[argv.index("--home-channel") + 1] == "1542137541572956193"
+
+    operator_row = ui.OsViewRecord(
+        os_id="builder-os", name="Builder OS", version="0.2.0",
+        owner_environment="operator", profile_id="builder-os", profile_state="ready",
+        agent_state="ready", discord_mode="dedicated", discord_state="owner-prerequisite",
+        doctor_state="ready",
+    )
+    with pytest.raises(ValueError, match="Private-owned"):
+        ui.secure_input_installer_argv(
+            operator_row, "1542135948475637861", "1542137541572956193"
+        )
 
 
 def test_public_application_state_persists_only_public_ids(tmp_path):
@@ -171,7 +210,10 @@ async def test_dedicated_bot_absent_returns_locked_oauth_url(tmp_path):
         assert _interaction.response.is_done()
         return False
 
-    view = ui.OsControlView([row], owner_ids={1}, state_path=tmp_path / "state.json", membership_checker=missing)
+    view = ui.OsControlView(
+        [row], owner_ids={1}, state_path=tmp_path / "state.json", membership_checker=missing,
+        record_validator=lambda _row: Path("/home/private/.hermes/profiles/nutrition-os"),
+    )
     interaction = Interaction(1)
     await view.complete_discord_setup(interaction, "1542135948475637861")
 
@@ -181,6 +223,27 @@ async def test_dedicated_bot_absent_returns_locked_oauth_url(tmp_path):
     assert "guild_id=1541131439599386644" in content
     assert "client_id=1542135948475637861" in content
     assert kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_non_private_os_is_rejected_before_public_state_or_discord_lookup(tmp_path):
+    row = ui.OsViewRecord(
+        os_id="builder-os", name="Builder OS", version="0.2.0",
+        owner_environment="operator", profile_id="builder-os", profile_state="ready",
+        agent_state="ready", discord_mode="dedicated", discord_state="owner-prerequisite",
+        doctor_state="ready",
+    )
+    async def forbidden_lookup(*_args):
+        raise AssertionError("Discord lookup must not run")
+    state_path = tmp_path / "state.json"
+    view = ui.OsControlView(
+        [row], owner_ids={1}, state_path=state_path,
+        membership_checker=forbidden_lookup,
+    )
+    interaction = Interaction(1)
+    await view.complete_discord_setup(interaction, "1542135948475637861")
+    assert not state_path.exists()
+    assert "Private-owned" in interaction.response.messages[-1][0]
 
 
 @pytest.mark.asyncio
@@ -204,15 +267,98 @@ async def test_dedicated_bot_member_starts_https_secure_input(tmp_path):
     view = ui.OsControlView(
         [row], owner_ids={1}, state_path=tmp_path / "state.json",
         membership_checker=present, route_launcher=launch,
+        channel_resolver=lambda _os_id: "1542137541572956193",
+        record_validator=lambda _row: Path("/home/private/.hermes/profiles/nutrition-os"),
     )
     interaction = Interaction(1)
     await view.complete_discord_setup(interaction, "1542135948475637861")
 
-    assert captured and captured[0][-2:] == ["--expected-application", "1542135948475637861"]
+    assert captured
+    command = captured[0]
+    assert command[command.index("--expected-application") + 1] == "1542135948475637861"
+    assert command[command.index("--expected-os-id") + 1] == "nutrition-os"
+    assert command[command.index("--expected-os-version") + 1] == "0.3.0"
     assert interaction.response.messages[0] == ("defer", {"ephemeral": True})
     content, kwargs = interaction.followup.messages[-1]
     assert content == "Secure Input ready: https://agk-core.tail.example/one-time"
     assert kwargs["ephemeral"] is True
+
+
+def test_home_channel_resolves_only_exact_registered_os(tmp_path):
+    registry = tmp_path / "os-discord-channels.json"
+    registry.write_text(__import__("json").dumps({
+        "channels": {
+            "nutrition-os": {"id": "1542137541572956193"},
+            "unsafe": {"id": "../escape"},
+        }
+    }))
+
+    assert ui.load_home_channel(registry, "nutrition-os") == "1542137541572956193"
+    with pytest.raises(ValueError, match="home channel"):
+        ui.load_home_channel(registry, "unsafe")
+
+
+def test_private_os_record_matches_distribution_identity_and_version(tmp_path):
+    root = tmp_path / "profiles"
+    profile = root / "nutrition-os"
+    profile.mkdir(parents=True)
+    (profile / "distribution.yaml").write_text(
+        "owner_environment: private\nprofile_id: nutrition-os\nos_id: nutrition-os\nversion: 0.3.0\n"
+    )
+    row = ui.OsViewRecord(
+        os_id="nutrition-os", name="Nutrition OS", version="0.3.0",
+        owner_environment="private", profile_id="nutrition-os", profile_state="ready",
+        agent_state="ready", discord_mode="dedicated", discord_state="owner-prerequisite",
+        doctor_state="ready",
+    )
+    assert ui.validate_private_os_record(row, root) == profile
+    bad = ui.OsViewRecord(**{**row.__dict__, "version": "9.9.9"})
+    with pytest.raises(ValueError, match="does not match"):
+        ui.validate_private_os_record(bad, root)
+    traversal = ui.OsViewRecord(**{**row.__dict__, "os_id": "../escape", "profile_id": "../escape"})
+    with pytest.raises(ValueError, match="canonical Private-owned"):
+        ui.validate_private_os_record(traversal, root)
+
+
+def test_station_command_ownership_is_profile_specific():
+    operator = ui.station_ui_command_names(Path("/home/operator/.hermes"))
+    private = ui.station_ui_command_names(Path("/home/private/.hermes"))
+    nutrition = ui.station_ui_command_names(
+        Path("/home/private/.hermes/profiles/nutrition-os")
+    )
+    wrong_owner_nutrition = ui.station_ui_command_names(
+        Path("/home/operator/.hermes/profiles/nutrition-os")
+    )
+
+    assert "station-sessions" in operator
+    assert {"os", "nutrition", "food"}.isdisjoint(operator)
+    assert "os" in private
+    assert {"nutrition", "food", "station-sessions"}.isdisjoint(private)
+    assert {"nutrition", "food"} <= nutrition
+    assert {"os", "station-sessions"}.isdisjoint(nutrition)
+    assert {"nutrition", "food"}.isdisjoint(wrong_owner_nutrition)
+
+
+def test_private_os_control_uses_private_and_public_fleet_paths():
+    view = ui.OsControlView([], owner_ids={1})
+    assert view.state_path == Path("/home/private/.hermes/os-control-state.json")
+    source = MODULE.read_text(encoding="utf-8")
+    assert '/var/lib/agk-terminal/fleet/os-discord-channels.json' in source
+    assert '/home/operator/.hermes/os-discord-channels.json' not in source
+
+
+def test_os_control_center_registers_only_on_private_gateway():
+    source = ADAPTER.read_text(encoding="utf-8")
+    assert 'hermes_home == _Path("/home/private/.hermes")' in source
+    assert 'hermes_home == _Path("/home/operator/.hermes")' not in source
+    slash_start = source.index("def _register_slash_commands")
+    registration = source.index("register_os_control_center(", slash_start)
+    ui_filter = source.index("if ui_only:", slash_start)
+    assert slash_start < registration < ui_filter
+    registration_block = source[registration:registration + 500]
+    assert 'self.config.extra.get("allow_admin_from")' in source[slash_start:registration + 500]
+    assert "_allowed_user_ids" not in registration_block
+    assert "hermes_home = self._hermes_home" in source
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ import argparse
 import html
 import json
 import os
+import re
 import secrets
 import subprocess
 import threading
@@ -13,10 +14,51 @@ import time
 import urllib.parse
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Callable
 
 
 class IntakeError(ValueError):
     pass
+
+
+INSTALLER_TIMEOUT_SECONDS = 900
+INSTALLER_START_MARGIN_SECONDS = 30
+_OS_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_SNOWFLAKE = re.compile(r"^[0-9]{15,22}$")
+
+
+def validate_installer_argv(argv) -> list[str]:
+    if not isinstance(argv, list) or len(argv) != 24 or not all(isinstance(v, str) for v in argv):
+        raise IntakeError("invalid installer argv")
+    fixed = [
+        "/usr/bin/env", "-i", "HOME=/home/private", "HERMES_HOME=/home/private/.hermes",
+        "XDG_RUNTIME_DIR=/run/user/1003", "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1003/bus",
+        "PATH=/home/private/.local/bin:/opt/agk-terminal/hermes-agent/venv/bin:/usr/local/bin:/usr/bin:/bin",
+        "/usr/local/lib/agk-terminal/scripts/install-discord-token.py",
+    ]
+    if argv[:8] != fixed:
+        raise IntakeError("invalid installer argv")
+    flags = ["--target", "--allowed-root", "--expected-guild", "--expected-application", "--expected-os-id", "--expected-os-version", "--profile-id", "--home-channel"]
+    values = {}
+    for index, flag in enumerate(flags):
+        position = 8 + index * 2
+        if argv[position] != flag:
+            raise IntakeError("invalid installer argv")
+        values[flag] = argv[position + 1]
+    profile_id = values["--profile-id"]
+    if (
+        not _OS_ID.fullmatch(profile_id)
+        or values["--expected-os-id"] != profile_id
+        or not re.fullmatch(r"[0-9][0-9A-Za-z.+-]{0,59}", values["--expected-os-version"])
+        or not _SNOWFLAKE.fullmatch(values["--expected-guild"])
+        or not _SNOWFLAKE.fullmatch(values["--expected-application"])
+        or not _SNOWFLAKE.fullmatch(values["--home-channel"])
+    ):
+        raise IntakeError("invalid installer argv")
+    root = f"/home/private/.hermes/profiles/{profile_id}"
+    if values["--allowed-root"] != root or values["--target"] != root + "/.env":
+        raise IntakeError("invalid installer argv")
+    return argv
 
 
 @dataclass
@@ -25,7 +67,7 @@ class RouteState:
     csrf: str
     ttl_seconds: int = 1800
     max_attempts: int = 3
-    clock: callable = time.time
+    clock: Callable[[], float] = time.monotonic
     attempts: int = 0
     used: bool = False
     in_flight: bool = False
@@ -39,6 +81,17 @@ class RouteState:
     @property
     def expired(self) -> bool:
         return float(self.clock()) >= self.created_at + self.ttl_seconds
+
+    @property
+    def remaining_seconds(self) -> float:
+        return max(0.0, self.created_at + self.ttl_seconds - float(self.clock()))
+
+    def installation_window_available(self, required_seconds: int) -> bool:
+        return not self.used and not self.in_flight and self.remaining_seconds >= float(required_seconds)
+
+    def expire_now(self) -> None:
+        with self.lock:
+            self.attempts = self.max_attempts
 
     @property
     def terminal_status(self) -> str | None:
@@ -58,12 +111,15 @@ class RouteState:
                 return False
             return True
 
-    def begin_submission(self, csrf: str) -> bool:
+    def begin_submission(self, csrf: str, *, required_seconds: int = 0) -> bool:
         with self.lock:
             if self.used or self.in_flight or self.expired or self.attempts >= self.max_attempts:
                 return False
             if not secrets.compare_digest(str(csrf), self.csrf):
                 self.attempts += 1
+                return False
+            if self.remaining_seconds < float(required_seconds):
+                self.attempts = self.max_attempts
                 return False
             self.in_flight = True
             return True
@@ -73,13 +129,15 @@ class RouteState:
             if not self.in_flight:
                 self.attempts += 1
 
-    def finish_submission(self, success: bool) -> None:
+    def finish_submission(self, success: bool) -> bool:
         with self.lock:
             self.in_flight = False
-            if success:
+            effective_success = bool(success) and not self.expired
+            if effective_success:
                 self.used = True
-            else:
+            elif not self.expired:
                 self.attempts += 1
+            return effective_success
 
 
 def parse_submission(body: bytes, maximum: int = 8192) -> tuple[str, str]:
@@ -179,7 +237,7 @@ class ServeLease:
 
     def open(self) -> str | None:
         try:
-            subprocess.run(["tailscale", "serve", "--bg", "--yes", "--set-path", self.route, self.target], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["tailscale", "serve", "--bg", "--yes", "--set-path", self.route, self.target], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
             self.active = True
             return f"https://{self.dns_name}{self.route}"
         except Exception:
@@ -187,7 +245,7 @@ class ServeLease:
             return None
 
     def close(self) -> None:
-        subprocess.run(["tailscale", "serve", "--https=443", "--set-path", self.route, "off"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["tailscale", "serve", "--https=443", "--set-path", self.route, "off"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
         self.active = False
 
 
@@ -233,13 +291,23 @@ def handler_factory(state: RouteState, installer: list[str], transport: str):
                 if terminal: send_terminal_response(self.server, self._send, 410, terminal)
                 else: self._send(413, "REJECTED")
                 return
-            if not state.begin_submission(csrf):
+            if not state.begin_submission(
+                csrf,
+                required_seconds=INSTALLER_TIMEOUT_SECONDS + INSTALLER_START_MARGIN_SECONDS,
+            ):
                 terminal = state.terminal_status
                 if terminal: send_terminal_response(self.server, self._send, 410, terminal)
                 else: self._send(403, "REJECTED")
                 return
             try:
-                result = subprocess.run(installer, input=secret, text=True, capture_output=True, check=False, timeout=45)
+                result = subprocess.run(
+                    installer,
+                    input=secret,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=INSTALLER_TIMEOUT_SECONDS,
+                )
             except Exception:
                 secret = ""; state.finish_submission(False)
                 terminal = state.terminal_status
@@ -261,7 +329,9 @@ def handler_factory(state: RouteState, installer: list[str], transport: str):
                 if terminal: send_terminal_response(self.server, self._send, 410, terminal)
                 else: self._send(400, "REJECTED")
                 return
-            state.finish_submission(True)
+            if not state.finish_submission(True):
+                send_terminal_response(self.server, self._send, 410, "EXPIRED")
+                return
             send_terminal_response(self.server, self._send, 200, "INSTALLED", payload)
     return Handler
 
@@ -276,8 +346,11 @@ def main() -> int:
         validate_transport_mode(args.no_serve, os.environ)
     except IntakeError as exc:
         raise SystemExit(str(exc)) from exc
-    ttl = max(60, min(7200, args.ttl)); installer = json.loads(args.installer_json)
-    if not isinstance(installer, list) or not installer or not all(isinstance(v, str) for v in installer): raise SystemExit("invalid installer argv")
+    ttl = max(60, min(7200, args.ttl))
+    try:
+        installer = validate_installer_argv(json.loads(args.installer_json))
+    except (ValueError, IntakeError) as exc:
+        raise SystemExit("invalid installer argv") from exc
     ip, dns = _tailscale_identity(); route = secrets.token_urlsafe(32); csrf = secrets.token_urlsafe(32); state = RouteState(route, csrf, ttl_seconds=ttl)
     server = ThreadingHTTPServer((ip, 0), handler_factory(state, installer, "WireGuard-protected Tailnet transport")); port = server.server_address[1]
     lease = ServeLease("/" + route, f"http://{ip}:{port}/{route}", dns)

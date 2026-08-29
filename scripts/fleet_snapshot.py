@@ -480,6 +480,46 @@ def collect_snapshot(*, homes: dict[str, Path], registry_root: Path, now: int | 
     return {"schema": "agk.fleet.v1", "generated_at": generated_at, "organisations": organisations}
 
 
+def public_os_discord_registry(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project only non-secret Discord topology fields for the Private /os UI."""
+    result: dict[str, Any] = {"schema_version": int(payload.get("schema_version") or 1)}
+    guild_id = str(payload.get("guild_id") or "")
+    if guild_id.isdigit():
+        result["guild_id"] = guild_id
+    category = payload.get("category")
+    if isinstance(category, dict):
+        category_id = str(category.get("id") or "")
+        result["category"] = {
+            "id": category_id if category_id.isdigit() else "",
+            "name": _text(category.get("name"), 100),
+        }
+    result["channels"] = {}
+    channels = payload.get("channels")
+    if isinstance(channels, dict):
+        allowed = ("id", "name", "type", "profile", "state", "gateway_state", "bot_application_id", "os_version")
+        for raw_id, row in channels.items():
+            os_id = _safe_id(raw_id)
+            if not os_id or not isinstance(row, dict):
+                continue
+            projected = {key: _text(row.get(key), 120) for key in allowed}
+            if not projected["id"].isdigit() or not projected["bot_application_id"].isdigit():
+                continue
+            result["channels"][os_id] = projected
+    policy = payload.get("policy")
+    if isinstance(policy, dict):
+        allowed_policy_keys = {
+            "one_channel_per_installed_os",
+            "historical_candidates_do_not_get_channels",
+            "idempotent_reconciliation",
+            "delete_requires_owner_confirmation",
+        }
+        result["policy"] = {
+            str(key): value for key, value in policy.items()
+            if key in allowed_policy_keys and isinstance(value, bool)
+        }
+    return result
+
+
 def atomic_write(target: Path, payload: dict[str, Any]) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, prefix=".fleet-snapshot.", delete=False)
@@ -496,14 +536,34 @@ def atomic_write(target: Path, payload: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def publish_public_os_discord_registry(source: Path, output: Path) -> bool:
+    try:
+        payload = json.loads(Path(source).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("registry is not an object")
+        projected = public_os_discord_registry(payload)
+        if not projected.get("guild_id") or not projected.get("channels"):
+            raise ValueError("registry has no actionable public topology")
+        atomic_write(Path(output), projected)
+        return True
+    except (OSError, ValueError, TypeError):
+        Path(output).unlink(missing_ok=True)
+        return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="/var/lib/agk-terminal/fleet/fleet-snapshot.json")
     parser.add_argument("--registry", default="/opt/agentik/os-registry")
+    parser.add_argument("--discord-registry-source", default="/home/operator/.hermes/os-discord-channels.json")
+    parser.add_argument("--discord-registry-output", default="/var/lib/agk-terminal/fleet/os-discord-channels.json")
     args = parser.parse_args()
     homes = {organisation: Path("/home") / organisation for organisation in ORGANISATIONS}
     snapshot = collect_snapshot(homes=homes, registry_root=Path(args.registry))
     atomic_write(Path(args.output), snapshot)
+    publish_public_os_discord_registry(
+        Path(args.discord_registry_source), Path(args.discord_registry_output)
+    )
     print(f"AGK Fleet snapshot: {len(snapshot['organisations'])} station(s)")
     return 0
 

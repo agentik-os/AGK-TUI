@@ -146,3 +146,37 @@ def test_private_snapshot_merges_thirteen_owner_os_from_private_registry(tmp_pat
     assert all(row["owner_environment"] == "private" for row in rows)
     assert all(row["profile_id"] == row["id"] for row in rows)
     assert {row["profile_state"] for row in rows} == {"missing"}
+
+
+def test_discord_channel_registry_projection_strips_non_public_fields():
+    module = load_module()
+    projected = module.public_os_discord_registry({
+        "schema_version": 1,
+        "guild_id": "1541131439599386644",
+        "category": {"id": "1542137538959904800", "name": "OPERATIVE SYSTEMS", "token": "no"},
+        "channels": {
+            "nutrition-os": {
+                "id": "1542137541572956193", "name": "nutrition-os", "type": "text",
+                "profile": "nutrition-os", "state": "active",
+                "gateway_state": "dedicated_profile_gateway",
+                "bot_application_id": "1542135948475637861", "os_version": "1.1.0",
+                "secret": "must-not-project",
+            }
+        },
+        "policy": {"one_channel_per_installed_os": True, "sensitive_internal_flag": True},
+        "token": "must-not-project",
+    })
+    assert projected["channels"]["nutrition-os"]["id"] == "1542137541572956193"
+    encoded = json.dumps(projected)
+    assert "secret" not in encoded and "token" not in encoded
+    assert "sensitive_internal_flag" not in encoded
+
+
+def test_invalid_discord_registry_removes_stale_public_projection(tmp_path):
+    module = load_module()
+    source = tmp_path / "invalid.json"
+    output = tmp_path / "os-discord-channels.json"
+    source.write_text("not-json")
+    output.write_text('{"stale":true}\n')
+    assert module.publish_public_os_discord_registry(source, output) is False
+    assert not output.exists()

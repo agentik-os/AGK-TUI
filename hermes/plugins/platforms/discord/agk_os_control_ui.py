@@ -12,6 +12,7 @@ from typing import Callable, Iterable
 from urllib.parse import urlencode
 
 import discord
+import yaml
 from discord import app_commands
 
 
@@ -27,6 +28,53 @@ class OsViewRecord:
     discord_mode: str
     discord_state: str
     doctor_state: str
+
+
+def station_ui_command_names(hermes_home: Path) -> set[str]:
+    """Return the only actionable slash commands owned by one Station bot."""
+    home = Path(hermes_home).resolve()
+    names = {"panel", "settings", "clear"}
+    if home == Path("/home/operator/.hermes"):
+        names.add("station-sessions")
+    elif home == Path("/home/private/.hermes"):
+        names.add("os")
+    elif home == Path("/home/private/.hermes/profiles/nutrition-os"):
+        names.update({"nutrition", "food"})
+    return names
+
+
+def validate_private_os_record(
+    record: OsViewRecord,
+    profiles_root: Path = Path("/home/private/.hermes/profiles"),
+) -> Path:
+    if (
+        record.owner_environment != "private"
+        or record.os_id != record.profile_id
+        or not _SAFE_ID.fullmatch(str(record.profile_id))
+    ):
+        raise ValueError("Discord setup is limited to canonical Private-owned OS profiles")
+    root = Path(profiles_root).absolute()
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("Private profiles root is unsafe")
+    profile = root / record.profile_id
+    if profile.parent != root or profile.resolve().parent != root.resolve():
+        raise ValueError("Private OS profile escapes the canonical profiles root")
+    distribution = profile / "distribution.yaml"
+    if profile.is_symlink() or distribution.is_symlink() or not distribution.is_file():
+        raise ValueError("Private OS profile distribution is unavailable")
+    try:
+        manifest = yaml.safe_load(distribution.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError("Private OS profile distribution is invalid") from exc
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("owner_environment") != "private"
+        or manifest.get("profile_id") != record.profile_id
+        or str(manifest.get("os_id") or "") != record.os_id
+        or str(manifest.get("version") or "") != record.version
+    ):
+        raise ValueError("Private OS profile distribution does not match the registry")
+    return profile
 
 
 def records_from_snapshot(path: Path) -> list[OsViewRecord]:
@@ -112,9 +160,11 @@ class OsControlView(discord.ui.View):
         *,
         owner_ids: set[int],
         timeout: float = 900,
-        state_path: Path = Path("/home/operator/.hermes/os-control-state.json"),
+        state_path: Path = Path("/home/private/.hermes/os-control-state.json"),
         membership_checker=None,
         route_launcher=None,
+        channel_resolver=None,
+        record_validator=None,
     ):
         super().__init__(timeout=timeout)
         self.records = tuple(sorted(records, key=lambda row: (row.owner_environment, row.name.casefold(), row.os_id)))
@@ -122,6 +172,10 @@ class OsControlView(discord.ui.View):
         self.state_path = Path(state_path)
         self.membership_checker = membership_checker or _default_membership_checker
         self.route_launcher = route_launcher or _default_route_launcher
+        self.channel_resolver = channel_resolver or (
+            lambda os_id: load_home_channel(Path("/var/lib/agk-terminal/fleet/os-discord-channels.json"), os_id)
+        )
+        self.record_validator = record_validator or validate_private_os_record
         self.page = 0
         self.selected_id = self.records[0].os_id if self.records else ""
         self.rebuild()
@@ -186,6 +240,14 @@ class OsControlView(discord.ui.View):
                 f"Discord mode: {record.discord_mode if record else 'unavailable'}.", ephemeral=True
             )
             return
+        if record.owner_environment != "private":
+            await interaction.response.send_message("Discord setup is limited to Private-owned OS profiles.", ephemeral=True)
+            return
+        try:
+            self.record_validator(record)
+        except ValueError:
+            await interaction.response.send_message("Private OS profile validation failed.", ephemeral=True)
+            return
         current = load_application_id(self.state_path, record.os_id)
         await interaction.response.send_modal(ApplicationIdModal(self, current))
 
@@ -193,6 +255,14 @@ class OsControlView(discord.ui.View):
         record = self.selected
         if record is None or record.discord_mode != "dedicated":
             await interaction.response.send_message("Dedicated Discord mode is not enabled.", ephemeral=True)
+            return
+        if record.owner_environment != "private":
+            await interaction.response.send_message("Discord setup is limited to Private-owned OS profiles.", ephemeral=True)
+            return
+        try:
+            self.record_validator(record)
+        except ValueError:
+            await interaction.response.send_message("Private OS profile validation failed.", ephemeral=True)
             return
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
@@ -205,7 +275,13 @@ class OsControlView(discord.ui.View):
                     ephemeral=True,
                 )
                 return
-            url = await self.route_launcher(secure_input_installer_argv(record, str(application_id)))
+            home_channel = self.channel_resolver(record.os_id)
+            url = await self.route_launcher(
+                secure_input_installer_argv(
+                    record, str(application_id), home_channel,
+                    record_validator=self.record_validator,
+                )
+            )
         except (OSError, ValueError, RuntimeError, asyncio.TimeoutError):
             await interaction.followup.send("Discord setup failed safely. Refresh and retry.", ephemeral=True)
             return
@@ -237,6 +313,12 @@ def register_os_control_center(
     owner_ids: set[int],
 ) -> app_commands.Command:
     async def command_callback(interaction: discord.Interaction):
+        if (
+            int(getattr(interaction.user, "id", 0) or 0) not in owner_ids
+            or int(getattr(interaction, "guild_id", 0) or 0) != int(AGK_GUILD_ID)
+        ):
+            await interaction.response.send_message("Not authorized", ephemeral=True)
+            return
         view = OsControlView(catalog_loader(), owner_ids=owner_ids)
         await interaction.response.send_message(view.render_content(), view=view, ephemeral=True)
 
@@ -250,25 +332,57 @@ def register_os_control_center(
 AGK_GUILD_ID = "1541131439599386644"
 _SAFE_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _SNOWFLAKE = re.compile(r"^[0-9]{15,22}$")
+_OWNER_UIDS = {"operator": 1000, "agentik": 1001, "mission": 1002, "private": 1003}
 
 
-def secure_input_installer_argv(record: "OsViewRecord", application_id: str) -> list[str]:
-    if record.owner_environment not in {"operator", "agentik", "mission", "private"}:
-        raise ValueError("unsupported owner environment")
-    if not _SAFE_ID.fullmatch(record.profile_id) or not _SNOWFLAKE.fullmatch(str(application_id)):
+def load_home_channel(path: Path, os_id: str) -> str:
+    if not _SAFE_ID.fullmatch(str(os_id)):
+        raise ValueError("invalid OS identity")
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError("Discord home channel is unavailable") from exc
+    channels = payload.get("channels") if isinstance(payload, dict) else None
+    row = channels.get(os_id) if isinstance(channels, dict) else None
+    channel = str(row.get("id") or "") if isinstance(row, dict) else ""
+    if not _SNOWFLAKE.fullmatch(channel):
+        raise ValueError("Discord home channel is unavailable")
+    return channel
+
+
+def secure_input_installer_argv(
+    record: "OsViewRecord", application_id: str, home_channel: str,
+    *, record_validator: Callable[[OsViewRecord], Path] = validate_private_os_record,
+) -> list[str]:
+    profile_path = record_validator(record)
+    if (
+        not _SAFE_ID.fullmatch(record.profile_id)
+        or not _SNOWFLAKE.fullmatch(str(application_id))
+        or not _SNOWFLAKE.fullmatch(str(home_channel))
+    ):
         raise ValueError("invalid OS or Discord application identity")
-    home = f"/home/{record.owner_environment}"
-    profile = f"{home}/.hermes/profiles/{record.profile_id}"
+    home = "/home/private"
+    profile = str(profile_path)
     installer = [
         "/usr/local/lib/agk-terminal/scripts/install-discord-token.py",
         "--target", f"{profile}/.env",
         "--allowed-root", profile,
         "--expected-guild", AGK_GUILD_ID,
         "--expected-application", str(application_id),
+        "--expected-os-id", record.os_id,
+        "--expected-os-version", record.version,
+        "--profile-id", record.profile_id,
+        "--home-channel", str(home_channel),
     ]
-    if record.owner_environment != "operator":
-        return ["sudo", "-n", "-u", record.owner_environment, "env", f"HOME={home}", *installer]
-    return installer
+    runtime = "/run/user/1003"
+    return [
+        "/usr/bin/env", "-i",
+        f"HOME={home}", "HERMES_HOME=/home/private/.hermes",
+        f"XDG_RUNTIME_DIR={runtime}",
+        f"DBUS_SESSION_BUS_ADDRESS=unix:path={runtime}/bus",
+        "PATH=/home/private/.local/bin:/opt/agk-terminal/hermes-agent/venv/bin:/usr/local/bin:/usr/bin:/bin",
+        *installer,
+    ]
 
 
 def persist_application_id(path: Path, os_id: str, application_id: str) -> None:

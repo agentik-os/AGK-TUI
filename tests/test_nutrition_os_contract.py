@@ -12,6 +12,9 @@ def test_discord_exposes_nutrition_as_primary_command_and_food_alias():
     assert '"nutrition"' in plugin
     assert '"food"' in plugin
     assert "Nutrition OS" in plugin
+    assert "if _dedicated_nutrition_profile():" in plugin
+    assert "def _dedicated_nutrition_profile()" in plugin
+    assert 'Path("/home/private/.hermes/profiles/nutrition-os")' in plugin
 
 
 def test_specialist_uses_nutrition_os_profile_identity():
@@ -20,15 +23,22 @@ def test_specialist_uses_nutrition_os_profile_identity():
     )
     assert manifest["id"] == "nutrition-specialist"
     assert manifest["profile"] == "nutrition-os"
+    assert manifest["scope"] == ["private"]
     assert manifest["os"] == ["nutrition-os@1.0.1"]
-    assert manifest["launcher"].endswith("/nutrition-os-hermes")
+    assert manifest["launcher"] == "/home/private/.local/bin/nutrition-os-hermes"
 
 
 def test_nutrition_command_uses_the_dedicated_nutrition_os_profile():
     command = (HERMES / "plugins/agentik_os/nutrition_command.py").read_text(encoding="utf-8")
-    assert 'profiles/nutrition-os/data/nutrition-os' in command
-    assert 'profiles/nutrition-os").resolve()' in command
+    assert '/home/private/.hermes/profiles/nutrition-os/data/nutrition-os' in command
+    assert 'Path("/home/private/.hermes/profiles/nutrition-os").resolve()' in command
+    assert '/home/operator/.hermes/profiles/nutrition-os' not in command
     assert 'profiles/nutrition/data/nutrition-os' not in command
+    assert 'MANIFEST.json' in command
+    assert 'manifest.get("id") != expected_id' in command
+    assert 'manifest.get("version") != expected_version' in command
+    assert 'not isinstance(manifest, dict)' in command
+    assert 'manifest.get("entrypoint") != "functions/nutrition_ops.py"' in command
 
 
 def test_agentik_commands_fall_back_when_invocation_context_api_is_unavailable():
