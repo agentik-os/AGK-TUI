@@ -185,6 +185,8 @@ def finalization_commands(
         [*prefix, "config", "set", "discord.require_mention", "true"],
         [*prefix, "config", "set", "discord.allowed_channels", channel],
         [*prefix, "config", "set", "discord.free_response_channels", channel],
+        [*prefix, "config", "set", "discord.bots_require_inline_mention", "true"],
+        [*prefix, "config", "set", "platforms.discord.extra.bots_require_inline_mention", "true"],
         [*prefix, "config", "set", "agent.restart_after_turn_timeout", "1800"],
         [*prefix, "config", "set", "agent.restart_drain_timeout", "1800"],
         [*prefix, "gateway", "install", "--force", "--start-now", "--start-on-login"],

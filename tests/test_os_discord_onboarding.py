@@ -92,6 +92,8 @@ def test_finalization_commands_enable_route_persistence_and_doctor():
         ["/usr/local/bin/hermes", "--profile", "nutrition-os", "config", "set", "discord.require_mention", "true"],
         ["/usr/local/bin/hermes", "--profile", "nutrition-os", "config", "set", "discord.allowed_channels", "1542137541572956193"],
         ["/usr/local/bin/hermes", "--profile", "nutrition-os", "config", "set", "discord.free_response_channels", "1542137541572956193"],
+        ["/usr/local/bin/hermes", "--profile", "nutrition-os", "config", "set", "discord.bots_require_inline_mention", "true"],
+        ["/usr/local/bin/hermes", "--profile", "nutrition-os", "config", "set", "platforms.discord.extra.bots_require_inline_mention", "true"],
         ["/usr/local/bin/hermes", "--profile", "nutrition-os", "config", "set", "agent.restart_after_turn_timeout", "1800"],
         ["/usr/local/bin/hermes", "--profile", "nutrition-os", "config", "set", "agent.restart_drain_timeout", "1800"],
         ["/usr/local/bin/hermes", "--profile", "nutrition-os", "gateway", "install", "--force", "--start-now", "--start-on-login"],
