@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import datetime as dt
 import fcntl
 import hashlib
@@ -22,14 +23,20 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import yaml
 
-
 SCHEMA_VERSION = 1
+CANONICAL_QA_VIEWPORTS = (
+    ("mobile", 390, 844),
+    ("ipad", 820, 1180),
+    ("desktop", 1440, 900),
+    ("large_desktop", 1920, 1080),
+)
 CLIENT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$")
 SESSION_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,78}[a-z0-9]$")
 ISSUE_RE = re.compile(r"^[A-Z][A-Z0-9]{1,15}-[1-9][0-9]*$")
@@ -250,6 +257,34 @@ def default_file(layout: Layout, name: str) -> dict[str, Any]:
     return yaml_document(layout.source / "defaults" / name)
 
 
+def merge_client_upgrade(default: object, current: object) -> object:
+    default_is_container = isinstance(default, (dict, list))
+    current_is_container = isinstance(current, (dict, list))
+    if default_is_container != current_is_container:
+        raise ClientError("client config upgrade has an incompatible type")
+    if isinstance(default, dict) and not isinstance(current, dict):
+        raise ClientError("client config upgrade has an incompatible type")
+    if isinstance(default, list) and not isinstance(current, list):
+        raise ClientError("client config upgrade has an incompatible type")
+    if isinstance(default, dict) and isinstance(current, dict):
+        merged = copy.deepcopy(current)
+        for key, default_value in default.items():
+            if key in current:
+                merged[key] = merge_client_upgrade(default_value, current[key])
+            else:
+                merged[key] = copy.deepcopy(default_value)
+        return merged
+    if isinstance(default, list) and isinstance(current, list):
+        merged = copy.deepcopy(default)
+        for value in current:
+            if value not in merged:
+                merged.append(copy.deepcopy(value))
+        return merged
+    if default is not None and type(default) is not type(current):
+        raise ClientError("client config upgrade has an incompatible type")
+    return copy.deepcopy(current)
+
+
 def migrate_existing_client_configs(layout: Layout, registry: dict[str, Any]) -> None:
     for entry in registry.get("clients", []):
         slug = registry_id(entry)
@@ -288,7 +323,14 @@ def migrate_existing_client_configs(layout: Layout, registry: dict[str, Any]) ->
             )
             if not backup.exists():
                 atomic_yaml(backup, current, 0o400)
-            atomic_yaml(path, replacement, 0o600)
+            merged = merge_client_upgrade(replacement, current)
+            if not isinstance(merged, dict):
+                raise ClientError(f"client config upgrade is invalid: {slug}/{filename}")
+            merged["schema_version"] = target_schema
+            if filename == "team.yaml":
+                merged["client_id"] = slug
+                merged["hermes_profile"] = profile_id
+            atomic_yaml(path, merged, 0o600)
 
 
 def bootstrap(layout: Layout, *, upgrade: bool) -> None:
@@ -514,10 +556,8 @@ def runtime_document(slug: str, runtime_type: str) -> dict[str, Any]:
             "require_screenshots_and_linear_attachment": True,
             "require_reverification_after_browser_restart": True,
             "viewports": [
-                {"id": "mobile", "width": 390, "height": 844},
-                {"id": "ipad", "width": 820, "height": 1180},
-                {"id": "desktop", "width": 1440, "height": 900},
-                {"id": "large_desktop", "width": 1920, "height": 1080},
+                {"id": name, "width": width, "height": height}
+                for name, width, height in CANONICAL_QA_VIEWPORTS
             ],
             "capture_policy": "full_page_unobstructed_after_dismissing_overlays",
         },
@@ -1323,6 +1363,36 @@ def verify_start_authorization_receipt(
         raise ClientError("START receipt does not match the authorization")
 
 
+def ensure_start_message_unused(
+    layout: Layout, slug: str, message_id: str, work_id: str
+) -> None:
+    requested_slug = validate_slug(slug)
+    receipt_root = layout.system / "audit" / "start-authorizations"
+    if not receipt_root.is_dir():
+        return
+    for path in receipt_root.glob("*/WORK-*.json"):
+        if not path.is_file():
+            continue
+        receipt = yaml_document(path)
+        signature = str(receipt.pop("signature", ""))
+        canonical = json.dumps(
+            receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        calculated = hmac.new(
+            control_plane_audit_key(layout), canonical.encode(), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(signature, calculated):
+            raise ClientError("START receipt signature is invalid")
+        if str(receipt.get("message_id") or "") != str(message_id):
+            continue
+        same_work = (
+            str(receipt.get("client") or "") == requested_slug
+            and str(receipt.get("work_id") or "") == work_id
+        )
+        if not same_work:
+            raise ClientError("Discord START message already authorized another work")
+
+
 def write_qa_receipt(
     layout: Layout,
     slug: str,
@@ -1379,6 +1449,53 @@ def verify_qa_receipt(
             raise ClientError("QA receipt does not match the evidence bundle")
 
 
+def canonical_linear_attachment_url(
+    parsed: urllib.parse.SplitResult,
+) -> tuple[str, str, int | None, str, str]:
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ClientError("Linear attachment requires an HTTPS URL") from error
+    if port == 443:
+        port = None
+    return (
+        parsed.scheme.lower(),
+        str(parsed.hostname or "").lower(),
+        port,
+        parsed.path or "/",
+        parsed.query,
+    )
+
+
+def validate_linear_attachments(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        raise ClientError("Linear attachment evidence is not structured")
+    normalized: list[dict[str, str]] = []
+    seen_urls: set[tuple[str, str, int | None, str, str]] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ClientError("Linear attachment must be a JSON object")
+        title = validate_name(str(item.get("title") or ""))
+        subtitle = validate_name(
+            str(item.get("subtitle") or "AGK verified evidence")
+        )
+        url = str(item.get("url") or "").strip()
+        parsed = urllib.parse.urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ClientError("Linear attachment requires an HTTPS URL")
+        canonical_url = canonical_linear_attachment_url(parsed)
+        if canonical_url in seen_urls:
+            raise ClientError("Linear attachment URLs must be unique")
+        seen_urls.add(canonical_url)
+        normalized.append({"title": title, "subtitle": subtitle, "url": url})
+    return normalized
+
+
 def linear_sync_plan(layout: Layout, slug: str, work_id: str) -> dict[str, Any]:
     _, work = load_work(layout, slug, work_id)
     integrations = client_configs(layout, slug)["integrations.yaml"]
@@ -1393,11 +1510,9 @@ def linear_sync_plan(layout: Layout, slug: str, work_id: str) -> dict[str, Any]:
     issue = str(work.get("linear", {}).get("issue") or "")
     evidence = work.get("evidence", {})
     repository = work.get("repository", {})
-    linear_attachments = (
+    linear_attachments = validate_linear_attachments(
         evidence.get("linear_attachments", []) if isinstance(evidence, dict) else []
     )
-    if not isinstance(linear_attachments, list):
-        raise ClientError("Linear attachment evidence is not structured")
     if state in LINEAR_ATTACHMENT_REQUIRED_STATES and not linear_attachments:
         raise ClientError(
             f"AGK status {state} requires verified Linear attachments"
@@ -2085,63 +2200,73 @@ def create_work(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
 
 def update_work_context(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
     slug = validate_slug(args.slug)
-    path, record = load_work(layout, slug, args.work_id)
-    if record.get("status") != "backlog":
-        raise ClientError("work context can only be finalized in Backlog")
     client_root = layout.client(slug).resolve()
     source = Path(args.context_file).expanduser().resolve()
     try:
         source.relative_to(client_root)
     except ValueError as error:
         raise ClientError("context file must stay inside the client boundary") from error
-    fields = yaml_document(source)
-    workflow = client_configs(layout, slug)["workflow.yaml"]
-    intake = workflow.get("intake", {})
-    required = set(intake.get("product_definition_requires", [])) if isinstance(intake, dict) else set()
-    present = {key for key, value in fields.items() if value not in (None, "", [], {})}
-    missing = sorted(required - present)
-    if missing:
-        raise ClientError("Linear work context is incomplete: " + ", ".join(missing))
-    issue_identifier = str(record.get("linear", {}).get("issue") or "")
-    snapshot = authoritative_linear_snapshot(layout, slug, issue_identifier)
-    snapshot_body = json.dumps(
-        snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    snapshot_digest = hashlib.sha256(snapshot_body.encode()).hexdigest()
-    snapshot_relative = Path("state") / "work" / f"{args.work_id}.linear-snapshot.json"
-    snapshot_path = client_root / snapshot_relative
-    atomic_text(
-        snapshot_path,
-        json.dumps(snapshot, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-        0o600,
-    )
-    receipt_relative = write_linear_snapshot_receipt(
-        layout,
-        slug,
-        args.work_id,
-        issue=issue_identifier,
-        team_id=str(snapshot["team_id"]),
-        snapshot_sha256=snapshot_digest,
-        updated_at=snapshot["updated_at"],
-    )
-    record["context"] = {
-        "complete": True,
-        "fields": fields,
-        "source": str(source.relative_to(client_root)),
-        "linear_snapshot": {
-            "identifier": issue_identifier,
-            "team_id": snapshot["team_id"],
-            "updated_at": snapshot["updated_at"],
-            "sha256": snapshot_digest,
-            "path": str(snapshot_relative),
-            "receipt": receipt_relative,
-        },
-        "finalized_by": validate_name(args.actor),
-        "finalized_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-    }
-    work_event(record, "work.context_finalized", actor=args.actor)
-    atomic_yaml(path, record)
-    return record
+    with work_lock(layout, slug, args.work_id):
+        path, record = load_work(layout, slug, args.work_id)
+        context = record.get("context")
+        if isinstance(context, dict) and context.get("complete") is True:
+            raise ClientError("work context is already finalized")
+        if record.get("status") != "backlog":
+            raise ClientError("work context can only be finalized in Backlog")
+        fields = yaml_document(source)
+        workflow = client_configs(layout, slug)["workflow.yaml"]
+        intake = workflow.get("intake", {})
+        required = (
+            set(intake.get("product_definition_requires", []))
+            if isinstance(intake, dict)
+            else set()
+        )
+        present = {
+            key for key, value in fields.items() if value not in (None, "", [], {})
+        }
+        missing = sorted(required - present)
+        if missing:
+            raise ClientError("Linear work context is incomplete: " + ", ".join(missing))
+        issue_identifier = str(record.get("linear", {}).get("issue") or "")
+        snapshot = authoritative_linear_snapshot(layout, slug, issue_identifier)
+        snapshot_body = json.dumps(
+            snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        snapshot_digest = hashlib.sha256(snapshot_body.encode()).hexdigest()
+        snapshot_relative = Path("state") / "work" / f"{args.work_id}.linear-snapshot.json"
+        snapshot_path = client_root / snapshot_relative
+        atomic_text(
+            snapshot_path,
+            json.dumps(snapshot, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            0o600,
+        )
+        receipt_relative = write_linear_snapshot_receipt(
+            layout,
+            slug,
+            args.work_id,
+            issue=issue_identifier,
+            team_id=str(snapshot["team_id"]),
+            snapshot_sha256=snapshot_digest,
+            updated_at=snapshot["updated_at"],
+        )
+        record["context"] = {
+            "complete": True,
+            "fields": fields,
+            "source": str(source.relative_to(client_root)),
+            "linear_snapshot": {
+                "identifier": issue_identifier,
+                "team_id": snapshot["team_id"],
+                "updated_at": snapshot["updated_at"],
+                "sha256": snapshot_digest,
+                "path": str(snapshot_relative),
+                "receipt": receipt_relative,
+            },
+            "finalized_by": validate_name(args.actor),
+            "finalized_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        work_event(record, "work.context_finalized", actor=args.actor)
+        atomic_yaml(path, record)
+        return record
 
 
 def discord_client_get(layout: Layout, slug: str, endpoint: str) -> dict[str, Any]:
@@ -2174,6 +2299,25 @@ def discord_client_get(layout: Layout, slug: str, endpoint: str) -> dict[str, An
     if not isinstance(data, dict):
         raise ClientError("Discord authorization evidence is invalid")
     return data
+
+
+def validate_start_message_freshness(
+    value: str,
+    *,
+    now: dt.datetime | None = None,
+    max_age_seconds: int = 900,
+) -> str:
+    try:
+        message_time = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ClientError("Discord START message timestamp is invalid") from error
+    if message_time.tzinfo is None:
+        raise ClientError("Discord START message timestamp is invalid")
+    current = now or dt.datetime.now(dt.timezone.utc)
+    age_seconds = (current - message_time.astimezone(dt.timezone.utc)).total_seconds()
+    if age_seconds < -30 or age_seconds > max_age_seconds:
+        raise ClientError("Discord START message is outside the freshness window")
+    return message_time.astimezone(dt.timezone.utc).isoformat()
 
 
 def authorize_work_start(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
@@ -2266,6 +2410,7 @@ def authorize_work_start(layout: Layout, args: argparse.Namespace) -> dict[str, 
     message_timestamp = str(message.get("timestamp") or "")
     if not message_timestamp:
         raise ClientError("Discord START message timestamp is unavailable")
+    message_timestamp = validate_start_message_freshness(message_timestamp)
     authorization = {
         "id": f"discord:{args.message_id}",
         "actor": expected_owner,
@@ -2287,14 +2432,33 @@ def authorize_work_start(layout: Layout, args: argparse.Namespace) -> dict[str, 
     }
     receipt_payload = {"work_id": args.work_id, **authorization}
     receipt_payload.pop("client", None)
-    authorization["receipt"] = write_start_authorization_receipt(
-        layout, slug, args.work_id, receipt_payload
-    )
-    record["authorization"] = authorization
-    record["status"] = "todo"
-    work_event(record, "work.start_authorized", **authorization)
-    atomic_yaml(path, record)
-    return record
+    with registry_lock(layout):
+        ensure_start_message_unused(layout, slug, str(args.message_id), args.work_id)
+        with work_lock(layout, slug, args.work_id):
+            path, current_record = load_work(layout, slug, args.work_id)
+            current_context = current_record.get("context", {})
+            current_snapshot = (
+                current_context.get("linear_snapshot", {})
+                if isinstance(current_context, dict)
+                else {}
+            )
+            if current_record.get("status") != "backlog":
+                raise ClientError("only Backlog work can be authorized to start")
+            if (
+                not isinstance(current_context, dict)
+                or current_context.get("complete") is not True
+                or current_snapshot != snapshot_record
+                or str(current_record.get("linear", {}).get("issue") or "") != issue
+            ):
+                raise ClientError("READY_FOR_ENGINEERING context changed during authorization")
+            authorization["receipt"] = write_start_authorization_receipt(
+                layout, slug, args.work_id, receipt_payload
+            )
+            current_record["authorization"] = authorization
+            current_record["status"] = "todo"
+            work_event(current_record, "work.start_authorized", **authorization)
+            atomic_yaml(path, current_record)
+    return current_record
 
 
 def quarantine_legacy_work(
@@ -2375,6 +2539,21 @@ def quarantine_legacy_work_locked(
 
 
 def transition_work(
+    layout: Layout,
+    slug: str,
+    work_id: str,
+    target: str,
+    *,
+    actor: str,
+) -> dict[str, Any]:
+    slug = validate_slug(slug)
+    with work_lock(layout, slug, work_id):
+        return transition_work_locked(
+            layout, slug, work_id, target, actor=actor
+        )
+
+
+def transition_work_locked(
     layout: Layout,
     slug: str,
     work_id: str,
@@ -2570,6 +2749,121 @@ def structured_browser_urls(value: object) -> Iterator[str]:
             yield from structured_browser_urls(item)
 
 
+def decode_browser_tool_payload(raw: str) -> object:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        lines = raw.splitlines()
+        if (
+            len(lines) >= 4
+            and lines[0] == '<untrusted_tool_result source="browser_exec">'
+            and lines[-1] == "</untrusted_tool_result>"
+        ):
+            try:
+                return json.loads("\n".join(lines[2:-1]))
+            except json.JSONDecodeError:
+                pass
+    raise ClientError("QA browser tool payload is not structured JSON")
+
+
+def browser_payload_has_profile_binding(
+    value: object, profile_binding: dict[str, Any]
+) -> bool:
+    required = (
+        "browser_profile_id",
+        "authenticated_principal",
+        "authentication_probe_sha256",
+    )
+    if isinstance(value, dict):
+        if all(
+            str(value.get(key) or "") == str(profile_binding.get(key) or "")
+            for key in required
+        ):
+            return True
+        return any(
+            browser_payload_has_profile_binding(item, profile_binding)
+            for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(
+            browser_payload_has_profile_binding(item, profile_binding) for item in value
+        )
+    return False
+
+
+def browser_payload_has_bound_navigation(
+    value: object,
+    expected_url: tuple[str, str, int | None, str, str],
+    profile_binding: dict[str, Any],
+) -> bool:
+    if isinstance(value, dict):
+        required = (
+            "browser_profile_id",
+            "authenticated_principal",
+            "authentication_probe_sha256",
+        )
+        has_binding = all(
+            str(value.get(key) or "") == str(profile_binding.get(key) or "")
+            for key in required
+        )
+        if has_binding:
+            for key in ("url", "final_url", "page_url", "current_url"):
+                candidate = value.get(key)
+                if not isinstance(candidate, str):
+                    continue
+                try:
+                    if canonical_browser_url(candidate) == expected_url:
+                        return True
+                except ClientError:
+                    continue
+        return any(
+            browser_payload_has_bound_navigation(item, expected_url, profile_binding)
+            for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(
+            browser_payload_has_bound_navigation(item, expected_url, profile_binding)
+            for item in value
+        )
+    return False
+
+
+def browser_tool_call_has_session_binding(
+    tool_call_id: str,
+    serialized_calls: list[str],
+    expected_browser_session: str,
+) -> bool:
+    if not tool_call_id or not expected_browser_session:
+        return False
+    for raw in serialized_calls:
+        try:
+            calls = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(calls, dict):
+            calls = [calls]
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, dict) or str(call.get("id") or "") != tool_call_id:
+                continue
+            function = call.get("function", {})
+            if not isinstance(function, dict) or function.get("name") != "browser_exec":
+                continue
+            arguments = function.get("arguments", {})
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    continue
+            if (
+                isinstance(arguments, dict)
+                and str(arguments.get("session") or "") == expected_browser_session
+            ):
+                return True
+    return False
+
+
 def verify_browser_session(
     layout: Layout,
     slug: str,
@@ -2578,6 +2872,7 @@ def verify_browser_session(
     url: str,
     started_at: float,
     finished_at: float,
+    profile_binding: dict[str, Any],
 ) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9_-]{6,100}", session_id):
         raise ClientError("QA browser session id is invalid")
@@ -2594,32 +2889,66 @@ def verify_browser_session(
             "SELECT source, started_at, last_activity_at FROM sessions WHERE id = ?",
             (session_id,),
         ).fetchone()
+        message_columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        tool_call_column = (
+            "tool_call_id" if "tool_call_id" in message_columns else "NULL AS tool_call_id"
+        )
         rows = conn.execute(
-            "SELECT content FROM messages WHERE session_id = ? AND role = 'tool' "
+            f"SELECT content, {tool_call_column} FROM messages "
+            "WHERE session_id = ? AND role = 'tool' "
             "AND tool_name LIKE 'browser%' AND timestamp BETWEEN ? AND ?",
             (session_id, started_at, finished_at),
         ).fetchall()
+        assistant_calls = []
+        if "tool_calls" in message_columns:
+            assistant_calls = [
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT tool_calls FROM messages "
+                    "WHERE session_id = ? AND role = 'assistant' AND tool_calls IS NOT NULL",
+                    (session_id,),
+                ).fetchall()
+                if row[0]
+            ]
     except sqlite3.Error as error:
         raise ClientError("QA browser session evidence is unreadable") from error
     finally:
         if conn is not None:
             conn.close()
     expected_url = canonical_browser_url(url)
-    exact_matches = 0
+    url_matches = 0
+    bound_matches = 0
     for row in rows:
         try:
-            payload = json.loads(str(row[0] or ""))
-        except json.JSONDecodeError:
+            payload = decode_browser_tool_payload(str(row[0] or ""))
+        except ClientError:
             continue
         for candidate in structured_browser_urls(payload):
             try:
                 if canonical_browser_url(candidate) == expected_url:
-                    exact_matches += 1
+                    url_matches += 1
+                    if (
+                        browser_payload_has_bound_navigation(
+                            payload, expected_url, profile_binding
+                        )
+                        and browser_tool_call_has_session_binding(
+                            str(row[1] or ""),
+                            assistant_calls,
+                            str(profile_binding.get("browser_profile_id") or ""),
+                        )
+                    ):
+                        bound_matches += 1
             except ClientError:
                 continue
+    if url_matches and not bound_matches:
+        raise ClientError(
+            "QA session navigation has no authenticated browser tool call binding"
+        )
     if (
         session is None
-        or exact_matches < 1
+        or bound_matches < 1
         or started_at > finished_at
         or started_at < float(session[1] or 0) - 5
         or finished_at > float(session[2] or 0) + 5
@@ -2628,7 +2957,7 @@ def verify_browser_session(
     return {
         "session_id": session_id,
         "source": str(session[0]),
-        "browser_tool_calls": exact_matches,
+        "browser_tool_calls": bound_matches,
         "started_at": started_at,
         "finished_at": finished_at,
     }
@@ -2652,6 +2981,10 @@ def validate_qa_evidence(
         for item in configured_viewports
         if isinstance(item, dict)
     }
+    canonical_viewports = set(CANONICAL_QA_VIEWPORTS)
+    if required_viewports != canonical_viewports:
+        raise ClientError("QA runtime policy must retain the canonical four viewports")
+    required_viewports = canonical_viewports
     observed_viewports = {
         (
             str(item.get("viewport") or ""),
@@ -2680,6 +3013,11 @@ def validate_qa_evidence(
             str(current.get("sha256") or ""), str(stored.get("sha256") or "")
         ):
             raise ClientError("QA screenshot digest verification failed")
+        if (
+            int(current.get("width") or 0) != int(stored.get("width") or 0)
+            or int(current.get("height") or 0) != int(stored.get("height") or 0)
+        ):
+            raise ClientError("QA screenshot stored dimensions do not match decoded dimensions")
     runtime = client_configs(layout, slug)["runtime.yaml"]
     browser_qa = runtime.get("browser_qa", {}) if isinstance(runtime, dict) else {}
     configured_viewports = browser_qa.get("viewports", []) if isinstance(browser_qa, dict) else []
@@ -2766,6 +3104,7 @@ def validate_qa_evidence(
         url=str(provenance.get("url") or ""),
         started_at=float(provenance.get("started_at") or 0),
         finished_at=float(provenance.get("finished_at") or 0),
+        profile_binding=profile_binding,
     )
     if str(current_session.get("source") or "") != str(provenance.get("source") or ""):
         raise ClientError("QA browser session source no longer matches its receipt")
@@ -2819,6 +3158,12 @@ def validate_browser_qa_profile(
 
 
 def update_evidence(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
+    slug = validate_slug(args.slug)
+    with work_lock(layout, slug, args.work_id):
+        return update_evidence_locked(layout, args)
+
+
+def update_evidence_locked(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
     path, record = load_work(layout, args.slug, args.work_id)
     repository = record.setdefault("repository", {})
     evidence = record.setdefault("evidence", {})
@@ -2898,28 +3243,28 @@ def update_evidence(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
                 raise ClientError("Linear attachment must be a JSON object") from error
             if not isinstance(item, dict):
                 raise ClientError("Linear attachment must be a JSON object")
-            title = validate_name(str(item.get("title") or ""))
-            url = str(item.get("url") or "").strip()
-            parsed = urllib.parse.urlsplit(url)
-            if parsed.scheme != "https" or not parsed.hostname:
-                raise ClientError("Linear attachment requires an HTTPS URL")
-            subtitle = validate_name(
-                str(item.get("subtitle") or "AGK verified evidence")
-            )
             structured.append(
                 {
-                    "title": title,
-                    "subtitle": subtitle,
-                    "url": url,
+                    "title": str(item.get("title") or ""),
+                    "subtitle": str(item.get("subtitle") or "AGK verified evidence"),
+                    "url": str(item.get("url") or "").strip(),
                 }
             )
+        structured = validate_linear_attachments(structured)
+        existing = validate_linear_attachments(
+            evidence.get("linear_attachments", [])
+        )
         existing_urls = {
-            str(item.get("url") or "")
-            for item in evidence.get("linear_attachments", [])
-            if isinstance(item, dict)
+            canonical_linear_attachment_url(
+                urllib.parse.urlsplit(str(item.get("url") or ""))
+            )
+            for item in existing
         }
         evidence.setdefault("linear_attachments", []).extend(
-            item for item in structured if item["url"] not in existing_urls
+            item
+            for item in structured
+            if canonical_linear_attachment_url(urllib.parse.urlsplit(item["url"]))
+            not in existing_urls
         )
         changed.append("linear_attachments")
     browser_report = getattr(args, "browser_report", None)
@@ -2952,6 +3297,7 @@ def update_evidence(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
             url=str(report["url"]),
             started_at=started_at,
             finished_at=finished_at,
+            profile_binding=profile_binding,
         )
         evidence["qa_browser_provenance"] = {
             **provenance,

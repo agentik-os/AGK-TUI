@@ -206,6 +206,17 @@ def test_work_context_requires_complete_client_scoped_contract(layout, monkeypat
         },
     )
 
+    outside = layout.workspace / "outside.yaml"
+    client_control.atomic_yaml(outside, fields)
+    with pytest.raises(client_control.ClientError, match="inside the client boundary"):
+        client_control.update_work_context(
+            layout,
+            Namespace(
+                slug="test-client", work_id=work["id"], actor="pm",
+                context_file=str(outside),
+            ),
+        )
+
     updated = client_control.update_work_context(
         layout,
         Namespace(
@@ -230,15 +241,377 @@ def test_work_context_requires_complete_client_scoped_contract(layout, monkeypat
     assert client_control.yaml_document(snapshot)["description"] == (
         "Authoritative Linear description"
     )
-    outside = layout.workspace / "outside.yaml"
-    client_control.atomic_yaml(outside, fields)
-    with pytest.raises(client_control.ClientError, match="inside the client boundary"):
+
+
+def test_work_context_cannot_be_refinalized_after_signed_snapshot(layout):
+    client_control.create_client(layout, init_args())
+    work = make_work(layout)
+    path, record = client_control.load_work(layout, "test-client", work["id"])
+    record["status"] = "backlog"
+    client_control.atomic_yaml(path, record)
+    context_file = layout.client("test-client") / "tmp" / "replacement.yaml"
+    client_control.atomic_yaml(context_file, {"replacement": "attempt"})
+
+    with pytest.raises(client_control.ClientError, match="already finalized"):
         client_control.update_work_context(
             layout,
             Namespace(
-                slug="test-client", work_id=work["id"], actor="pm",
-                context_file=str(outside),
+                slug="test-client",
+                work_id=work["id"],
+                actor="pm",
+                context_file=str(context_file),
             ),
+        )
+
+
+def test_concurrent_context_finalization_cannot_corrupt_signed_snapshot(
+    layout, monkeypatch
+):
+    import threading
+
+    client_control.create_client(layout, init_args())
+    repository = declare_repository(layout, "test-client")
+    work = client_control.create_work(
+        layout,
+        Namespace(
+            slug="test-client",
+            issue="FOU-143",
+            title="Concurrent context",
+            role="backend-engineer",
+            provider="hermes",
+            repo=repository,
+            branch=None,
+            session=None,
+            target="staging",
+        ),
+    )
+    workflow = client_control.yaml_document(
+        layout.client("test-client") / ".client" / "workflow.yaml"
+    )
+    fields = {
+        key: ["evidence"]
+        if key
+        in {
+            "attachments_and_screenshots",
+            "acceptance_criteria",
+            "dependencies",
+            "test_plan",
+            "real_navigation_requirements",
+            "staging_and_deployment_requirements",
+            "evidence_plan",
+            "links_to_source_mission_pr_release_incident_and_decisions",
+            "risks",
+        }
+        else "documented"
+        for key in workflow["intake"]["product_definition_requires"]
+    }
+    context_file = layout.client("test-client") / "tmp" / "concurrent.yaml"
+    client_control.atomic_yaml(context_file, fields)
+    start = threading.Event()
+
+    def snapshot(marker):
+        return {
+            "identifier": "FOU-143",
+            "title": "Concurrent context",
+            "description": marker,
+            "url": "https://linear.app/test/issue/FOU-143",
+            "updated_at": (
+                "2026-08-27T12:00:01Z"
+                if marker == "second"
+                else "2026-08-27T12:00:00Z"
+            ),
+            "team_id": "team-id",
+            "comments": [],
+            "attachments": [],
+            "relations": [],
+        }
+
+    monkeypatch.setattr(
+        client_control,
+        "authoritative_linear_snapshot",
+        lambda *_: snapshot(threading.current_thread().name),
+    )
+    errors = []
+    completed = []
+
+    def finalize(actor):
+        assert start.wait(5)
+        try:
+            completed.append(
+                client_control.update_work_context(
+                    layout,
+                    Namespace(
+                        slug="test-client",
+                        work_id=work["id"],
+                        actor=actor,
+                        context_file=str(context_file),
+                    ),
+                )
+            )
+        except client_control.ClientError as error:
+            errors.append(error)
+
+    threads = [
+        threading.Thread(target=finalize, args=(actor,), name=actor)
+        for actor in ("first", "second")
+    ]
+    for thread in threads:
+        thread.start()
+    start.set()
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
+    assert len(completed) == 1
+    assert len(errors) == 1
+
+    _, record = client_control.load_work(layout, "test-client", work["id"])
+    snapshot_path = layout.client("test-client") / record["context"]["linear_snapshot"][
+        "path"
+    ]
+    snapshot_body = json.dumps(
+        client_control.yaml_document(snapshot_path),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert hashlib.sha256(snapshot_body.encode()).hexdigest() == record["context"][
+        "linear_snapshot"
+    ]["sha256"]
+
+
+def test_context_finalization_cannot_overwrite_concurrent_transition(
+    layout, monkeypatch
+):
+    import threading
+
+    client_control.create_client(layout, init_args())
+    repository = declare_repository(layout, "test-client")
+    work = client_control.create_work(
+        layout,
+        Namespace(
+            slug="test-client",
+            issue="FOU-144",
+            title="Transition race",
+            role="backend-engineer",
+            provider="hermes",
+            repo=repository,
+            branch=None,
+            session=None,
+            target="staging",
+        ),
+    )
+    workflow = client_control.yaml_document(
+        layout.client("test-client") / ".client" / "workflow.yaml"
+    )
+    fields = {
+        key: ["evidence"]
+        if key
+        in {
+            "attachments_and_screenshots",
+            "acceptance_criteria",
+            "dependencies",
+            "test_plan",
+            "real_navigation_requirements",
+            "staging_and_deployment_requirements",
+            "evidence_plan",
+            "links_to_source_mission_pr_release_incident_and_decisions",
+            "risks",
+        }
+        else "documented"
+        for key in workflow["intake"]["product_definition_requires"]
+    }
+    context_file = layout.client("test-client") / "tmp" / "transition-race.yaml"
+    client_control.atomic_yaml(context_file, fields)
+    monkeypatch.setattr(
+        client_control,
+        "authoritative_linear_snapshot",
+        lambda *_: {
+            "identifier": "FOU-144",
+            "title": "Transition race",
+            "description": "authoritative",
+            "url": "https://linear.app/test/issue/FOU-144",
+            "updated_at": "2026-08-27T12:00:00Z",
+            "team_id": "team-id",
+            "comments": [],
+            "attachments": [],
+            "relations": [],
+        },
+    )
+    transition_writing = threading.Event()
+    release_transition = threading.Event()
+    original_atomic_yaml = client_control.atomic_yaml
+    work_path, _ = client_control.load_work(layout, "test-client", work["id"])
+
+    def blocking_atomic_yaml(path, data, mode=0o600):
+        if (
+            threading.current_thread().name == "blocking-transition"
+            and path == work_path
+        ):
+            transition_writing.set()
+            assert release_transition.wait(5)
+        return original_atomic_yaml(path, data, mode)
+
+    monkeypatch.setattr(client_control, "atomic_yaml", blocking_atomic_yaml)
+    transition_errors = []
+    finalization_errors = []
+
+    def transition():
+        try:
+            client_control.transition_work(
+                layout, "test-client", work["id"], "blocked", actor="supervisor"
+            )
+        except client_control.ClientError as error:
+            transition_errors.append(error)
+
+    def finalize():
+        try:
+            client_control.update_work_context(
+                layout,
+                Namespace(
+                    slug="test-client",
+                    work_id=work["id"],
+                    actor="product",
+                    context_file=str(context_file),
+                ),
+            )
+        except client_control.ClientError as error:
+            finalization_errors.append(error)
+
+    transition_thread = threading.Thread(
+        target=transition, name="blocking-transition"
+    )
+    transition_thread.start()
+    assert transition_writing.wait(5)
+    finalization_thread = threading.Thread(target=finalize, name="finalizer")
+    finalization_thread.start()
+    finalization_thread.join(1)
+    release_transition.set()
+    transition_thread.join(5)
+    finalization_thread.join(5)
+    assert not transition_thread.is_alive()
+    assert not finalization_thread.is_alive()
+    assert not transition_errors
+    assert finalization_errors
+
+    _, record = client_control.load_work(layout, "test-client", work["id"])
+    assert record["status"] == "blocked"
+    assert record["context"]["complete"] is False
+
+
+def test_evidence_update_preserves_concurrent_status_transition(layout, monkeypatch):
+    import threading
+
+    client_control.create_client(layout, init_args())
+    work = make_work(layout)
+    work_path, _ = client_control.load_work(layout, "test-client", work["id"])
+    transition_writing = threading.Event()
+    release_transition = threading.Event()
+    original_atomic_yaml = client_control.atomic_yaml
+
+    def blocking_atomic_yaml(path, data, mode=0o600):
+        if (
+            threading.current_thread().name == "blocking-transition"
+            and path == work_path
+        ):
+            transition_writing.set()
+            assert release_transition.wait(5)
+        return original_atomic_yaml(path, data, mode)
+
+    monkeypatch.setattr(client_control, "atomic_yaml", blocking_atomic_yaml)
+    errors = []
+
+    def transition():
+        try:
+            client_control.transition_work(
+                layout, "test-client", work["id"], "blocked", actor="supervisor"
+            )
+        except client_control.ClientError as error:
+            errors.append(error)
+
+    def update():
+        try:
+            client_control.update_evidence(
+                layout,
+                Namespace(
+                    slug="test-client", work_id=work["id"], actor="qa",
+                    pull_request=None, commit=None, engineering_review=None,
+                    ci=None, qa=None, security=None, security_decision_id=None,
+                    preview=None, staging_build=None, screenshot=[],
+                    validation_step=[], browser_report=None, qa_session_id=None,
+                    rollback_plan=None, risk="concurrent-risk",
+                    production_health=None, linear_done=False,
+                    linear_attachment=[],
+                ),
+            )
+        except client_control.ClientError as error:
+            errors.append(error)
+
+    transition_thread = threading.Thread(
+        target=transition, name="blocking-transition"
+    )
+    transition_thread.start()
+    assert transition_writing.wait(5)
+    update_thread = threading.Thread(target=update, name="evidence-updater")
+    update_thread.start()
+    update_thread.join(1)
+    release_transition.set()
+    transition_thread.join(5)
+    update_thread.join(5)
+    assert not transition_thread.is_alive()
+    assert not update_thread.is_alive()
+    assert not errors
+
+    _, record = client_control.load_work(layout, "test-client", work["id"])
+    assert record["status"] == "blocked"
+    assert record["evidence"]["risk"] == "concurrent-risk"
+    assert record["events"][-1]["event"] == "work.evidence_updated"
+
+
+def test_start_authorization_rejects_stale_discord_message():
+    with pytest.raises(client_control.ClientError, match="freshness window"):
+        client_control.validate_start_message_freshness(
+            "2026-08-27T17:00:00+00:00",
+            now=client_control.dt.datetime.fromisoformat("2026-08-27T18:00:01+00:00"),
+        )
+
+
+def test_start_authorization_message_cannot_be_reused_for_another_work(layout):
+    client_control.create_client(layout, init_args())
+    _first = make_work(layout)
+    second = client_control.create_work(
+        layout,
+        Namespace(
+            slug="test-client",
+            issue="FOU-142",
+            title="Second work record",
+            role="backend-engineer",
+            provider="hermes",
+            repo="test-org/product",
+            branch=None,
+            session=None,
+            target="staging",
+        ),
+    )
+
+    with pytest.raises(
+        client_control.ClientError, match="already authorized another work"
+    ):
+        client_control.ensure_start_message_unused(
+            layout, "test-client", "999", second["id"]
+        )
+
+
+def test_start_authorization_message_cannot_be_reused_across_clients(layout):
+    client_control.create_client(layout, init_args())
+    make_work(layout)
+    other = init_args()
+    other.slug = "other-client"
+    other.name = "Other Client"
+    client_control.create_client(layout, other)
+
+    with pytest.raises(client_control.ClientError, match="already authorized"):
+        client_control.ensure_start_message_unused(
+            layout, "other-client", "999", "WORK-OTHER"
         )
 
 
@@ -276,7 +649,10 @@ def test_ready_authorization_is_derived_from_verified_discord_message(layout, mo
         if endpoint == "/channels/123456789012345679/messages/999":
             return {
                 "id": "999", "channel_id": "123456789012345679",
-                "content": "START FOU-145", "timestamp": "2026-08-27T18:00:00+00:00",
+                "content": "START FOU-145",
+                "timestamp": client_control.dt.datetime.now(
+                    client_control.dt.timezone.utc
+                ).isoformat(),
                 "author": {"id": "42", "bot": False},
             }
         raise AssertionError(endpoint)
@@ -304,6 +680,111 @@ def test_ready_authorization_is_derived_from_verified_discord_message(layout, mo
         client_control.transition_work(
             layout, "test-client", work["id"], "in_progress", actor="attacker"
         )
+
+
+def test_start_authorization_cannot_overwrite_concurrent_transition(
+    layout, monkeypatch
+):
+    import threading
+
+    client_control.create_client(layout, init_args())
+    repository = declare_repository(layout, "test-client")
+    config_path = layout.client("test-client") / ".client" / "integrations.yaml"
+    integrations = client_control.yaml_document(config_path)
+    integrations["linear"]["delivery_project_id"] = "project-id"
+    integrations["discord"].update(
+        {
+            "enabled": True,
+            "guild_id": "123456789012345678",
+            "owner_user_id": "42",
+            "channels": {"dev_requests": "123456789012345679"},
+            "token_set": True,
+        }
+    )
+    client_control.atomic_yaml(config_path, integrations)
+    work = client_control.create_work(
+        layout,
+        Namespace(
+            slug="test-client", issue="FOU-146", title="Authorization race",
+            role="backend-engineer", provider="hermes", repo=repository,
+            branch=None, session=None, target="staging",
+        ),
+    )
+    work_path, record = client_control.load_work(layout, "test-client", work["id"])
+    attach_verified_linear_snapshot(layout, "test-client", record, "FOU-146")
+    client_control.atomic_yaml(work_path, record)
+
+    def fake_get(_layout, _slug, endpoint):
+        if endpoint == "/channels/123456789012345679":
+            return {"id": "123456789012345679", "guild_id": "123456789012345678"}
+        if endpoint == "/channels/123456789012345679/messages/1000":
+            return {
+                "id": "1000", "channel_id": "123456789012345679",
+                "content": "START FOU-146",
+                "timestamp": client_control.dt.datetime.now(
+                    client_control.dt.timezone.utc
+                ).isoformat(),
+                "author": {"id": "42", "bot": False},
+            }
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(client_control, "discord_client_get", fake_get)
+    transition_writing = threading.Event()
+    release_transition = threading.Event()
+    original_atomic_yaml = client_control.atomic_yaml
+
+    def blocking_atomic_yaml(path, data, mode=0o600):
+        if (
+            threading.current_thread().name == "blocking-transition"
+            and path == work_path
+        ):
+            transition_writing.set()
+            assert release_transition.wait(5)
+        return original_atomic_yaml(path, data, mode)
+
+    monkeypatch.setattr(client_control, "atomic_yaml", blocking_atomic_yaml)
+    transition_errors = []
+    authorization_errors = []
+
+    def transition():
+        try:
+            client_control.transition_work(
+                layout, "test-client", work["id"], "blocked", actor="supervisor"
+            )
+        except client_control.ClientError as error:
+            transition_errors.append(error)
+
+    def authorize():
+        try:
+            client_control.authorize_work_start(
+                layout,
+                Namespace(
+                    slug="test-client", work_id=work["id"],
+                    channel_id="123456789012345679", message_id="1000",
+                ),
+            )
+        except client_control.ClientError as error:
+            authorization_errors.append(error)
+
+    transition_thread = threading.Thread(
+        target=transition, name="blocking-transition"
+    )
+    transition_thread.start()
+    assert transition_writing.wait(5)
+    authorization_thread = threading.Thread(target=authorize, name="authorizer")
+    authorization_thread.start()
+    authorization_thread.join(1)
+    release_transition.set()
+    transition_thread.join(5)
+    authorization_thread.join(5)
+    assert not transition_thread.is_alive()
+    assert not authorization_thread.is_alive()
+    assert not transition_errors
+    assert authorization_errors
+
+    _, final_record = client_control.load_work(layout, "test-client", work["id"])
+    assert final_record["status"] == "blocked"
+    assert final_record.get("authorization") is None
 
 
 @pytest.mark.parametrize(
@@ -511,6 +992,91 @@ def test_bootstrap_upgrade_migrates_existing_client_workflow_and_team(layout):
     backups = layout.system / "audit" / "client-config-migrations" / "test-client"
     assert (backups / "workflow.schema-1.yaml").is_file()
     assert (backups / "team.schema-1.yaml").is_file()
+
+
+def test_bootstrap_upgrade_preserves_client_governance_customizations(layout):
+    client_control.create_client(layout, init_args())
+    config = layout.client("test-client") / ".client"
+    client_control.atomic_yaml(
+        config / "workflow.yaml",
+        {
+            "schema_version": 1,
+            "custom_governance": {"change_window": "client-approved-only"},
+            "intake": {"product_definition_requires": ["client_specific_evidence"]},
+        },
+    )
+    client_control.atomic_yaml(
+        config / "team.yaml",
+        {
+            "schema_version": 1,
+            "client_id": "test-client",
+            "roles": {
+                "client-specialist": {
+                    "description": "Client-specific retained role",
+                    "allowed_channels": ["client-private"],
+                }
+            },
+        },
+    )
+
+    client_control.bootstrap(layout, upgrade=True)
+
+    workflow = client_control.yaml_document(config / "workflow.yaml")
+    team = client_control.yaml_document(config / "team.yaml")
+    assert workflow["custom_governance"] == {
+        "change_window": "client-approved-only"
+    }
+    assert "client_specific_evidence" in workflow["intake"][
+        "product_definition_requires"
+    ]
+    assert "full_issue_description" in workflow["intake"][
+        "product_definition_requires"
+    ]
+    assert team["roles"]["client-specialist"]["description"] == (
+        "Client-specific retained role"
+    )
+    assert "project-manager" in team["roles"]
+
+
+def test_client_upgrade_rejects_incompatible_governance_types():
+    with pytest.raises(client_control.ClientError, match="incompatible type"):
+        client_control.merge_client_upgrade(
+            {"invariants": {"production_disabled": True}},
+            {"invariants": "disabled"},
+        )
+
+
+def test_client_upgrade_rejects_scalar_default_replaced_by_container():
+    with pytest.raises(client_control.ClientError, match="incompatible type"):
+        client_control.merge_client_upgrade(
+            {"flag": False},
+            {"flag": {"nested": False}},
+        )
+
+
+@pytest.mark.parametrize(
+    ("default", "current"),
+    [
+        (True, 1),
+        (True, "true"),
+        (4, "4"),
+        (1.5, 1),
+        (True, None),
+    ],
+)
+def test_client_upgrade_rejects_incompatible_scalar_types(default, current):
+    with pytest.raises(client_control.ClientError, match="incompatible type"):
+        client_control.merge_client_upgrade(
+            {"value": default},
+            {"value": current},
+        )
+
+
+def test_client_upgrade_allows_configured_scalar_for_null_placeholder():
+    assert client_control.merge_client_upgrade(
+        {"external_id": None},
+        {"external_id": "configured-id"},
+    ) == {"external_id": "configured-id"}
 
 
 def test_dry_run_makes_no_files_or_external_calls(layout, monkeypatch):
@@ -909,6 +1475,163 @@ def test_qa_evidence_rejects_a_single_valid_screenshot(layout):
         )
 
 
+def test_qa_evidence_rejects_forged_stored_viewport_dimensions(layout):
+    client_control.create_client(layout, init_args())
+    work = make_work(layout)
+    screenshot = layout.client("test-client") / "artifacts" / "one-pixel.png"
+    from PIL import Image
+
+    Image.new("RGB", (1, 1), color="white").save(screenshot)
+    decoded = client_control.client_evidence_artifact(
+        layout,
+        "test-client",
+        str(screenshot),
+        suffixes={".png"},
+    )
+    runtime = client_control.yaml_document(
+        layout.client("test-client") / ".client" / "runtime.yaml"
+    )
+    screenshots = []
+    for viewport in runtime["browser_qa"]["viewports"]:
+        forged = dict(decoded)
+        forged.update(
+            {
+                "viewport": viewport["id"],
+                "width": viewport["width"],
+                "height": viewport["height"],
+            }
+        )
+        screenshots.append(forged)
+
+    with pytest.raises(client_control.ClientError, match="decoded dimensions"):
+        client_control.validate_qa_evidence(
+            layout,
+            "test-client",
+            work["id"],
+            {"screenshots": screenshots},
+        )
+
+
+def test_qa_evidence_rejects_reduced_runtime_viewport_policy(layout):
+    client_control.create_client(layout, init_args())
+    work = make_work(layout)
+    runtime_path = layout.client("test-client") / ".client" / "runtime.yaml"
+    runtime = client_control.yaml_document(runtime_path)
+    runtime["browser_qa"]["viewports"] = [
+        {"id": "mobile", "width": 390, "height": 844}
+    ]
+    client_control.atomic_yaml(runtime_path, runtime)
+    screenshot = layout.client("test-client") / "artifacts" / "mobile.png"
+    from PIL import Image
+
+    Image.new("RGB", (390, 844), color="white").save(screenshot)
+    artifact = client_control.client_evidence_artifact(
+        layout,
+        "test-client",
+        str(screenshot),
+        suffixes={".png"},
+    )
+    artifact.update({"viewport": "mobile", "width": 390, "height": 844})
+
+    with pytest.raises(client_control.ClientError, match="canonical four viewports"):
+        client_control.validate_qa_evidence(
+            layout,
+            "test-client",
+            work["id"],
+            {"screenshots": [artifact]},
+        )
+
+
+def test_browser_session_rejects_navigation_without_authenticated_binding(layout):
+    import sqlite3
+
+    client_control.create_client(layout, init_args())
+    profile = client_control.yaml_document(
+        layout.client("test-client") / ".client" / "manifest.yaml"
+    )["profile"]["hermes_profile"]
+    profile_home = layout.home / ".hermes" / "profiles" / profile
+    profile_home.mkdir(parents=True)
+    db = sqlite3.connect(profile_home / "state.db")
+    db.execute(
+        "create table sessions(id text primary key, source text, started_at real, last_activity_at real)"
+    )
+    db.execute(
+        "create table messages(session_id text, role text, tool_name text, content text, timestamp real)"
+    )
+    db.execute(
+        "insert into sessions values(?,?,?,?)",
+        ("qa-session-unbound", "kanban", 1000.0, 1100.0),
+    )
+    db.execute(
+        "insert into messages values(?,?,?,?,?)",
+        (
+            "qa-session-unbound",
+            "tool",
+            "browser_exec",
+            json.dumps(
+                {
+                    "url": "https://staging.test",
+                    "page_title": "Test",
+                    "browser_profile_id": "test-staging-user",
+                    "authenticated_principal": "test-user",
+                    "authentication_probe_sha256": "a" * 64,
+                }
+            ),
+            1050.0,
+        ),
+    )
+    db.commit()
+    db.close()
+
+    with pytest.raises(client_control.ClientError, match="tool call binding"):
+        client_control.verify_browser_session(
+            layout,
+            "test-client",
+            "qa-session-unbound",
+            url="https://staging.test",
+            started_at=1000.0,
+            finished_at=1100.0,
+            profile_binding={
+                "browser_profile_id": "test-staging-user",
+                "authenticated_principal": "test-user",
+                "authentication_probe_sha256": "a" * 64,
+            },
+        )
+
+
+def test_browser_profile_binding_is_exact_and_case_sensitive():
+    assert not client_control.browser_payload_has_profile_binding(
+        {
+            "browser_profile_id": "Test-Staging-User",
+            "authenticated_principal": "Test-User",
+            "authentication_probe_sha256": "A" * 64,
+        },
+        {
+            "browser_profile_id": "test-staging-user",
+            "authenticated_principal": "test-user",
+            "authentication_probe_sha256": "a" * 64,
+        },
+    )
+
+
+def test_browser_navigation_rejects_disjoint_nested_authentication_binding():
+    binding = {
+        "browser_profile_id": "test-staging-user",
+        "authenticated_principal": "test-user",
+        "authentication_probe_sha256": "a" * 64,
+    }
+    payload = {
+        "navigation": {"url": "https://staging.test"},
+        "unrelated_page_data": binding,
+    }
+
+    assert not client_control.browser_payload_has_bound_navigation(
+        payload,
+        client_control.canonical_browser_url("https://staging.test"),
+        binding,
+    )
+
+
 def test_browser_profile_binding_rejects_unconfigured_authenticated_principal(layout):
     client_control.create_client(layout, init_args())
     runtime_path = layout.client("test-client") / ".client" / "runtime.yaml"
@@ -972,11 +1695,62 @@ def test_qa_pass_requires_real_artifacts_and_browser_session_provenance(layout):
     profile_home.mkdir(parents=True)
     db = sqlite3.connect(profile_home / "state.db")
     db.execute("create table sessions(id text primary key, source text, started_at real, last_activity_at real)")
-    db.execute("create table messages(session_id text, role text, tool_name text, content text, timestamp real)")
+    db.execute(
+        "create table messages(session_id text, role text, tool_name text, content text, "
+        "timestamp real, tool_call_id text, tool_calls text)"
+    )
     db.execute("insert into sessions values(?,?,?,?)", ("qa-session-1", "kanban", 1000.0, 1100.0))
     db.execute(
-        "insert into messages values(?,?,?,?,?)",
-        ("qa-session-1", "tool", "browser_exec", '{"url":"https://staging.test","page_title":"Test"}', 1050.0),
+        "insert into messages values(?,?,?,?,?,?,?)",
+        (
+            "qa-session-1",
+            "assistant",
+            None,
+            "",
+            1040.0,
+            None,
+            json.dumps(
+                [
+                    {
+                        "id": "browser-call-1",
+                        "function": {
+                            "name": "browser_exec",
+                            "arguments": json.dumps(
+                                {
+                                    "code": "trusted browser navigation probe",
+                                    "session": "test-staging-user",
+                                }
+                            ),
+                        },
+                    }
+                ]
+            ),
+        ),
+    )
+    db.execute(
+        "insert into messages values(?,?,?,?,?,?,?)",
+        (
+            "qa-session-1",
+            "tool",
+            "browser_exec",
+            (
+                '<untrusted_tool_result source="browser_exec">\n'
+                "External content follows.\n"
+                + json.dumps(
+                    {
+                        "url": "https://staging.test",
+                        "page_title": "Test",
+                        "browser_profile_id": "test-staging-user",
+                        "authenticated_principal": "test-user",
+                        "authentication_probe_sha256": "a" * 64,
+                    }
+                )
+                + "\n</untrusted_tool_result>"
+            ),
+            1050.0,
+            "browser-call-1",
+            None,
+        ),
     )
     db.commit()
     db.close()
@@ -1547,6 +2321,93 @@ def test_linear_material_gates_require_structured_https_attachments(layout):
     plan = client_control.linear_sync_plan(layout, "test-client", work["id"])
     assert plan["attachments_required"] is True
     assert plan["attachments"][0]["url"] == "https://evidence.example/mobile.png"
+
+
+def test_linear_sync_revalidates_persisted_attachment_metadata(layout):
+    client_control.create_client(layout, init_args())
+    work = make_work(layout)
+    path, record = client_control.load_work(layout, "test-client", work["id"])
+    record["status"] = "security_review"
+    record["evidence"]["linear_attachments"] = [
+        {
+            "title": "QA evidence",
+            "subtitle": "AGK verified evidence",
+            "url": "javascript:alert(1)",
+        }
+    ]
+    client_control.atomic_yaml(path, record)
+
+    with pytest.raises(client_control.ClientError, match="requires an HTTPS URL"):
+        client_control.linear_sync_plan(layout, "test-client", work["id"])
+
+
+def test_linear_evidence_rejects_duplicate_urls_in_the_same_batch(layout):
+    client_control.create_client(layout, init_args())
+    work = make_work(layout)
+    attachment = json.dumps(
+        {"title": "QA evidence", "url": "https://evidence.example/qa.png"}
+    )
+
+    with pytest.raises(client_control.ClientError, match="URLs must be unique"):
+        client_control.update_evidence(
+            layout,
+            Namespace(
+                slug="test-client",
+                work_id=work["id"],
+                actor="qa-agent",
+                pull_request=None,
+                commit=None,
+                engineering_review=None,
+                ci=None,
+                qa=None,
+                security=None,
+                security_decision_id=None,
+                preview=None,
+                staging_build=None,
+                screenshot=[],
+                validation_step=[],
+                linear_attachment=[attachment, attachment],
+                browser_report=None,
+                qa_session_id=None,
+                rollback_plan=None,
+                risk=None,
+                production_health=None,
+                linear_done=False,
+            ),
+        )
+
+
+def test_linear_evidence_rejects_canonical_duplicate_urls():
+    with pytest.raises(client_control.ClientError, match="URLs must be unique"):
+        client_control.validate_linear_attachments(
+            [
+                {"title": "first", "url": "https://EXAMPLE.com:443/path"},
+                {"title": "second", "url": "https://example.com/path"},
+            ]
+        )
+
+
+def test_linear_evidence_deduplicates_canonical_urls_across_updates(layout):
+    client_control.create_client(layout, init_args())
+    work = make_work(layout)
+
+    def update(title, url):
+        return client_control.update_evidence(
+            layout,
+            Namespace(
+                slug="test-client", work_id=work["id"], actor="qa-agent",
+                pull_request=None, commit=None, engineering_review=None, ci=None,
+                qa=None, security=None, security_decision_id=None,
+                preview=None, staging_build=None, screenshot=[], validation_step=[],
+                linear_attachment=[json.dumps({"title": title, "url": url})],
+                browser_report=None, qa_session_id=None, rollback_plan=None,
+                risk=None, production_health=None, linear_done=False,
+            ),
+        )
+
+    update("first", "https://EXAMPLE.com:443/path")
+    record = update("second", "https://example.com/path")
+    assert len(record["evidence"]["linear_attachments"]) == 1
 
 
 def test_linear_sync_is_client_scoped_mapped_and_comment_idempotent(
