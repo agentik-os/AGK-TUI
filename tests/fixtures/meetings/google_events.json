@@ -1,0 +1,37 @@
+{
+  "items": [
+    {
+      "id": "google-id-1",
+      "iCalUID": "shared-event@example.com",
+      "summary": "Client discovery",
+      "start": {"dateTime": "2026-08-29T09:00:00Z"},
+      "end": {"dateTime": "2026-08-29T09:30:00Z"},
+      "status": "confirmed",
+      "organizer": {"email": "owner@agentik-os.com"},
+      "attendees": [{"email": "client@example.net"}],
+      "conferenceData": {"entryPoints": [{"entryPointType": "video", "uri": "https://meet.google.com/abc-defg-hij?authuser=1"}]},
+      "description": "Bearer private-token"
+    },
+    {
+      "id": "google-id-2",
+      "iCalUID": "teams-event@example.com",
+      "summary": "Partner sync",
+      "start": {"dateTime": "2026-08-29T10:00:00Z"},
+      "end": {"dateTime": "2026-08-29T10:30:00Z"},
+      "status": "confirmed",
+      "organizer": {"email": "owner@agentik-os.com"},
+      "attendees": [{"email": "partner@example.org"}],
+      "location": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc/0?context=secret"
+    },
+    {
+      "id": "google-id-3",
+      "iCalUID": "focus-event@example.com",
+      "summary": "Focus block",
+      "start": {"dateTime": "2026-08-29T14:00:00Z"},
+      "end": {"dateTime": "2026-08-29T15:00:00Z"},
+      "status": "confirmed",
+      "organizer": {"email": "owner@agentik-os.com"},
+      "attendees": []
+    }
+  ]
+}

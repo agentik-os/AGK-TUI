@@ -8,6 +8,7 @@ scope:
   - mission
   - private
 runtime: hermes
+profile: builder-os
 prompt: prompt.md
 distribution: bundled
 aliases:

@@ -88,11 +88,11 @@ def test_default_resume_commands_use_documented_cli(monkeypatch):
     assert agk.default_command("codex", "X-1") == ["/verified/codex", "resume", "X-1"]
 
 
-def test_openrouter_sessions_pin_the_supported_model(monkeypatch):
+def test_explicit_openrouter_sessions_use_auto_not_ox_alpha(monkeypatch):
     monkeypatch.setattr(agk.shutil, "which", lambda name: f"/verified/{name}")
     monkeypatch.delenv("AGK_OPENROUTER_MODEL", raising=False)
     assert agk.default_command("openrouter") == [
-        "/verified/hermes", "--provider", "openrouter", "--model", "stealth/ox-alpha"
+        "/verified/hermes", "--provider", "openrouter", "--model", "openrouter/auto"
     ]
 
 
@@ -315,6 +315,7 @@ def test_public_single_user_environment_config(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("USER", "public-user")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("AGK_ENVIRONMENT", raising=False)
     monkeypatch.setenv("AGK_ENV_CONFIG", str(config))
     env = agk.Environment.current()
     assert env.name == "mission"
@@ -327,6 +328,7 @@ def test_public_environment_rejects_unknown_scope(tmp_path, monkeypatch):
     config.write_text("environment: super-root\n", encoding="utf-8")
     monkeypatch.setenv("USER", "public-user")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("AGK_ENVIRONMENT", raising=False)
     monkeypatch.setenv("AGK_ENV_CONFIG", str(config))
     try:
         agk.Environment.current()

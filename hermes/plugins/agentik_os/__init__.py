@@ -6,10 +6,32 @@ and their command grammar without adding model-tool schema to the core.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from .commands import AgentikCommandService
+from .nutrition_command import dispatch as dispatch_nutrition
 from .runtime_tool import RUNTIME_TOOL_SCHEMA, handle_runtime, runtime_available
 from .agent_registry import AGENT_TOOL_SCHEMA, AgentCommandService, agent_router_prompt, handle_agent
+from .owner_context import owner_context_prompt
+from .interagent import INTERAGENT_TOOL_SCHEMA, broker_available, handle_interagent, interagent_prompt
 from .rules import rules_prompt
+from .completion import (
+    AGK_COMPLETION_TOOL_SCHEMA,
+    archive_before_execution,
+    completion_available,
+    completion_prompt,
+    handle_completion,
+    record_applied_plan,
+    require_plan_before_work,
+)
+
+
+def _dedicated_nutrition_profile() -> bool:
+    raw = os.environ.get("HERMES_HOME")
+    if not raw:
+        return False
+    return Path(raw).resolve() == Path("/home/private/.hermes/profiles/nutrition-os")
 
 
 def register(ctx) -> None:
@@ -20,6 +42,20 @@ def register(ctx) -> None:
             handler=service.handler(name),
             description=service.description(name),
             args_hint="<action> [target] [options]",
+        )
+    if _dedicated_nutrition_profile():
+        ctx.register_command(
+            "nutrition",
+            handler=dispatch_nutrition,
+            description="Operate the active Nutrition OS cycle.",
+            args_hint="status|plan|shop|prep|next|audit|reset [options]",
+        )
+        # Backward-compatible alias for existing automations and conversations.
+        ctx.register_command(
+            "food",
+            handler=dispatch_nutrition,
+            description="Compatibility alias for the active Nutrition OS cycle.",
+            args_hint="status|plan|shop|prep|next|audit|reset [options]",
         )
     ctx.register_tool(
         name="agentik_runtime",
@@ -46,6 +82,28 @@ def register(ctx) -> None:
         description="Specialized Hermes agents backed by persistent AGK/RMUX runtimes.",
         emoji="🤖",
     )
+    ctx.register_tool(
+        name="station_interagent",
+        toolset="terminal",
+        schema=INTERAGENT_TOOL_SCHEMA,
+        handler=handle_interagent,
+        check_fn=broker_available,
+        description="UID-authenticated non-secret team messaging across Station agents, administered by Operator.",
+        emoji="↔",
+    )
+    ctx.register_tool(
+        name="agk_completion",
+        toolset="terminal",
+        schema=AGK_COMPLETION_TOOL_SCHEMA,
+        handler=handle_completion,
+        check_fn=completion_available,
+        is_async=True,
+        description="Persistent prompt, requirement, artifact, evidence and completion-gate graph.",
+        emoji="✓",
+    )
+    ctx.register_hook("pre_llm_call", archive_before_execution)
+    ctx.register_hook("pre_tool_call", require_plan_before_work)
+    ctx.register_hook("post_tool_call", record_applied_plan)
     ctx.register_system_prompt_section(
         "agentik.agent-router",
         agent_router_prompt,
@@ -53,8 +111,26 @@ def register(ctx) -> None:
         max_chars=1400,
     )
     ctx.register_system_prompt_section(
+        "agentik.completion-harness",
+        completion_prompt,
+        position="after_memory",
+        max_chars=1800,
+    )
+    ctx.register_system_prompt_section(
         "agentik.global-rules",
         rules_prompt,
         position="after_memory",
-        max_chars=4000,
+        max_chars=3999,
+    )
+    ctx.register_system_prompt_section(
+        "agentik.owner-context",
+        owner_context_prompt,
+        position="after_memory",
+        max_chars=3999,
+    )
+    ctx.register_system_prompt_section(
+        "agentik.interagent",
+        interagent_prompt,
+        position="after_memory",
+        max_chars=1200,
     )

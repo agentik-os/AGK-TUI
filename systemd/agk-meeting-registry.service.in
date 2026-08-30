@@ -1,0 +1,22 @@
+[Unit]
+Description=AGK live Meeting Registry and Discord publisher
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/agk-terminal/meeting-registry.json
+
+[Service]
+Type=oneshot
+User=operator
+Group=operator
+UMask=0077
+Environment=HOME=/home/operator
+Environment=PATH=/home/operator/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/home/operator/.hermes/.env
+StateDirectory=agk-meeting-registry
+ExecStart=/usr/bin/python3 /usr/local/lib/agk-terminal/scripts/meeting_registry_live.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadOnlyPaths=/etc/agk-terminal/meeting-registry.json
+ReadWritePaths=/var/lib/agk-meeting-registry

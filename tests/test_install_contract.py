@@ -83,3 +83,22 @@ def test_shared_hermes_install_can_pin_and_verify_an_official_commit():
     assert '"$backup_dir/official-runtime.before"' in source
     assert "npm ci --include=dev" in source
     assert "npm ci --workspace web" not in source
+
+
+def test_install_packages_os_control_center_and_builder_runtime_contract():
+    source = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    for asset in (
+        "os_profile_migration.py",
+        "install_core_os_packages.py",
+        "tailnet_secure_input.py",
+        "install-discord-token.py",
+        'cp -a "$repo_root/os-packages" "$install_root/os-packages"',
+        'cp -a "$repo_root/hermes/plugins/platforms/discord"',
+    ):
+        assert asset in source
+    assert (ROOT / "hermes/plugins/platforms/discord/agk_os_control.py").is_file()
+    assert (ROOT / "hermes/plugins/platforms/discord/agk_os_control_ui.py").is_file()
+    manifest = (ROOT / "os-packages/builder-os/manifest.yaml").read_text()
+    assert "version: 0.2.0" in manifest
+    assert "runtime_contract:" in manifest
