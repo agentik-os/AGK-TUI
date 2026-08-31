@@ -2364,6 +2364,53 @@ def test_client_activation_creates_a_blank_isolated_hermes_profile(layout, monke
     assert "Linear" in content
     assert "cto_approved" in content
     assert "proposal only" in content
+    dropin = (
+        layout.home
+        / ".config"
+        / "systemd"
+        / "user"
+        / f"hermes-gateway-{profile}.service.d"
+        / "30-station-interagent.conf"
+    )
+    assert dropin.is_file()
+    dropin_content = dropin.read_text(encoding="utf-8")
+    assert "Environment=DISCORD_ALLOW_BOTS=mentions" in dropin_content
+    assert "Environment=DISCORD_BOTS_REQUIRE_INLINE_MENTION=true" in dropin_content
+    allowed = next(
+        line
+        for line in dropin_content.splitlines()
+        if line.startswith("Environment=DISCORD_ALLOWED_USERS=")
+    )
+    assert "1441423462492016821" in allowed
+    assert "1541816910587625492" in allowed
+    assert len(allowed.split("=", 2)[2].split(",")) == 6
+
+
+def test_client_activation_uses_explicit_station_bot_allowlist(layout, monkeypatch):
+    client_control.create_client(layout, init_args())
+    manifest = client_control.client_configs(layout, "test-client")["manifest.yaml"]
+    profile = manifest["profile"]["hermes_profile"]
+    profile_home = layout.home / ".hermes" / "profiles" / profile
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("AGK_STATION_OWNER_USER_ID", "999999999999999999")
+    monkeypatch.setenv(
+        "AGK_STATION_DISCORD_BOT_IDS",
+        "111111111111111111,222222222222222222,111111111111111111",
+    )
+
+    client_control.activate_client(layout, Namespace(slug="test-client", yes=True))
+
+    dropin = (
+        layout.home
+        / ".config/systemd/user"
+        / f"hermes-gateway-{profile}.service.d"
+        / "30-station-interagent.conf"
+    )
+    content = dropin.read_text(encoding="utf-8")
+    assert (
+        "Environment=DISCORD_ALLOWED_USERS="
+        "999999999999999999,111111111111111111,222222222222222222"
+    ) in content
 
 
 def test_client_provider_commands_keep_hermes_and_openrouter_in_profile(

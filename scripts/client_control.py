@@ -83,6 +83,15 @@ DISCORD_CHANNELS = (
     "client-status",
     "agent-activity",
 )
+DEFAULT_STATION_OWNER_USER_ID = "1441423462492016821"
+DEFAULT_STATION_DISCORD_BOT_IDS = (
+    "1541816910587625492",  # Operator
+    "1541817649661747351",  # Private
+    "1541817976586637382",  # Agentik
+    "1541817162241540126",  # Mission
+    "1541131574509314209",  # Collective
+)
+STATION_INTERAGENT_DROPIN = "30-station-interagent.conf"
 CLIENT_BATCH_POLICY_START = "<!-- AGK OWNER LINEAR BATCH POLICY: START -->"
 CLIENT_BATCH_POLICY_END = "<!-- AGK OWNER LINEAR BATCH POLICY: END -->"
 CLIENT_BATCH_POLICY = """An authenticated owner request to fix/start all Linear work is one batch start authorization.
@@ -1852,6 +1861,46 @@ def discord_apply_locked(layout: Layout, slug: str) -> dict[str, Any]:
     }
 
 
+def station_discord_principals() -> list[str]:
+    owner_id = os.environ.get(
+        "AGK_STATION_OWNER_USER_ID", DEFAULT_STATION_OWNER_USER_ID
+    ).strip()
+    raw_bot_ids = os.environ.get("AGK_STATION_DISCORD_BOT_IDS", "")
+    bot_ids = (
+        [value.strip() for value in raw_bot_ids.split(",") if value.strip()]
+        if raw_bot_ids
+        else list(DEFAULT_STATION_DISCORD_BOT_IDS)
+    )
+    principals: list[str] = []
+    for value in [owner_id, *bot_ids]:
+        if not re.fullmatch(r"[0-9]{17,20}", value):
+            raise ClientError("Station Discord principal IDs must be numeric snowflakes")
+        if value not in principals:
+            principals.append(value)
+    return principals
+
+
+def write_station_interagent_dropin(layout: Layout, profile_id: str) -> Path:
+    allowed_users = ",".join(station_discord_principals())
+    dropin = (
+        layout.home
+        / ".config"
+        / "systemd"
+        / "user"
+        / f"hermes-gateway-{profile_id}.service.d"
+        / STATION_INTERAGENT_DROPIN
+    )
+    content = (
+        "[Service]\n"
+        "TimeoutStopSec=1860\n"
+        "Environment=DISCORD_ALLOW_BOTS=mentions\n"
+        "Environment=DISCORD_BOTS_REQUIRE_INLINE_MENTION=true\n"
+        f"Environment=DISCORD_ALLOWED_USERS={allowed_users}\n"
+    )
+    atomic_text(dropin, content, 0o600)
+    return dropin
+
+
 def activate_client(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
     if not args.yes:
         raise ClientError("Hermes client-profile activation requires --yes")
@@ -1910,11 +1959,13 @@ def activate_client(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
         intake_content,
         0o600,
     )
+    interagent_dropin = write_station_interagent_dropin(layout, profile_id)
     setup_required = not (profile_home / "config.yaml").is_file()
     return {
         "client_id": slug,
         "hermes_profile": profile_id,
         "created": created,
+        "station_interagent_dropin": str(interagent_dropin),
         "setup_required": setup_required,
         "next_command": (
             f"hermes --profile {profile_id} setup" if setup_required else None
