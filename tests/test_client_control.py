@@ -682,6 +682,152 @@ def test_ready_authorization_is_derived_from_verified_discord_message(layout, mo
         )
 
 
+def test_owner_batch_authorizes_every_ready_linear_issue_with_one_thread_each(
+    layout, monkeypatch
+):
+    client_control.create_client(layout, init_args())
+    repository = declare_repository(layout, "test-client")
+    config_path = layout.client("test-client") / ".client" / "integrations.yaml"
+    integrations = client_control.yaml_document(config_path)
+    integrations["linear"]["delivery_project_id"] = "project-id"
+    integrations["discord"].update(
+        {
+            "enabled": True,
+            "guild_id": "123456789012345678",
+            "owner_user_id": "42",
+            "channels": {"dev_requests": "123456789012345679"},
+            "token_set": True,
+        }
+    )
+    client_control.atomic_yaml(config_path, integrations)
+    works = []
+    for issue in ("LOU-69", "LOU-70"):
+        work = client_control.create_work(
+            layout,
+            Namespace(
+                slug="test-client", issue=issue, title=f"Fix {issue}",
+                role="backend-engineer", provider="hermes", repo=repository,
+                branch=None, session=None, target="staging",
+            ),
+        )
+        path, record = client_control.load_work(layout, "test-client", work["id"])
+        attach_verified_linear_snapshot(layout, "test-client", record, issue)
+        client_control.atomic_yaml(path, record)
+        works.append(record)
+
+    def fake_get(_layout, _slug, endpoint):
+        if endpoint == "/channels/123456789012345679":
+            return {"id": "123456789012345679", "guild_id": "123456789012345678"}
+        if endpoint == "/channels/123456789012345679/messages/2000":
+            return {
+                "id": "2000", "channel_id": "123456789012345679",
+                "content": "Please fix it all from Linear!",
+                "timestamp": client_control.dt.datetime.now(
+                    client_control.dt.timezone.utc
+                ).isoformat(),
+                "author": {"id": "42", "bot": False},
+            }
+        raise AssertionError(endpoint)
+
+    created_threads = []
+
+    def fake_post(_layout, _slug, endpoint, payload):
+        assert endpoint == "/channels/123456789012345679/threads"
+        created_threads.append(payload["name"])
+        return {"id": str(3000 + len(created_threads)), "name": payload["name"]}
+
+    monkeypatch.setattr(client_control, "discord_client_get", fake_get)
+    monkeypatch.setattr(client_control, "discord_client_post", fake_post)
+    args = Namespace(
+        slug="test-client", channel_id="123456789012345679", message_id="2000"
+    )
+    result = client_control.authorize_linear_batch(layout, args)
+
+    assert result["status"] == "authorized"
+    assert [item["issue"] for item in result["authorized"]] == ["LOU-69", "LOU-70"]
+    assert len(set(created_threads)) == 2
+    for work in works:
+        _, record = client_control.load_work(layout, "test-client", work["id"])
+        assert record["status"] == "todo"
+        assert record["authorization"]["source"] == "discord_owner_batch"
+        assert record["authorization"]["message_id"] == "2000"
+        assert record["discord"]["thread_id"]
+        assert record["approvals"]["production"] is None
+
+    repeated = client_control.authorize_linear_batch(layout, args)
+    assert repeated["status"] == "authorized"
+    assert len(repeated["authorized"]) == 2
+    assert len(created_threads) == 2
+
+
+def test_owner_batch_excludes_incomplete_and_production_target_work(layout, monkeypatch):
+    client_control.create_client(layout, init_args())
+    repository = declare_repository(layout, "test-client")
+    config_path = layout.client("test-client") / ".client" / "integrations.yaml"
+    integrations = client_control.yaml_document(config_path)
+    integrations["linear"]["delivery_project_id"] = "project-id"
+    integrations["discord"].update(
+        {
+            "enabled": True, "guild_id": "123456789012345678",
+            "owner_user_id": "42",
+            "channels": {"dev_requests": "123456789012345679"},
+        }
+    )
+    client_control.atomic_yaml(config_path, integrations)
+    for issue, target, ready in (
+        ("LOU-71", "staging", False),
+        ("LOU-72", "production", True),
+    ):
+        work = client_control.create_work(
+            layout,
+            Namespace(
+                slug="test-client", issue=issue, title=f"Fix {issue}",
+                role="backend-engineer", provider="hermes", repo=repository,
+                branch=None, session=None, target=target,
+            ),
+        )
+        if ready:
+            path, record = client_control.load_work(layout, "test-client", work["id"])
+            attach_verified_linear_snapshot(layout, "test-client", record, issue)
+            client_control.atomic_yaml(path, record)
+
+    def fake_get(_layout, _slug, endpoint):
+        if endpoint.endswith("/channels/123456789012345679"):
+            return {"guild_id": "123456789012345678"}
+        return {
+            "channel_id": "123456789012345679",
+            "content": "FIX IT ALL FROM LINEAR",
+            "timestamp": client_control.dt.datetime.now(
+                client_control.dt.timezone.utc
+            ).isoformat(),
+            "author": {"id": "42", "bot": False},
+        }
+
+    monkeypatch.setattr(client_control, "discord_client_get", fake_get)
+    monkeypatch.setattr(
+        client_control, "discord_client_post",
+        lambda *_args, **_kwargs: pytest.fail("no thread should be created"),
+    )
+    result = client_control.authorize_linear_batch(
+        layout,
+        Namespace(
+            slug="test-client", channel_id="123456789012345679", message_id="2001"
+        ),
+    )
+    assert result["authorized"] == []
+    assert {item["reason"] for item in result["skipped"]} == {
+        "context_incomplete", "production_target_requires_separate_authorization"
+    }
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["do not fix it all from linear", "ne pas corrige tout depuis linear", "stop fix all from linear"],
+)
+def test_owner_batch_intent_rejects_negated_commands(content):
+    assert client_control.is_owner_linear_batch_intent(content) is False
+
+
 def test_start_authorization_cannot_overwrite_concurrent_transition(
     layout, monkeypatch
 ):
@@ -984,8 +1130,10 @@ def test_bootstrap_upgrade_migrates_existing_client_workflow_and_team(layout):
 
     workflow = client_control.yaml_document(config / "workflow.yaml")
     team = client_control.yaml_document(config / "team.yaml")
-    assert workflow["schema_version"] == 4
+    assert workflow["schema_version"] == 5
     assert workflow["invariants"]["explicit_human_start_authorization_required"] is True
+    assert "discord_owner_batch" in workflow["human_start_authorization"]["accepted_sources"]
+    assert workflow["human_start_authorization"]["batch"]["thread_per_issue"] is True
     assert team["schema_version"] == 2
     assert team["client_id"] == "test-client"
     assert team["hermes_profile"] == client_control.hermes_profile_id("test-client")
@@ -997,6 +1145,8 @@ def test_bootstrap_upgrade_migrates_existing_client_workflow_and_team(layout):
 def test_bootstrap_upgrade_preserves_client_governance_customizations(layout):
     client_control.create_client(layout, init_args())
     config = layout.client("test-client") / ".client"
+    readme = layout.client("test-client") / "README.md"
+    readme.write_text("# Client-specific runbook\n\nKeep this custom instruction.\n")
     client_control.atomic_yaml(
         config / "workflow.yaml",
         {
@@ -1036,6 +1186,13 @@ def test_bootstrap_upgrade_preserves_client_governance_customizations(layout):
         "Client-specific retained role"
     )
     assert "project-manager" in team["roles"]
+    migrated_readme = readme.read_text()
+    assert "Keep this custom instruction." in migrated_readme
+    assert client_control.CLIENT_BATCH_POLICY_START in migrated_readme
+    assert "authorize-linear-batch" in migrated_readme
+
+    client_control.bootstrap(layout, upgrade=True)
+    assert readme.read_text().count(client_control.CLIENT_BATCH_POLICY_START) == 1
 
 
 def test_client_upgrade_rejects_incompatible_governance_types():
@@ -1187,6 +1344,10 @@ def test_doctor_rejects_regressed_delivery_harness(layout):
     workflow = client_control.yaml_document(workflow_path)
     workflow["invariants"]["backlog_is_passive"] = False
     workflow["invariants"]["real_navigation_required"] = False
+    workflow["human_start_authorization"]["accepted_sources"].remove(
+        "discord_owner_batch"
+    )
+    workflow["human_start_authorization"]["batch"]["thread_per_issue"] = False
     workflow["display_names"].pop("security_review")
     workflow["intake"]["product_definition_requires"].remove("source")
     workflow["gates"]["business_review"]["human_decision_required"] = False
@@ -1211,6 +1372,8 @@ def test_doctor_rejects_regressed_delivery_harness(layout):
 
     assert "workflow invariant backlog_is_passive" in failures
     assert "workflow invariant real_navigation_required" in failures
+    assert "workflow accepts authenticated owner Linear batches" in failures
+    assert "owner Linear batch keeps one thread per issue and true safety gates" in failures
     assert "workflow maps Security Review" in failures
     assert "Linear product definition contract is complete" in failures
     assert "Business Review is an actor-attributed human decision" in failures

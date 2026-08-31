@@ -231,6 +231,28 @@ Accepted triggers include:
 - manual authorized Linear move to `Ready for Engineering`;
 - approved client request.
 
+An authenticated owner instruction such as `fix it all from linear` is one
+explicit batch start authorization for every ready, non-production Linear issue.
+The PM must create one Discord thread and one signed authorization receipt per
+issue, then start each issue without asking for repetitive `START ISSUE-ID`
+messages. The batch instruction never authorizes production deployment, spend,
+deletion, external access, or secret handling; those retain their dedicated
+gates. Reprocessing the same Discord message is idempotent.
+
+The PM handles that message immediately with:
+
+```bash
+agk client work authorize-linear-batch CLIENT_ID \
+  --channel-id DISCORD_CHANNEL_ID --message-id DISCORD_MESSAGE_ID
+```
+
+The controller re-fetches the message from Discord, checks guild, channel,
+human owner, freshness and exact batch intent, and rejects model-supplied or
+forged identity. It returns an itemized authorized/skipped result. The PM then
+transitions each authorized item to `in_progress` and starts its preserved AGK
+session inside the thread created for that issue. It must not ask the owner to
+repeat one `START ISSUE-ID` message per issue.
+
 Record who authorized, source, timestamp, client, project, issue, scope, priority and constraints.
 
 ## 10. Harness Engineering Loop

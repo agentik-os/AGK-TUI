@@ -83,6 +83,13 @@ DISCORD_CHANNELS = (
     "client-status",
     "agent-activity",
 )
+CLIENT_BATCH_POLICY_START = "<!-- AGK OWNER LINEAR BATCH POLICY: START -->"
+CLIENT_BATCH_POLICY_END = "<!-- AGK OWNER LINEAR BATCH POLICY: END -->"
+CLIENT_BATCH_POLICY = """An authenticated owner request to fix/start all Linear work is one batch start authorization.
+Run `agk client work authorize-linear-batch CLIENT_ID --channel-id CHANNEL --message-id MESSAGE` immediately.
+Create one Discord thread and one signed receipt per ready non-production issue; do not ask for repeated `START ISSUE-ID` messages.
+This does not authorize production deploy, spend, deletion, external access, or secret handling.
+"""
 
 
 class ClientError(RuntimeError):
@@ -285,6 +292,31 @@ def merge_client_upgrade(default: object, current: object) -> object:
     return copy.deepcopy(current)
 
 
+def sync_client_batch_policy(layout: Layout, slug: str) -> None:
+    """Merge the managed owner-batch policy without replacing client guidance."""
+    readme = layout.client(slug) / "README.md"
+    if not readme.is_file():
+        raise ClientError(f"registered client README is missing: {slug}")
+    current = readme.read_text(encoding="utf-8")
+    has_start = CLIENT_BATCH_POLICY_START in current
+    has_end = CLIENT_BATCH_POLICY_END in current
+    if has_start != has_end:
+        raise ClientError(f"client README has an incomplete managed policy block: {slug}")
+    managed = (
+        f"{CLIENT_BATCH_POLICY_START}\n"
+        f"{CLIENT_BATCH_POLICY.rstrip()}\n"
+        f"{CLIENT_BATCH_POLICY_END}"
+    )
+    if has_start:
+        prefix, remainder = current.split(CLIENT_BATCH_POLICY_START, 1)
+        _, suffix = remainder.split(CLIENT_BATCH_POLICY_END, 1)
+        updated = f"{prefix}{managed}{suffix}"
+    else:
+        updated = f"{current.rstrip()}\n\n{managed}\n"
+    if updated != current:
+        atomic_text(readme, updated, 0o600)
+
+
 def migrate_existing_client_configs(layout: Layout, registry: dict[str, Any]) -> None:
     for entry in registry.get("clients", []):
         slug = registry_id(entry)
@@ -294,6 +326,7 @@ def migrate_existing_client_configs(layout: Layout, registry: dict[str, Any]) ->
         config = layout.client(slug) / ".client"
         if not config.is_dir():
             raise ClientError(f"registered client config is missing: {slug}")
+        sync_client_batch_policy(layout, slug)
         manifest = yaml_document(config / "manifest.yaml")
         profile = manifest.get("profile", {}) if isinstance(manifest, dict) else {}
         profile_id = (
@@ -767,6 +800,27 @@ def doctor_one(layout: Layout, slug: str, *, online: bool) -> list[tuple[str, st
         (ok if isinstance(invariants, dict) and invariants.get(key) is True else fail)(
             f"workflow invariant {key}"
         )
+    start_authorization = workflow.get("human_start_authorization", {})
+    batch_authorization = (
+        start_authorization.get("batch", {})
+        if isinstance(start_authorization, dict)
+        else {}
+    )
+    accepted_sources = (
+        set(start_authorization.get("accepted_sources", []))
+        if isinstance(start_authorization, dict)
+        else set()
+    )
+    (ok if "discord_owner_batch" in accepted_sources else fail)(
+        "workflow accepts authenticated owner Linear batches"
+    )
+    (ok if isinstance(batch_authorization, dict)
+     and batch_authorization.get("thread_per_issue") is True
+     and batch_authorization.get("signed_receipt_per_issue") is True
+     and {
+         "production_deploy", "spend", "deletion", "external_access", "secret_handling"
+     } <= set(batch_authorization.get("never_implies", []))
+     else fail)("owner Linear batch keeps one thread per issue and true safety gates")
     display_names = workflow.get("display_names", {})
     for key, expected in (
         ("agent_review", "Engineering Review"),
@@ -1966,14 +2020,18 @@ def validate_work_start_record(
         or authorization.get("issue") != issue
         or authorization.get("actor") != authorization.get("actor_id")
         or authorization.get("actor_id") != str(discord.get("owner_user_id") or "")
-        or authorization.get("source") != "discord"
+        or authorization.get("source") not in {"discord", "discord_owner_batch"}
         or authorization.get("guild_id") != str(discord.get("guild_id") or "")
         or authorization.get("channel_id")
         != str(discord.get("channels", {}).get("dev_requests") or "")
         or authorization.get("project")
         != str(linear.get("delivery_project_id") or "")
         or authorization.get("timestamp") != authorization.get("at")
-        or authorization.get("id") != f"discord:{authorization.get('message_id')}"
+        or authorization.get("id")
+        not in {
+            f"discord:{authorization.get('message_id')}",
+            f"discord-batch:{authorization.get('message_id')}:{issue}",
+        }
     ):
         raise ClientError("work start authorization is incomplete or mismatched")
     verify_start_authorization_receipt(
@@ -2299,6 +2357,305 @@ def discord_client_get(layout: Layout, slug: str, endpoint: str) -> dict[str, An
     if not isinstance(data, dict):
         raise ClientError("Discord authorization evidence is invalid")
     return data
+
+
+def discord_client_post(
+    layout: Layout, slug: str, endpoint: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    secret = layout.secret_file(validate_slug(slug))
+    token = ""
+    for line in secret.read_text().splitlines():
+        match = re.match(r"(?:export\s+)?DISCORD_BOT_TOKEN=(.+)", line)
+        if match:
+            token = match.group(1).strip().strip("'\"")
+            break
+    if not token:
+        raise ClientError("Discord dedicated bot token is unavailable")
+    body = json.dumps(payload, ensure_ascii=False).encode()
+    request = urllib.request.Request(
+        "https://discord.com/api/v10" + endpoint,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bot {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "AGK-client-control/1",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode())
+    except urllib.error.HTTPError as error:
+        raise ClientError(
+            f"Discord thread creation failed (HTTP {error.code})"
+        ) from None
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        raise ClientError("Discord thread creation failed") from error
+    if not isinstance(data, dict) or not str(data.get("id") or "").isdigit():
+        raise ClientError("Discord thread creation returned invalid evidence")
+    return data
+
+
+OWNER_LINEAR_BATCH_PHRASES = {
+    "fix it all from linear",
+    "fix all from linear",
+    "start all from linear",
+    "fix everything from linear",
+    "corrige tout depuis linear",
+    "corrige tout de linear",
+    "répare tout depuis linear",
+}
+
+
+def normalize_owner_batch_phrase(value: str) -> str:
+    return " ".join(value.casefold().strip().split())
+
+
+def is_owner_linear_batch_intent(value: str) -> bool:
+    normalized = normalize_owner_batch_phrase(value)
+    if any(
+        marker in f" {normalized} "
+        for marker in (" do not ", " don't ", " dont ", " ne pas ", " stop ")
+    ):
+        return False
+    if normalized in OWNER_LINEAR_BATCH_PHRASES:
+        return True
+    words = re.sub(r"[^a-z0-9à-ÿ]+", " ", normalized).split()
+    text = " ".join(words)
+    english = "linear" in words and any(
+        phrase in text
+        for phrase in ("fix it all", "fix all", "fix everything", "start all")
+    )
+    french = "linear" in words and any(
+        phrase in text
+        for phrase in ("corrige tout", "répare tout", "repare tout", "lance tout")
+    )
+    return english or french
+
+
+def _batch_work_contract(
+    layout: Layout,
+    slug: str,
+    work_id: str,
+    record: dict[str, Any],
+    integrations: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str, str, Any]:
+    context = record.get("context", {})
+    if not isinstance(context, dict) or context.get("complete") is not True:
+        raise ClientError("READY_FOR_ENGINEERING context is incomplete")
+    issue = str(record.get("linear", {}).get("issue") or "")
+    linear = integrations.get("linear", {}) if isinstance(integrations, dict) else {}
+    expected_team = str(linear.get("team_id") or "") if isinstance(linear, dict) else ""
+    project = str(linear.get("delivery_project_id") or "") if isinstance(linear, dict) else ""
+    snapshot_record = context.get("linear_snapshot", {})
+    if (
+        not isinstance(snapshot_record, dict)
+        or str(snapshot_record.get("identifier") or "") != issue
+        or str(snapshot_record.get("team_id") or "") != expected_team
+        or len(str(snapshot_record.get("sha256") or "")) != 64
+    ):
+        raise ClientError("READY_FOR_ENGINEERING requires a verified Linear snapshot")
+    snapshot_path = (layout.client(slug) / str(snapshot_record.get("path") or "")).resolve()
+    try:
+        snapshot_path.relative_to(layout.client(slug).resolve())
+    except ValueError as error:
+        raise ClientError("Linear snapshot must stay inside the client boundary") from error
+    snapshot = yaml_document(snapshot_path)
+    snapshot_body = json.dumps(
+        snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    digest = hashlib.sha256(snapshot_body.encode()).hexdigest()
+    if not hmac.compare_digest(digest, str(snapshot_record.get("sha256") or "")):
+        raise ClientError("Linear snapshot digest verification failed")
+    if (
+        str(snapshot.get("identifier") or "") != issue
+        or str(snapshot.get("team_id") or "") != expected_team
+    ):
+        raise ClientError("Linear snapshot does not match the authorized issue")
+    verify_linear_snapshot_receipt(
+        layout,
+        str(snapshot_record.get("receipt") or ""),
+        {
+            "client": slug,
+            "work_id": work_id,
+            "issue": issue,
+            "team_id": expected_team,
+            "snapshot_sha256": digest,
+            "linear_updated_at": snapshot_record.get("updated_at"),
+        },
+    )
+    fields = context.get("fields", {})
+    fields = fields if isinstance(fields, dict) else {}
+    scope = fields.get("requested_outcome") or record.get("title")
+    constraints = fields.get("security_and_data_constraints")
+    if not project or not scope or constraints is None:
+        raise ClientError("start authorization contract is incomplete")
+    return context, snapshot, issue, project, constraints
+
+
+def authorize_linear_batch(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
+    """Authorize all ready Linear work from one authenticated owner message.
+
+    The message is a batch start authorization only. It never grants production,
+    deployment, spend, deletion, external-access, or secret-handling approval.
+    """
+    slug = validate_slug(args.slug)
+    if not str(args.channel_id).isdigit() or not str(args.message_id).isdigit():
+        raise ClientError("Discord authorization requires numeric channel and message ids")
+    integrations = client_configs(layout, slug)["integrations.yaml"]
+    discord = integrations.get("discord", {}) if isinstance(integrations, dict) else {}
+    expected_guild = str(discord.get("guild_id") or "")
+    expected_channel = str(discord.get("channels", {}).get("dev_requests") or "")
+    expected_owner = str(discord.get("owner_user_id") or "")
+    if str(args.channel_id) != expected_channel:
+        raise ClientError("batch authorization must originate in dev-requests")
+    channel = discord_client_get(layout, slug, f"/channels/{args.channel_id}")
+    if str(channel.get("guild_id") or "") != expected_guild:
+        raise ClientError("batch authorization channel belongs to another Discord guild")
+    message = discord_client_get(
+        layout, slug, f"/channels/{args.channel_id}/messages/{args.message_id}"
+    )
+    author = message.get("author", {})
+    content = str(message.get("content") or "")
+    if (
+        str(message.get("channel_id") or "") != expected_channel
+        or not isinstance(author, dict)
+        or str(author.get("id") or "") != expected_owner
+        or author.get("bot") is True
+    ):
+        raise ClientError("batch authorization is not from the configured human owner")
+    if not is_owner_linear_batch_intent(content):
+        raise ClientError("Discord message is not an accepted Linear batch authorization")
+    message_timestamp = str(message.get("timestamp") or "")
+    if not message_timestamp:
+        raise ClientError("Discord batch message timestamp is unavailable")
+    message_timestamp = validate_start_message_freshness(message_timestamp)
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    work_root = layout.client(slug) / "state" / "work"
+    authorized: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for work_path in sorted(work_root.glob("WORK-*.yaml")):
+        record = yaml_document(work_path)
+        work_id = str(record.get("id") or "")
+        issue = str(record.get("linear", {}).get("issue") or "")
+        authorization = record.get("authorization", {})
+        if (
+            isinstance(authorization, dict)
+            and authorization.get("source") == "discord_owner_batch"
+            and str(authorization.get("message_id") or "") == str(args.message_id)
+        ):
+            authorized.append(
+                {
+                    "work_id": work_id,
+                    "issue": issue,
+                    "thread_id": str(record.get("discord", {}).get("thread_id") or ""),
+                    "idempotent": True,
+                }
+            )
+            continue
+        if record.get("status") != "backlog":
+            skipped.append({"work_id": work_id, "issue": issue, "reason": "not_backlog"})
+            continue
+        if str(record.get("environment", {}).get("target") or "") == "production":
+            skipped.append(
+                {
+                    "work_id": work_id,
+                    "issue": issue,
+                    "reason": "production_target_requires_separate_authorization",
+                }
+            )
+            continue
+        context = record.get("context", {})
+        if not isinstance(context, dict) or context.get("complete") is not True:
+            skipped.append(
+                {"work_id": work_id, "issue": issue, "reason": "context_incomplete"}
+            )
+            continue
+        try:
+            _context, snapshot, issue, project, constraints = _batch_work_contract(
+                layout, slug, work_id, record, integrations
+            )
+        except ClientError as error:
+            skipped.append(
+                {"work_id": work_id, "issue": issue, "reason": str(error)}
+            )
+            continue
+        thread = discord_client_post(
+            layout,
+            slug,
+            f"/channels/{expected_channel}/threads",
+            {
+                "name": f"{issue.lower()}-{branch_component(str(record.get('title') or 'work'))}"[:100],
+                "type": 11,
+                "auto_archive_duration": 10080,
+            },
+        )
+        fields = _context.get("fields", {})
+        fields = fields if isinstance(fields, dict) else {}
+        authorization = {
+            "id": f"discord-batch:{args.message_id}:{issue}",
+            "actor": expected_owner,
+            "actor_id": expected_owner,
+            "source": "discord_owner_batch",
+            "timestamp": now,
+            "channel_id": expected_channel,
+            "message_id": str(args.message_id),
+            "guild_id": expected_guild,
+            "client": slug,
+            "project": project,
+            "issue": issue,
+            "scope": fields.get("requested_outcome") or record.get("title"),
+            "priority": snapshot.get("priority_label") or snapshot.get("priority") or "unspecified",
+            "constraints": constraints,
+            "at": now,
+            "message_sha256": hashlib.sha256(content.encode()).hexdigest(),
+            "message_timestamp": message_timestamp,
+        }
+        receipt_payload = {"work_id": work_id, **authorization}
+        receipt_payload.pop("client", None)
+        with work_lock(layout, slug, work_id):
+            current_path, current = load_work(layout, slug, work_id)
+            if current.get("status") != "backlog":
+                skipped.append(
+                    {"work_id": work_id, "issue": issue, "reason": "concurrent_transition"}
+                )
+                continue
+            authorization["receipt"] = write_start_authorization_receipt(
+                layout, slug, work_id, receipt_payload
+            )
+            current["authorization"] = authorization
+            current["status"] = "todo"
+            current["discord"] = {
+                "thread_id": str(thread["id"]),
+                "parent_channel_id": expected_channel,
+                "authorization_message_id": str(args.message_id),
+            }
+            work_event(
+                current,
+                "work.batch_start_authorized",
+                issue=issue,
+                thread_id=str(thread["id"]),
+                message_id=str(args.message_id),
+            )
+            atomic_yaml(current_path, current)
+        authorized.append(
+            {
+                "work_id": work_id,
+                "issue": issue,
+                "thread_id": str(thread["id"]),
+                "idempotent": False,
+            }
+        )
+    authorized.sort(key=lambda item: (str(item.get("issue") or ""), str(item.get("work_id") or "")))
+    skipped.sort(key=lambda item: (str(item.get("issue") or ""), str(item.get("work_id") or "")))
+    return {
+        "status": "authorized",
+        "client_id": slug,
+        "authorization_message_id": str(args.message_id),
+        "authorized": authorized,
+        "skipped": skipped,
+        "production_authorized": False,
+    }
 
 
 def validate_start_message_freshness(
@@ -4010,6 +4367,10 @@ def command_parser() -> argparse.ArgumentParser:
     authorize_start.add_argument("work_id")
     authorize_start.add_argument("--channel-id", required=True)
     authorize_start.add_argument("--message-id", required=True)
+    authorize_batch = work_sub.add_parser("authorize-linear-batch")
+    authorize_batch.add_argument("slug")
+    authorize_batch.add_argument("--channel-id", required=True)
+    authorize_batch.add_argument("--message-id", required=True)
     quarantine = work_sub.add_parser("quarantine-legacy")
     quarantine.add_argument("slug")
     quarantine.add_argument("work_id")
@@ -4195,6 +4556,8 @@ def main(argv: list[str] | None = None) -> int:
                 print_json(update_work_context(layout, args))
             elif args.work_command == "authorize-start":
                 print_json(authorize_work_start(layout, args))
+            elif args.work_command == "authorize-linear-batch":
+                print_json(authorize_linear_batch(layout, args))
             elif args.work_command == "quarantine-legacy":
                 print_json(
                     quarantine_legacy_work(
