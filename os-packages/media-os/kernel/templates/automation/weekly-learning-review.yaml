@@ -1,0 +1,23 @@
+schema_version: 1
+id: weekly-learning-review
+schedule: "23 8 * * 1"
+owner_profile: media-director
+board: media-os
+workdir: /home/operator/.hermes/profiles/media-os/workspace
+provider:
+  primary: openai-codex
+  fallback: [openai]
+skills: [media-learning-review]
+tools: [performance_snapshot_read, campaign_evidence_read, learning_card_create]
+budget:
+  max_runs: 1
+  max_items: 100
+  max_tokens: 12000
+dedupe_key: media-os.weekly-learning-review
+no_change: silent
+destination: media-os:operations
+continuity: resume_deduped
+timeout_seconds: 900
+failure_alert: owner_dm
+checks: [weekly_learning_review]
+action: create_evidence_review_card

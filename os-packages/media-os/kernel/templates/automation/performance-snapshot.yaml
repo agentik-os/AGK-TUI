@@ -1,0 +1,23 @@
+schema_version: 1
+id: performance-snapshot
+schedule: "31 2 * * *"
+owner_profile: media-director
+board: media-os
+workdir: /home/operator/.hermes/profiles/media-os/workspace
+provider:
+  primary: openai-codex
+  fallback: [openai]
+skills: [media-performance-read]
+tools: [publication_readback_read, performance_snapshot_write]
+budget:
+  max_runs: 1
+  max_items: 100
+  max_tokens: 8000
+dedupe_key: media-os.performance-snapshot
+no_change: silent
+destination: media-os:operations
+continuity: resume_deduped
+timeout_seconds: 600
+failure_alert: owner_dm
+checks: [snapshot_collection]
+action: collect_verified_snapshots

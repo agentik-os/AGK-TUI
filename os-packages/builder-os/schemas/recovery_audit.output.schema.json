@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "recovery-auditor output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "doctor_status",
+    "rollback_dry_run_status",
+    "recovery_artifact_sha256",
+    "secret_scan",
+    "previous_version_verified",
+    "findings"
+  ],
+  "properties": {
+    "doctor_status": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "UNKNOWN"
+      ]
+    },
+    "rollback_dry_run_status": {
+      "enum": [
+        "READY",
+        "BLOCKED",
+        "FAIL",
+        "UNKNOWN"
+      ]
+    },
+    "recovery_artifact_sha256": {
+      "type": "string"
+    },
+    "secret_scan": {
+      "enum": [
+        "clean",
+        "findings",
+        "not-run"
+      ]
+    },
+    "previous_version_verified": {
+      "type": "boolean"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "severity",
+          "detail"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "blocker",
+              "major",
+              "minor",
+              "info"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

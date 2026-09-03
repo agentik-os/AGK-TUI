@@ -1,0 +1,6 @@
+schema: agk.vendored-skills.v1
+source_repo: https://github.com/charlie947/social-media-skills
+pinned_commit: d2e948719eafc8ed9e2436357ad18489bb371a81
+license_file: LICENSE
+fetched_at: 2026-09-01
+modification_policy: unmodified-upstream; AGK adaptations live in skills/order.yaml and agent prompts only

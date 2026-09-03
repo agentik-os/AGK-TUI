@@ -1,0 +1,11 @@
+id: domain-scout
+name: Domain Scout
+version: 0.5.0
+description: "Discovery and Librarian research intake for a new or upgraded OS: canonical sources (<=20) and approaches (<=20) with honest provenance."
+scope:
+- operator
+runtime: hermes
+hermes_requires: ">=0.21.0"
+prompt: prompt.md
+distribution: os-contract-package
+owner: master-os-builder

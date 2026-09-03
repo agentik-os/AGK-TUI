@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 source_of_truth:
   work: linear
   code: github
@@ -20,7 +20,9 @@ invariants:
   agents_never_mark_approved_for_prod: true
   agents_never_mark_done: true
 intake:
-  discord_channel: dev-requests
+  discord_channel: owner_thread
+  execute_in_origin_thread: true
+  fallback_channel: dev-requests
   feedback_and_delivery_separated: true
   feedback_promotion: linked_issue_only
   project_manager_must_propose_plan: true
@@ -70,8 +72,15 @@ transitions:
   blocked: [in_progress, todo]
 human_start_authorization:
   target_state: todo
-  accepted_sources: [discord_start_mission]
+  accepted_sources: [discord_start_mission, discord_owner_batch]
   record_requires: [actor, source, timestamp, client, project, issue, scope, priority, constraints]
+  batch:
+    owner_phrases: [fix it all from linear, fix all from linear, start all from linear, fix everything from linear, go, do it, fait le, fais-le, vas-y]
+    scope: every_ready_non_production_issue
+    thread_per_issue: true
+    signed_receipt_per_issue: true
+    idempotency_key: discord_message_id+linear_issue
+    never_implies: [production_deploy, spend, deletion, external_access, secret_handling]
 harness_engineering_loop:
   claim:
     set_linear_status: in_progress

@@ -1,0 +1,32 @@
+schema_version: 1
+mode: offline_only
+required_pass_gates:
+  - campaign-loop
+  - local-source-lineage
+  - exact-revision
+  - exact-owner-approval
+  - publication-readback
+  - fixed-age-observation
+  - non-promotion
+  - correction-rollback
+  - resource-schemas
+  - task5-apply
+  - doctor-active
+  - lifecycle-recovery
+owner_blocked_gates:
+  - live-discord-authorization
+  - live-platform-authorization
+lifecycle_witness:
+  apply: canonical_task5_isolated_fake_root
+  doctor: 12/12_PASS
+  activation: ACTIVE
+  rollback_restore: exact_postconditions_required
+resource_readback:
+  schemas: dimension_specific
+  invented_envelopes: rejected
+  exact: true
+live:
+  network: forbidden
+  sensitive_material: forbidden
+  mutation: forbidden
+unsupported_claims: absent

@@ -1,0 +1,11 @@
+id: recovery-auditor
+name: Recovery Auditor
+version: 0.5.0
+description: "Doctor, rollback dry-run, recovery artifact hash, secret scan, and previous-version verification for OS releases."
+scope:
+- operator
+runtime: hermes
+hermes_requires: ">=0.21.0"
+prompt: prompt.md
+distribution: os-contract-package
+owner: master-os-builder

@@ -1,0 +1,529 @@
+{
+  "schema": "agk.onboarding-ledger.v1",
+  "os_id": "builder-os",
+  "theme": "Verified delivery system for AGK Operative Systems \u2014 onboarding, test-driven implementation, review lane, deployment, doctor, and rollback",
+  "discovery": {
+    "mission_statement": "This OS exists to help AGK builders achieve traceable, verified OS delivery by systematically applying discovery, Librarian research, approach synthesis, and four owner-gated implementation cycles with doctor and rollback safeguards.",
+    "actor": "AGK builder / Nano Director",
+    "outcome": "Verified, deployable AGK Operative System packages with documented evidence at every gate",
+    "method": "Discovery \u2192 Librarian research \u2192 approach merge \u2192 owner validation gates \u2192 TDD build \u2192 independent review \u2192 doctor \u2192 rollback \u2192 release",
+    "scopes": [
+      "operator",
+      "agentik"
+    ],
+    "existing_capabilities_reused": [
+      "Hermes delegate_task with output_schema",
+      "Hermes kanban review lane + sdlc-review skill",
+      "Hermes /plan builtin",
+      "Hermes /goal completion contracts + quality gates",
+      "Hermes checkpoints + /rollback",
+      "Hermes cron doctor",
+      "strategy-os@0.2.3",
+      "librarian-os@2.2.2"
+    ],
+    "explicit_exclusions": [
+      "No autonomous deployer",
+      "No test-count theatre",
+      "No rewrite-first legacy replacement",
+      "No secrets in ledger, package, chat, or evidence",
+      "No RELEASE implied by START or research",
+      "No cross-tenant authority granted by OS designation"
+    ],
+    "open_questions": [
+      "Concrete provider/model values for primary and fallback routes (require owner confirmation)",
+      "Discord application ID, bot token, OAuth (owner-provisioned, not yet available)"
+    ],
+    "assumptions": [
+      "TENANT=AGK is invariant",
+      "Hermes >= 0.21.0 is the runtime",
+      "Package owns no live credentials or deployed infrastructure",
+      "START passed by explicit owner; RELEASE is distinct and unpassed"
+    ]
+  },
+  "sources": [
+    {
+      "source_id": "SRC-01",
+      "kind": "book",
+      "title": "Design Patterns: Elements of Reusable Object-Oriented Software",
+      "author": "Erich Gamma, Richard Helm, Ralph Johnson, John Vlissides",
+      "year": 1994,
+      "url": "https://www.pearson.com/en-us/subject-catalog/p/design-patterns-elements-of-reusable-object-oriented-software/P200000007395/9780201633610",
+      "access_level": "official-metadata",
+      "why_canonical": "Canonical GoF patterns reference; widely cited in software engineering"
+    },
+    {
+      "source_id": "SRC-02",
+      "kind": "book",
+      "title": "Refactoring: Improving the Design of Existing Code (2nd ed)",
+      "author": "Martin Fowler",
+      "year": 2018,
+      "url": "https://martinfowler.com/books/refactoring.html",
+      "access_level": "official-metadata",
+      "why_canonical": "Definitive reference on behavior-preserving code improvement"
+    },
+    {
+      "source_id": "SRC-03",
+      "kind": "book",
+      "title": "Test-Driven Development: By Example",
+      "author": "Kent Beck",
+      "year": 2002,
+      "url": "https://www.pearson.com/en-us/subject-catalog/p/Beck-Test-Driven-Development-By-Example/P200000009421/9780321146533",
+      "access_level": "official-metadata",
+      "why_canonical": "Foundational TDD methodology; red-green-refactor discipline origin"
+    },
+    {
+      "source_id": "SRC-04",
+      "kind": "book",
+      "title": "Continuous Delivery: Reliable Software Releases Through Build, Test, and Deployment Automation",
+      "author": "Jez Humble, David Farley",
+      "year": 2010,
+      "url": "https://www.pearson.com/en-us/subject-catalog/p/continuous-delivery-reliable-software-releases-through-build-test-and-deployment-automation/P200000009113/9780321670229",
+      "access_level": "official-metadata",
+      "why_canonical": "Core reference for automated pipeline and artifact promotion"
+    },
+    {
+      "source_id": "SRC-05",
+      "kind": "book",
+      "title": "Working Effectively with Legacy Code",
+      "author": "Michael C. Feathers",
+      "year": 2004,
+      "url": "https://www.pearson.com/en-us/subject-catalog/p/working-effectively-with-legacy-code/P200000008984/9780131177055",
+      "access_level": "official-metadata",
+      "why_canonical": "Standard reference for characterization tests and seam-based change"
+    },
+    {
+      "source_id": "SRC-06",
+      "kind": "book",
+      "title": "A Philosophy of Software Design (2nd ed)",
+      "author": "John Ousterhout",
+      "year": 2021,
+      "url": "https://web.stanford.edu/~ouster/cgi-bin/aposd.php",
+      "access_level": "official-metadata",
+      "why_canonical": "Deep modules and complexity management; widely adopted in software design curricula"
+    },
+    {
+      "source_id": "SRC-07",
+      "kind": "book",
+      "title": "Accelerate: The Science of Lean Software and DevOps",
+      "author": "Nicole Forsgren, Jez Humble, Gene Kim",
+      "year": 2018,
+      "url": "https://www.oreilly.com/library/view/accelerate/9781457191435/",
+      "access_level": "official-metadata",
+      "why_canonical": "DORA research; empirical basis for delivery performance metrics"
+    },
+    {
+      "source_id": "SRC-08",
+      "kind": "book",
+      "title": "Site Reliability Engineering: How Google Runs Production Systems",
+      "author": "Betsy Beyer, Chris Jones, Jennifer Petoff, Niall Richard Murphy (eds)",
+      "year": 2016,
+      "url": "https://sre.google/books/sre-book/table-of-contents/",
+      "access_level": "official-excerpt",
+      "why_canonical": "SRE foundational text; error budgets, SLOs, and operational practices"
+    },
+    {
+      "source_id": "SRC-09",
+      "kind": "standard",
+      "title": "Guide to the Software Engineering Body of Knowledge (SWEBOK Guide) V4.0a",
+      "author": "IEEE Computer Society",
+      "year": 2024,
+      "url": "https://www.computer.org/education/bodies-of-knowledge/software-engineering/v4",
+      "access_level": "official-metadata",
+      "why_canonical": "Canonical software engineering scope reference; IEEE standard"
+    },
+    {
+      "source_id": "SRC-10",
+      "kind": "standard",
+      "title": "Secure Software Development Framework (SSDF) Version 1.1 \u2014 NIST SP 800-218",
+      "author": "Murugiah Souppaya, Karen Scarfone, Donna Dodson",
+      "year": 2022,
+      "url": "https://csrc.nist.gov/pubs/sp/800/218/final",
+      "access_level": "full-text",
+      "why_canonical": "US government secure development standard; federal agencies adopt it"
+    },
+    {
+      "source_id": "SRC-11",
+      "kind": "standard",
+      "title": "Supply-chain Levels for Software Artifacts (SLSA) Specification V1.2",
+      "author": "SLSA Community",
+      "year": 2024,
+      "url": "https://slsa.dev/spec/latest/",
+      "access_level": "full-text",
+      "why_canonical": "Industry supply-chain integrity standard; adopted by major platforms"
+    },
+    {
+      "source_id": "SRC-12",
+      "kind": "standard",
+      "title": "OWASP Application Security Verification Standard (ASVS) V5.0.0",
+      "author": "OWASP Foundation",
+      "year": 2025,
+      "url": "https://owasp.org/www-project-application-security-verification-standard/",
+      "access_level": "full-text",
+      "why_canonical": "Leading application security verification standard; globally adopted"
+    },
+    {
+      "source_id": "SRC-13",
+      "kind": "web",
+      "title": "DORA Accelerate State of DevOps Report 2024",
+      "author": "Google Cloud / DORA",
+      "year": 2024,
+      "url": "https://dora.dev/dora-report-2024",
+      "access_level": "full-text",
+      "why_canonical": "Annual empirical DevOps state-of-practice; largest such study"
+    },
+    {
+      "source_id": "SRC-14",
+      "kind": "standard",
+      "title": "Semantic Versioning 2.0.0",
+      "author": "Tom Preston-Werner",
+      "year": 2024,
+      "url": "https://semver.org/",
+      "access_level": "full-text",
+      "why_canonical": "De facto industry standard for API versioning; universally adopted"
+    },
+    {
+      "source_id": "SRC-15",
+      "kind": "standard",
+      "title": "ISO/IEC 25010:2023 \u2014 Systems and software engineering \u2014 SQuaRE \u2014 Product quality model",
+      "author": "ISO",
+      "year": 2023,
+      "url": "https://www.iso.org/standard/78176.html",
+      "access_level": "official-metadata",
+      "why_canonical": "International standard for software product quality characteristics"
+    }
+  ],
+  "approaches": [
+    {
+      "approach_id": "APR-01",
+      "source_ids": [
+        "SRC-01",
+        "SRC-06"
+      ],
+      "principle": "Name recurring design structures with intent, context, participants, and trade-offs; prefer deep modules with simple interfaces",
+      "mechanism": "NanoTeam roles use pattern vocabulary in design records; modules keep replaceable interfaces; evaluations test consequences not pattern-name presence",
+      "evidence_strength": "strong",
+      "limitations": "Patterns are contextual and era-dependent; naming a pattern does not prove it fits the architecture"
+    },
+    {
+      "approach_id": "APR-02",
+      "source_ids": [
+        "SRC-02",
+        "SRC-03",
+        "SRC-05"
+      ],
+      "principle": "Small behavior-preserving transformations driven by characterization and regression evidence",
+      "mechanism": "RED\u2192GREEN\u2192refactor cycles; characterization before legacy behavior change; rollback captures pre-state",
+      "evidence_strength": "strong",
+      "limitations": "Behavior-preserving depends on test coverage; refactoring can change timing or public quirks invisibly"
+    },
+    {
+      "approach_id": "APR-03",
+      "source_ids": [
+        "SRC-03"
+      ],
+      "principle": "Express one observable behavior, witness failure for intended reason, add minimum implementation, then improve structure",
+      "mechanism": "Nano Director enforces witnessed RED before GREEN; deterministic programs capture test command and exit; failure blocks done when test never failed",
+      "evidence_strength": "strong",
+      "limitations": "TDD does not discover the right product or prove complete correctness; poor tests can fossilize poor design"
+    },
+    {
+      "approach_id": "APR-04",
+      "source_ids": [
+        "SRC-04",
+        "SRC-11"
+      ],
+      "principle": "Build once, record provenance and hash, promote identical artifact; never rebuild for promotion",
+      "mechanism": "Package produces one checksum-pinned candidate; workflows promote rather than rebuild; SLSA provenance attestation required",
+      "evidence_strength": "strong",
+      "limitations": "Identical artifacts do not guarantee identical environments; pipeline automation can rapidly propagate defects"
+    },
+    {
+      "approach_id": "APR-05",
+      "source_ids": [
+        "SRC-05",
+        "SRC-10"
+      ],
+      "principle": "Find seams, add characterization tests around observed behavior, introduce smallest safe point of control before changing poorly-covered code",
+      "mechanism": "Blueprint distinguishes preserve-versus-correct; Stepper starts with characterization; MCP/tool contracts isolate dependencies",
+      "evidence_strength": "moderate",
+      "limitations": "Characterization preserves observed behavior including defects; seam creation may increase complexity"
+    },
+    {
+      "approach_id": "APR-06",
+      "source_ids": [
+        "SRC-06",
+        "SRC-09"
+      ],
+      "principle": "Reduce complexity through deep modules, explicit interfaces, minimal dependencies, and treat complexity as a design signal",
+      "mechanism": "Design budgets dependencies and interface surface; profiles and tools use narrow typed contracts; Doctor exposes hidden state needed for diagnosis",
+      "evidence_strength": "moderate",
+      "limitations": "Depth and simplicity are judgment calls; narrow interfaces can hide dangerous behavior"
+    },
+    {
+      "approach_id": "APR-07",
+      "source_ids": [
+        "SRC-07",
+        "SRC-08",
+        "SRC-13"
+      ],
+      "principle": "Measure flow and stability as balanced socio-technical outcomes; treat capabilities as hypotheses linked to performance",
+      "mechanism": "Evaluations track lead time, deploy frequency, recovery time, change-failure rate without ranking individuals; profiles set service baselines",
+      "evidence_strength": "moderate",
+      "limitations": "Metrics can be gamed; population-level findings are context-dependent; correlation does not justify every causal claim"
+    },
+    {
+      "approach_id": "APR-08",
+      "source_ids": [
+        "SRC-08"
+      ],
+      "principle": "Define reliability as an explicit SLO; use error budgets to balance change and stability; automate toil carefully",
+      "mechanism": "Profiles declare SLOs and risk class; Doctor reports objective health; automations obey error-budget circuit breakers",
+      "evidence_strength": "strong",
+      "limitations": "SLOs can omit user harms; error budgets do not authorize unsafe releases"
+    },
+    {
+      "approach_id": "APR-09",
+      "source_ids": [
+        "SRC-09",
+        "SRC-10"
+      ],
+      "principle": "Integrate secure-development preparation, software protection, vulnerability response into the development lifecycle with defined roles and evidence",
+      "mechanism": "Package includes provenance and dependency inventory; workflows threat-model before coding; evaluations include abuse and vulnerability fixtures",
+      "evidence_strength": "strong",
+      "limitations": "SSDF is risk-based, not a certification; requires tailoring to technology and threat model"
+    },
+    {
+      "approach_id": "APR-10",
+      "source_ids": [
+        "SRC-11"
+      ],
+      "principle": "Increase software supply-chain assurance through provenance, controlled build processes, and verifiable artifacts",
+      "mechanism": "Package emits signed/checksummed provenance; Doctor verifies attestations; Recovery artifact pins dependencies",
+      "evidence_strength": "strong",
+      "limitations": "SLSA addresses supply-chain integrity, not source correctness or runtime safety"
+    },
+    {
+      "approach_id": "APR-11",
+      "source_ids": [
+        "SRC-12"
+      ],
+      "principle": "Turn application security expectations into explicit testable requirements organized by verification area and assurance level",
+      "mechanism": "Evaluations map applicable ASVS controls to evidence; Discord surface gets replay, authorization, and rendering probes",
+      "evidence_strength": "moderate",
+      "limitations": "ASVS is web-application focused; checklist completion without threat modeling can miss system-specific abuse"
+    },
+    {
+      "approach_id": "APR-12",
+      "source_ids": [
+        "SRC-13"
+      ],
+      "principle": "Treat delivery and AI-assisted development outcomes as socio-technical and empirical; measure local effects and expose trade-offs",
+      "mechanism": "Evaluations version metrics and preserve errata; automations avoid target gaming; Nano Director compares speed with quality",
+      "evidence_strength": "moderate",
+      "limitations": "Survey findings are time-bound and self-reported; aggregate benchmarks should not become detached targets"
+    },
+    {
+      "approach_id": "APR-13",
+      "source_ids": [
+        "SRC-14"
+      ],
+      "principle": "Declare a public API and communicate compatible additions, fixes, and breaking changes through deterministic MAJOR.MINOR.PATCH",
+      "mechanism": "Package validates versions and dependency ranges; workflows produce migration previews; Doctor detects skew",
+      "evidence_strength": "strong",
+      "limitations": "Version numbers do not detect hidden behavior, data migrations, or undeclared consumers"
+    },
+    {
+      "approach_id": "APR-14",
+      "source_ids": [
+        "SRC-15"
+      ],
+      "principle": "Software quality is multidimensional; requirements must address functional suitability alongside reliability, security, maintainability, and safety",
+      "mechanism": "Blueprint declares quality priorities and trade-offs; evaluations map acceptance tests to named attributes; profiles set thresholds by context",
+      "evidence_strength": "moderate",
+      "limitations": "Quality attributes require context-specific measures; maximizing every attribute is impossible"
+    },
+    {
+      "approach_id": "APR-15",
+      "source_ids": [
+        "SRC-04",
+        "SRC-08"
+      ],
+      "principle": "Design rollback and recovery before irreversible change; keep software releasable through versioned configuration and automated pipelines",
+      "mechanism": "Every mutation declares pre-state, inverse, and verification; rollback captures pre-state; Doctor reports rollback readiness; recovery artifact enables isolated restore",
+      "evidence_strength": "strong",
+      "limitations": "Rollback can fail if inverse is not safe or data effects are not fully understood"
+    }
+  ],
+  "merge_matrix": [
+    {
+      "approach_id": "APR-01",
+      "decision": "adopt",
+      "folds_into": [
+        "knowledge",
+        "contracts"
+      ]
+    },
+    {
+      "approach_id": "APR-02",
+      "decision": "adopt",
+      "folds_into": [
+        "skills",
+        "workflows"
+      ]
+    },
+    {
+      "approach_id": "APR-03",
+      "decision": "adopt",
+      "folds_into": [
+        "skills",
+        "programs",
+        "agents"
+      ],
+      "merged_with": [
+        "APR-02"
+      ],
+      "conflicts_with": [],
+      "resolution": "APR-02 and APR-03 are complementary; TDD provides the cycle discipline that refactoring operationalizes"
+    },
+    {
+      "approach_id": "APR-04",
+      "decision": "adopt",
+      "folds_into": [
+        "programs",
+        "workflows",
+        "recovery"
+      ]
+    },
+    {
+      "approach_id": "APR-05",
+      "decision": "adopt",
+      "folds_into": [
+        "workflows",
+        "evals"
+      ]
+    },
+    {
+      "approach_id": "APR-06",
+      "decision": "adopt",
+      "folds_into": [
+        "knowledge",
+        "programs",
+        "contracts"
+      ]
+    },
+    {
+      "approach_id": "APR-07",
+      "decision": "adopt",
+      "folds_into": [
+        "evals",
+        "knowledge"
+      ],
+      "merged_with": [
+        "APR-08"
+      ],
+      "conflicts_with": [],
+      "resolution": "APR-07 provides the measurement framework; APR-08 operationalizes reliability targets within it"
+    },
+    {
+      "approach_id": "APR-08",
+      "decision": "adopt",
+      "folds_into": [
+        "knowledge",
+        "automations",
+        "doctor"
+      ],
+      "merged_with": [
+        "APR-07"
+      ],
+      "conflicts_with": [],
+      "resolution": "See APR-07"
+    },
+    {
+      "approach_id": "APR-09",
+      "decision": "adopt",
+      "folds_into": [
+        "workflows",
+        "evals",
+        "programs"
+      ]
+    },
+    {
+      "approach_id": "APR-10",
+      "decision": "adopt",
+      "folds_into": [
+        "programs",
+        "recovery"
+      ]
+    },
+    {
+      "approach_id": "APR-11",
+      "decision": "adapt",
+      "folds_into": [
+        "evals",
+        "commands"
+      ],
+      "conflicts_with": [],
+      "resolution": "ASVS is web-focused; adapt to AGK OS context (Discord surface, tool contracts, profiles)"
+    },
+    {
+      "approach_id": "APR-12",
+      "decision": "adopt",
+      "folds_into": [
+        "evals",
+        "automations"
+      ]
+    },
+    {
+      "approach_id": "APR-13",
+      "decision": "adopt",
+      "folds_into": [
+        "programs",
+        "knowledge"
+      ]
+    },
+    {
+      "approach_id": "APR-14",
+      "decision": "adopt",
+      "folds_into": [
+        "evals",
+        "contracts"
+      ]
+    },
+    {
+      "approach_id": "APR-15",
+      "decision": "adopt",
+      "folds_into": [
+        "workflows",
+        "recovery",
+        "recovery",
+        "doctor"
+      ],
+      "merged_with": [
+        "APR-04"
+      ],
+      "conflicts_with": [],
+      "resolution": "APR-04 and APR-15 reinforce each other: build-once artifact discipline enables reliable rollback and recovery"
+    }
+  ],
+  "validation_gates": {
+    "plan": {
+      "status": "pending"
+    },
+    "orchestration": {
+      "status": "pending"
+    },
+    "programming": {
+      "status": "pending"
+    },
+    "agentic": {
+      "status": "pending"
+    }
+  },
+  "hermes": {
+    "min_version": "0.21.0",
+    "quality_gates": [
+      "python3 programs/os_program.py validate-onboarding --ledger research/ONBOARDING_LEDGER.json",
+      "python3 doctor.py"
+    ]
+  }
+}

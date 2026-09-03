@@ -1,0 +1,40 @@
+schema: agk.automations.v1
+os_id: media-os
+director: media-director
+default: disabled
+fresh_session_acceptance_required: true
+allowed:
+- id: media-os-doctor
+  side_effect: read-only
+  bounded: true
+- id: media-os-contract-tests
+  side_effect: local-test
+  bounded: true
+- id: signal-scan
+  template: kernel/templates/automation/signal-scan.yaml
+  side_effect: network-read
+  bounded: true
+  delivery: media-os channel
+  no_change: silent
+- id: source-freshness
+  template: kernel/templates/automation/source-freshness.yaml
+  side_effect: read-only
+  bounded: true
+- id: connector-health
+  template: kernel/templates/automation/connector-health.yaml
+  side_effect: read-only
+  bounded: true
+- id: performance-snapshot
+  template: kernel/templates/automation/performance-snapshot.yaml
+  side_effect: network-read
+  bounded: true
+- id: weekly-learning-review
+  template: kernel/templates/automation/weekly-learning-review.yaml
+  side_effect: local-write
+  bounded: true
+forbidden:
+- auto-release
+- auto-oauth
+- auto-publish
+- secret-rotation
+- cross-tenant-mutation

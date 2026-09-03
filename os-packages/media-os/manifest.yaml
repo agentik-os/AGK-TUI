@@ -1,0 +1,64 @@
+schema_version: 1
+id: media-os
+name: Media OS
+version: 1.1.0
+description: 'Agentik-owned editorial operating system for evidence-backed founder
+  media: one Discord Media Director, six demand-invoked specialists, 17 vendored social-media
+  skills, exact-approval publishing.'
+scope:
+- operator
+dependencies: []
+capabilities:
+- media.research
+- media.editorial
+- media.distribution
+skills:
+- voice-builder
+- newsletter-voice
+- niche-research
+- content-matrix
+- hook-generator
+- post-writer
+- post-formatter
+- quote-post
+- graphic-designer
+- gemini-infographic
+- gemini-carousel
+- reels-scripting
+- youtube-thumbnail
+- pinned-comment
+- profile-optimizer
+- post-scorer
+- analytics-dashboard
+- grounded-citations
+- humanizer
+workflows:
+- campaign
+- build-cycle
+agents:
+- media-director
+- media-signal-scout
+- media-researcher
+- media-content-strategist
+- media-long-form-writer
+- media-distribution
+- media-editor
+tools:
+- terminal
+- file
+- web
+- delegation
+- kanban
+commands:
+- panel
+- clear
+- settings
+knowledge:
+- kernel/OS.md
+- README.md
+evals:
+- evals/cases.json
+- kernel/contracts.yaml
+- kernel/evals/acceptance.yaml
+status: active
+license: AGK-internal

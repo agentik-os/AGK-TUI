@@ -1,0 +1,47 @@
+model:
+  provider: openai-codex
+  default: gpt-5.6-sol
+fallback_providers:
+- provider: anthropic
+  model: claude-fable-5.1
+- provider: agk-gemma-local
+  model: gemma4:26b
+credential_pool_strategies:
+  openai-codex: fill_first
+agent:
+  reasoning_effort: high
+terminal:
+  cwd: .
+  home_mode: profile
+memory:
+  memory_enabled: true
+  user_profile_enabled: false
+security:
+  redact_secrets: true
+platforms:
+  discord:
+    enabled: false
+    gateway_restart_notification: false
+display:
+  platforms:
+    discord:
+      streaming: false
+      tool_progress: false
+      tool_progress_grouping: accumulate
+      interim_assistant_messages: false
+      long_running_notifications: false
+      busy_ack_detail: false
+      busy_steer_ack_enabled: false
+      action_messages: true
+model_aliases:
+  gemma4:
+    model: gemma4:26b
+    provider: agk-gemma-local
+    base_url: http://127.0.0.1:11434/v1
+providers:
+  agk-gemma-local:
+    api: http://127.0.0.1:11434/v1
+    transport: chat_completions
+    default_model: gemma4:26b
+    context_length: 262144
+    discover_models: true

@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "id": "media-researcher",
+  "role": "Researcher",
+  "owns": [
+    "bounded evidence package"
+  ],
+  "reads": [
+    "approved signal",
+    "Research OS methods",
+    "source material",
+    "risk tier"
+  ],
+  "returns": [
+    "claims",
+    "direct_sources",
+    "quotations_or_timestamps",
+    "contradictions",
+    "unknowns",
+    "not_proven",
+    "mechanisms"
+  ],
+  "must_not": [
+    "select sensational thesis first",
+    "hide contradictory evidence",
+    "convert inference into fact",
+    "write flagship",
+    "publish"
+  ],
+  "done_when": [
+    "consequential claims have provenance",
+    "uncertainty is explicit",
+    "risk-tier evidence gate passes"
+  ],
+  "capabilities": [
+    "campaign_research_read",
+    "campaign_research_write",
+    "citation_read",
+    "grounded_retrieval"
+  ],
+  "services": [],
+  "hermes_home": "/home/operator/.hermes/profiles/media-os/agents/media-researcher",
+  "work_root": "/home/operator/.hermes/profiles/media-os/workspace",
+  "primary_provider": "openai-codex",
+  "fallback_providers": [
+    "openai"
+  ],
+  "discord_enabled": false
+}

@@ -1,0 +1,21 @@
+schema_version: 1
+policies:
+  autonomy_level: 3
+  default: read-only
+  external_writes: exact_owner_approval_required
+  blind_publish_retry: forbidden
+  permanent_policy_change: owner_approval_required
+quality_gates:
+  - structured_handoffs_complete
+  - material_claims_have_provenance
+  - artifact_sha256_verified
+  - platform_entryways_are_distinct
+  - exact_target_approval_is_valid
+  - external_publication_readback_passes
+review:
+  verdicts: [pending, approved, changes_requested, rejected, held]
+  risk_tiers: [0, 1, 2, 3]
+memory:
+  promote: [verified_observations, replicated_lessons, approved_playbook_changes]
+  reject: [raw_private_state, secrets, unsupported_claims, unapproved_policy]
+  required_fields: [source, scope, confidence, freshness, sensitivity]

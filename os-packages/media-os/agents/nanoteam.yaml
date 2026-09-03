@@ -1,0 +1,19 @@
+schema: agk.nanoteam.v1
+director: media-director
+roles:
+- id: media-signal-scout
+  may_self_approve: false
+- id: media-researcher
+  may_self_approve: false
+- id: media-content-strategist
+  may_self_approve: false
+- id: media-long-form-writer
+  may_self_approve: false
+- id: media-distribution
+  may_self_approve: false
+- id: media-editor
+  may_self_approve: false
+escalation: nano-director
+invocation: demand-delegated-by-director
+persistent_members:
+- media-director

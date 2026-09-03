@@ -108,9 +108,12 @@ DEV REQUEST / VALIDATED FEEDBACK
 Raw web feedback and product/engineering delivery are separate work surfaces.
 Feedback is never implemented directly: the Project Manager triages it and
 promotes a validated item into a linked delivery issue containing full context,
-acceptance criteria, risks and a test plan. Direct owner development requests
-enter through the dedicated `dev-requests` Discord channel; the PM proposes a
-plan and creates or links the delivery issue before any coding begins.
+acceptance criteria, risks and a test plan. Direct owner development requests start in the Discord thread where the owner
+is already talking. A thread under `#dev-requests` already counts as intake:
+never bounce the owner back to the parent channel. The PM posts a short plan
+in that same thread, then executes there on go / fait le / do it / START,
+keeping the same Hermes session and creating or linking Linear in parallel.
+Production, spend, deletion and secrets stay human-gated.
 
 When an agent claims work, Linear moves to `IN PROGRESS`. The agent reads the
 complete issue, all comments, attachments, screenshots, linked feedback,

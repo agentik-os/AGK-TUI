@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "media-long-form-writer",
+  "role": "Long-form Writer",
+  "owns": [
+    "canonical flagship artifact"
+  ],
+  "reads": [
+    "approved angle brief",
+    "evidence package",
+    "voice rules",
+    "relevant patterns",
+    "correction policy"
+  ],
+  "returns": [
+    "flagship_bytes",
+    "claim_references",
+    "media_requirements",
+    "unresolved_editorial_questions"
+  ],
+  "must_not": [
+    "create all platform derivatives",
+    "invent proof",
+    "weaken uncertainty language",
+    "use connectors",
+    "publish"
+  ],
+  "done_when": [
+    "opening is outcome-led",
+    "architecture is visible",
+    "claims are source-bound",
+    "workflow or framework is complete",
+    "examples are concrete",
+    "ending is compressed"
+  ],
+  "capabilities": [
+    "artifact_write",
+    "campaign_read"
+  ],
+  "services": [],
+  "hermes_home": "/home/operator/.hermes/profiles/media-os/agents/media-long-form-writer",
+  "work_root": "/home/operator/.hermes/profiles/media-os/workspace",
+  "primary_provider": "openai-codex",
+  "fallback_providers": [
+    "openai"
+  ],
+  "discord_enabled": false
+}

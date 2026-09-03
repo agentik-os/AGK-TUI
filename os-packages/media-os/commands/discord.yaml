@@ -1,0 +1,15 @@
+schema: agk.discord-commands.v1
+mode: dedicated
+wake_path: thread+mention
+profile_id: media-os
+runtime_owner_environment: operator
+application_id: null
+channel_id: '1544449016941781044'
+owner_gate: pending
+required_native_commands:
+- panel
+- clear
+- settings
+registration_owner: dedicated_profile_gateway
+sync_policy: safe
+readback_required: true

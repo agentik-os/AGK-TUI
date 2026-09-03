@@ -1,0 +1,23 @@
+schema_version: 1
+id: connector-health
+schedule: "43 * * * *"
+owner_profile: media-director
+board: media-os
+workdir: /home/operator/.hermes/profiles/media-os/workspace
+provider:
+  primary: openai-codex
+  fallback: [openai]
+skills: [media-connector-diagnostics]
+tools: [connector_status_read, publication_readback_read, dispatcher_status_read]
+budget:
+  max_runs: 1
+  max_items: 100
+  max_tokens: 8000
+dedupe_key: media-os.connector-health
+no_change: silent
+destination: owner_dm
+continuity: resume_deduped
+timeout_seconds: 300
+failure_alert: owner_dm
+checks: [auth_expiry, rate_limit, unknown_publication, readback_mismatch, dispatcher, drift, recovery]
+action: report_actionable_health_change

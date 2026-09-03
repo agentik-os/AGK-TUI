@@ -1,0 +1,55 @@
+schema_version: 1
+root: Media OS
+numeric_prefixes_allowed: false
+content:
+  raw_conversations: reject
+  sensitive_material: reject
+  research_canonical_separation: required
+  campaign_drafts_to_playbooks: forbidden
+records:
+  required_metadata:
+    - media_os_schema
+    - record_type
+    - owner
+    - status
+    - source_refs
+    - confidence
+    - freshness
+    - contradiction_state
+    - scope
+    - effective_at
+    - revalidate_at
+  allowed_locations:
+    source: Research/Sources
+    claim: Research/Claims
+    signal: Research/Signals
+    campaign_draft: Campaigns
+    observation: Performance/Observations
+    hypothesis: Performance/Hypotheses
+    experiment: Performance/Experiments
+    lesson: Performance/Lessons
+    approved_rule: Playbooks/Approved
+    superseded_rule: Playbooks/Superseded
+promotion:
+  approved_location: Playbooks/Approved
+  minimum_replications: 2
+  distinct_evidence_required: 2
+  lesson_reference_required: true
+  scope_required: true
+  named_owner_required: true
+  policy_approval_required: true
+  effective_date_required: true
+  revalidation_required: true
+bulk_mutation:
+  pre_change_backup: required
+  post_change_backup: required
+  backups_outside_vault: true
+  per_file_replace: atomic
+  manifest:
+    algorithm: sha256
+    paths: relative_posix
+    canonical_order: lexical
+  fresh_copy:
+    exact_paths: required
+    exact_sha256: required
+  live_sync_acceptance: deferred_to_tasks_14_15

@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "domain-scout output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "os_id",
+    "theme",
+    "sources",
+    "approaches",
+    "contradictions",
+    "open_questions",
+    "provenance_note"
+  ],
+  "properties": {
+    "os_id": {
+      "type": "string"
+    },
+    "theme": {
+      "type": "string"
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": [
+          "source_id",
+          "kind",
+          "title",
+          "url",
+          "access_level",
+          "why_canonical"
+        ],
+        "properties": {
+          "source_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "year": {
+            "type": "integer"
+          },
+          "url": {
+            "type": "string"
+          },
+          "access_level": {
+            "type": "string"
+          },
+          "why_canonical": {
+            "type": "string"
+          },
+          "bestseller_signal": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "approaches": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": [
+          "approach_id",
+          "source_ids",
+          "principle",
+          "mechanism",
+          "evidence_strength",
+          "limitations"
+        ],
+        "properties": {
+          "approach_id": {
+            "type": "string"
+          },
+          "source_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "principle": {
+            "type": "string"
+          },
+          "mechanism": {
+            "type": "string"
+          },
+          "evidence_strength": {
+            "type": "string"
+          },
+          "limitations": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "between",
+          "summary"
+        ],
+        "properties": {
+          "between": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "provenance_note": {
+      "type": "string",
+      "description": "What was actually read (full text vs metadata vs transcript); no fabricated access."
+    }
+  }
+}

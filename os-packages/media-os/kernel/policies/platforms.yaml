@@ -1,0 +1,46 @@
+schema_version: 1
+platforms:
+  x:
+    entryway_kind: claim_proof_workflow_clip
+    content_fields: [claim, proof, workflow, clip]
+  linkedin:
+    entryway_kind: operator_decision_lesson
+    content_fields: [operator_decision, lesson]
+  newsletter:
+    entryway_kind: depth_context
+    content_fields: [depth, context]
+  carousel:
+    entryway_kind: visual_framework
+    content_fields: [visual_framework]
+  short_video:
+    entryway_kind: spoken_tension_demo_result
+    content_fields: [spoken_tension, demo, result]
+  long_video:
+    entryway_kind: complete_narrative
+    content_fields: [opening, development, resolution]
+capability_negotiation:
+  mutable_limits: connector_report_input
+  unsupported: BLOCKED_CAPABILITY
+  lossy_adaptation: forbidden
+  validation_io: none
+  requested_states: [publication, manifest_readback, processing, privacy]
+  publication_visibility:
+    immediate: public
+    scheduled: public
+    draft: private
+    private_stage: private
+    unlisted: unlisted
+claim_lineage:
+  campaign_ledger_required: true
+  explicit_asset_refs_required: true
+  media_evidence_refs_required: true
+  claim_segments: mandatory_content_and_source_bound
+  binding_fields: [claim_ref, proposition, source_artifact, text_sha256]
+  derivative_digest_field: authorized_derivative_text_sha256
+  asset_origin: separate_from_claim_evidence_source
+manifests:
+  carousel: strict_closed
+  short_video: strict_closed
+  long_video: strict_closed
+  time_domain: absolute_media_ms_half_open
+  temporal_containment: chapters_and_evidence_within_declared_source_interval

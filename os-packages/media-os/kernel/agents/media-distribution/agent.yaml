@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "id": "media-distribution",
+  "role": "Distribution",
+  "owns": [
+    "platform-native expression"
+  ],
+  "reads": [
+    "approved angle",
+    "reviewed flagship",
+    "platform playbooks",
+    "connector capability reports",
+    "campaign objective"
+  ],
+  "returns": [
+    "x_package",
+    "linkedin_package",
+    "newsletter_package",
+    "carousel_package",
+    "short_video_package",
+    "long_video_package",
+    "platform_metadata",
+    "media_manifests"
+  ],
+  "must_not": [
+    "publish",
+    "introduce unsupported claims",
+    "reuse the same shortened opening across platforms"
+  ],
+  "done_when": [
+    "assets have distinct entryways and consumption value",
+    "factual strength is preserved",
+    "platform constraints pass",
+    "assets bind to versioned sources"
+  ],
+  "capabilities": [
+    "artifact_read",
+    "artifact_write",
+    "campaign_read",
+    "prepare_connector_payload"
+  ],
+  "services": [],
+  "hermes_home": "/home/operator/.hermes/profiles/media-os/agents/media-distribution",
+  "work_root": "/home/operator/.hermes/profiles/media-os/workspace",
+  "primary_provider": "openai-codex",
+  "fallback_providers": [
+    "openai"
+  ],
+  "discord_enabled": false
+}

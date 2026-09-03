@@ -1,0 +1,70 @@
+schema_version: 1
+id: builder-os
+name: Builder OS
+version: 0.5.0
+description: Verified delivery system for AGK Operative Systems on Hermes >= 0.21 — onboarding (discovery, Librarian research, merge, four owner gates), test-driven implementation, review lane, deployment, doctor, and rollback.
+scope:
+- operator
+status: active
+license: AGK-internal
+hermes_requires: ">=0.21.0"
+dependencies:
+- strategy-os@0.2.3
+- librarian-os@2.2.2
+capabilities:
+- os-onboarding
+- discovery
+- librarian-research-intake
+- approach-merge-synthesis
+- owner-gate-validation
+- architecture
+- test-driven implementation
+- code review
+- deployment
+- rollback
+- runtime-contract
+- hermes-feature-alignment
+skills:
+- os-onboarding
+- verified-builder
+- librarian-builder-handoff
+- test-driven-development
+workflows:
+- os-onboarding
+- build-cycle
+- os-runtime-delivery
+agents:
+- master-os-builder
+- domain-scout
+- specification-reviewer
+- test-engineer
+- recovery-auditor
+tools:
+- terminal
+- file
+- web
+- coding
+- delegation
+- kanban
+- cronjob
+- clarify
+commands:
+- panel
+- clear
+- settings
+knowledge:
+- README.md
+- AGENTS.md
+evals:
+- evals/cases.json
+runtime_contract:
+  required:
+  - canonical-owner
+  - hermes-profile
+  - owning-agent
+  - provider-fallback
+  - discord-mode
+  - doctor
+  - rollback
+  - hermes-version
+  - onboarding-gates

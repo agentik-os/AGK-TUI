@@ -1,0 +1,56 @@
+name: builder-os
+version: 0.5.0
+description: Builder OS — AGK Operative System delivery on Hermes >= 0.21 (onboarding, four owner gates, TDD build, review lane, doctor, rollback).
+hermes_requires: ">=0.21.0"
+author: AGK / Operator
+license: AGK-internal
+schema_version: '1.0'
+profile_id: builder-os
+owner_environment: operator
+runtime_owner_environment: operator
+linux_user: operator
+os_id: builder-os
+os_version: 0.5.0
+agent_ids:
+- master-os-builder
+- domain-scout
+- specification-reviewer
+- test-engineer
+- recovery-auditor
+env_requires:
+- name: DISCORD_BOT_TOKEN
+  description: Dedicated "Build OS" bot token (owner-provisioned via secure input; never pasted in chat).
+  required: false
+provider:
+  primary: anthropic
+  primary_model: claude-fable-5.1
+  fallback: openai-codex
+  fallback_model: gpt-5.6-sol
+  fallback_2: agk-gemma-local
+  fallback_2_model: gemma4:26b
+discord:
+  mode: dedicated
+  application_id: '1543932459899555940'
+  channel_id: '1543929401828446209'
+  owner_gate: verified
+  command_sync_policy: safe
+  token_policy: profile-secret-reference
+  do_not_recable_personal_nutrition: false
+doctor:
+  required: true
+rollback:
+  strategy: reactivate-previous-immutable-package-and-restore-profile-snapshot
+retired_skills:
+- software-development/plan
+distribution_owned:
+- SOUL.md
+- distribution.yaml
+- skills/os-onboarding/
+- skills/verified-builder/
+- skills/librarian-builder-handoff/
+- skills/test-driven-development/
+- agents/master-os-builder/
+- agents/domain-scout/
+- agents/specification-reviewer/
+- agents/test-engineer/
+- agents/recovery-auditor/

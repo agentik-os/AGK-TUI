@@ -1,0 +1,33 @@
+id: media-editor
+name: Media Editor
+version: 1.1.0
+description: 'Media OS role: Editor.'
+scope:
+- operator
+runtime: hermes
+prompt: prompt.md
+distribution: os-contract-package
+owner: media-director
+owns:
+- package-level quality judgment
+- correction coordination
+- independent review
+returns:
+- verdict
+- factual_findings
+- duplication_findings
+- voice_findings
+- platform_findings
+- risk_findings
+- cta_findings
+must_not:
+- publish
+- approve missing evidence
+- modify artifacts silently
+- convert observations into permanent policy
+capabilities:
+- artifact_read
+- campaign_read
+- correction_coordinate
+- review_write
+invocation: demand-delegated

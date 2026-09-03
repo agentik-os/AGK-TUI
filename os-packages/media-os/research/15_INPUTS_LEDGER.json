@@ -1,0 +1,129 @@
+{
+  "count": 15,
+  "inputs": [
+    {
+      "input_id": "INPUT-01",
+      "section_sha256": "f72bb8ec0ace291fd9898225f736d324392cd8480a5f713251fd61d4cfd29313",
+      "title_line": "**Bibliographic identity:** Ann Handley, *Everybody Writes: Your New and Improved Go-To Guide to Creating Ridiculously Good Content*, 2nd ed., Wiley, 2022.",
+      "urls": [
+        "https://www.wiley.com/en-us/shop/general-introductory-business-management/everybody-writes-your-new-and-improved-go-to-guide-to-creating-ridiculously-good-content-2nd-edition-p-9781119854166"
+      ]
+    },
+    {
+      "input_id": "INPUT-02",
+      "section_sha256": "6cd28958c7ba1fe9579949dc8911b6bdda22deb04bb6befe590948e55f3307a9",
+      "title_line": "**Bibliographic identity:** William Zinsser, *On Writing Well: The Classic Guide to Writing Nonfiction*, 30th anniversary edition, HarperCollins (Harper Perennial), 2006; first published 1976.",
+      "urls": [
+        "https://www.harpercollins.com/products/on-writing-well-william-zinsser"
+      ]
+    },
+    {
+      "input_id": "INPUT-03",
+      "section_sha256": "4642ec3cdb368c855d4af60fbdf1f91978caff9c1747330442aef3b191c235b7",
+      "title_line": "**Bibliographic identity:** David Ogilvy, *Ogilvy on Advertising*, Vintage (Penguin Random House), 1985.",
+      "urls": [
+        "https://www.penguinrandomhouse.com/books/124131/ogilvy-on-advertising-by-david-ogilvy/"
+      ]
+    },
+    {
+      "input_id": "INPUT-04",
+      "section_sha256": "9a20cb5ef5ea161e535a83e69e71faa9f2d0eb550a686dcd4d8ed629e2f6fb71",
+      "title_line": "**Bibliographic identity:** Eugene M. Schwartz, *Breakthrough Advertising*, Prentice-Hall, 1966; currently republished by Brian Kurtz / Titans Marketing.",
+      "urls": [
+        "https://breakthroughadvertisingbook.com/breakthrough-advertising-book/"
+      ]
+    },
+    {
+      "input_id": "INPUT-05",
+      "section_sha256": "ca46c64e30fe3dfecd1b598c6a5db200e8740a9862cee50d01ef2ffaa4eee339",
+      "title_line": "**Bibliographic identity:** Al Ries and Jack Trout, *Positioning: The Battle for Your Mind*, McGraw-Hill, 2001 (20th anniversary edition; first published 1981).",
+      "urls": [
+        "https://www.mheducation.com/highered/mhp/product/positioning-battle-your-mind.html"
+      ]
+    },
+    {
+      "input_id": "INPUT-06",
+      "section_sha256": "4b7f3d20561dfa5c461c2d0cd529c7df9254802bf263c60332dcbacd9b9783b4",
+      "title_line": "**Bibliographic identity:** Chip Heath and Dan Heath, *Made to Stick: Why Some Ideas Survive and Others Die*, Random House, 2007.",
+      "urls": [
+        "https://www.penguinrandomhouse.com/books/77687/made-to-stick-by-chip-heath-and-dan-heath/"
+      ]
+    },
+    {
+      "input_id": "INPUT-07",
+      "section_sha256": "054ddc5528982d3209e0ed4765c2aa2be115c63470d51545506a8e6bdd972a8a",
+      "title_line": "**Bibliographic identity:** Jonah Berger, *Contagious: Why Things Catch On*, Simon & Schuster, 2013.",
+      "urls": [
+        "https://jonahberger.com/books/contagious/"
+      ]
+    },
+    {
+      "input_id": "INPUT-08",
+      "section_sha256": "9b2bc6a410ea67dfbf04a446b8e6ae6ec99df1b0ac6c3306d6459a13b8b61c11",
+      "title_line": "**Bibliographic identity:** Robert B. Cialdini, *Influence, New and Expanded: The Psychology of Persuasion*, Harper Business (HarperCollins), 2021.",
+      "urls": [
+        "https://www.harpercollins.com/products/influence-new-and-expanded-robert-b-cialdini"
+      ]
+    },
+    {
+      "input_id": "INPUT-09",
+      "section_sha256": "4e47a44062c80ef052e1e3f2a310e1a0da29feeae8de7936ca03337c5f9ebbdc",
+      "title_line": "**Bibliographic identity:** Seth Godin, *This Is Marketing: You Can't Be Seen Until You Learn to See*, Portfolio (Penguin Random House), 2018.",
+      "urls": [
+        "https://www.penguinrandomhouse.com/books/600458/this-is-marketing-by-seth-godin/"
+      ]
+    },
+    {
+      "input_id": "INPUT-10",
+      "section_sha256": "8579e1220471866b923faa0735a64a4830904bd6986840d265481bde70d81eaf",
+      "title_line": "**Bibliographic identity:** Joe Pulizzi, *Content Inc.: Start a Content-First Business, Build a Massive Audience and Become Radically Successful (With Little to No Money)*, 2nd ed., McGraw Hill, 2021.",
+      "urls": [
+        "https://www.joepulizzi.com/books/content-inc/"
+      ]
+    },
+    {
+      "input_id": "INPUT-11",
+      "section_sha256": "006cdf92538c2940fb16421dfc4b3a7c44bba8d657223d634afa6bcc5476953a",
+      "title_line": "**Bibliographic identity:** Nicolas Cole, *The Art and Business of Online Writing: How to Beat the Game of Capturing and Keeping Attention*, independently published, 2020.",
+      "urls": [
+        "https://books.google.com/books/about/The_Art_and_Business_of_Online_Writing.html?id=JO2PEQAAQBAJ",
+        "https://www.nicolascole.com/"
+      ]
+    },
+    {
+      "input_id": "INPUT-12",
+      "section_sha256": "076999b976ee7dc524c797f09ad4137cc03b9116440eb460907aa60e69192eee",
+      "title_line": "**Bibliographic identity:** Donald Miller, *Building a StoryBrand 2.0: Clarify Your Message So Customers Will Listen*, HarperCollins Leadership, 2025 (original edition 2017).",
+      "urls": [
+        "https://storybrand.com/building-a-storybrand-book-new/"
+      ]
+    },
+    {
+      "input_id": "INPUT-13",
+      "section_sha256": "40c67d2b086580176ce349395170d0233fc32d30898271344fc75a52ec9fbc13",
+      "title_line": "**Bibliographic identity:** Kevin Kelly, \"1,000 True Fans\", *The Technium* (kk.org), essay, 2008 (updated 2016).",
+      "urls": [
+        "https://kk.org/thetechnium/1000-true-fans/"
+      ]
+    },
+    {
+      "input_id": "INPUT-14",
+      "section_sha256": "358893637af556adee24247a9dfba0ddd412f78228fe9df651ec379350ae4898",
+      "title_line": "**Bibliographic identity:** Avinash Kaushik, *Web Analytics 2.0: The Art of Online Accountability and Science of Customer Centricity*, Wiley (Sybex), 2009.",
+      "urls": [
+        "https://www.wiley.com/en-us/shop/general-introductory-computer-science/web-analytics-2.0-the-art-of-online-accountability-and-science-of-customer-centricity-p-9780470529393"
+      ]
+    },
+    {
+      "input_id": "INPUT-15",
+      "section_sha256": "0125252ac62f3d21bd5de686218e51f2cd20fe8c7ff1b9b9e24ee09058a2fbd3",
+      "title_line": "**Bibliographic identity:** Douglas W. Hubbard, *How to Measure Anything: Finding the Value of Intangibles in Business*, 3rd ed., Wiley, 2014.",
+      "urls": [
+        "https://hubbardresearch.com/publications/how-to-measure-anything-study-guide/"
+      ]
+    }
+  ],
+  "schema": "agk.librarian-input-ledger.v1",
+  "source": "/home/operator/workspace/agk-os-contract-handoffs/media-os/14_BUILDER_HANDOFF.md",
+  "source_sha256": "0a53c06f19ff2e2772e05d13ececc2989b03e9c17cc16a3ca134e86ace841d63"
+}

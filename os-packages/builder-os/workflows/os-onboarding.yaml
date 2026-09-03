@@ -1,0 +1,60 @@
+id: os-onboarding
+version: 1.0.0
+purpose: Take any owner request for a new or upgraded Operative System through discovery, Librarian research, approach merge, and four owner validation gates before START.
+hermes:
+  min_version: 0.21.0
+  plan_command: /plan
+  goal_command: /goal draft
+  goal_gate_command: /goal gate add python3 programs/os_program.py validate-onboarding --ledger research/ONBOARDING_LEDGER.json
+  delegation: delegate_task with output_schema per NanoTeam role
+  review: kanban review lane (sdlc-review)
+referee: python3 programs/os_program.py validate-onboarding --ledger research/ONBOARDING_LEDGER.json
+stages:
+  - id: intake
+    output: verbatim-request+todo-list+existing-os-inventory
+  - id: discovery
+    requires: [intake]
+    output: ledger.discovery (mission, scopes, reuse, exclusions, assumptions)
+  - id: librarian-research
+    requires: [discovery]
+    max_sources: 20
+    source_kinds: [book, video, web, paper, standard, documentation, course, podcast]
+    output: ledger.sources (provenance url + access_level per source)
+  - id: approach-extraction
+    requires: [librarian-research]
+    max_approaches: 20
+    output: ledger.approaches (principle, mechanism, evidence, limitations, contradictions)
+  - id: merge-synthesis
+    requires: [approach-extraction]
+    output: ledger.merge_matrix (one row per approach; conflicts resolved) + lifecycle + domain map
+  - id: plan-gate
+    requires: [merge-synthesis]
+    owner_validation_required: true
+    artifact: .hermes/plans/<ts>-<os-id>.md
+    output: ledger.validation_gates.plan = validated
+  - id: orchestration-gate
+    requires: [plan-gate]
+    owner_validation_required: true
+    output: ledger.validation_gates.orchestration = validated (nanoteam, delegation depth, review lane, automations, Discord mode)
+  - id: programming-gate
+    requires: [orchestration-gate]
+    owner_validation_required: true
+    output: ledger.validation_gates.programming = validated (programs, schemas, tests, evals, quality gates, provider routes)
+  - id: agentic-gate
+    requires: [programming-gate]
+    owner_validation_required: true
+    output: ledger.validation_gates.agentic = validated (prompts, toolsets, output schemas, budgets, stop conditions)
+  - id: start
+    requires: [agentic-gate]
+    precondition: validate-onboarding build_permitted == true
+    output: START recorded in CONTRACT.json gates.start
+  - id: build
+    requires: [start]
+    output: hand-off to build-cycle (RED/GREEN, review lane, package, doctor, live, rollback)
+failure_policy:
+  sources_gt_20: blocked
+  approaches_gt_20: blocked
+  merge_matrix_incomplete: blocked
+  gate_rejected: loop-back-to-criticised-stage
+  gate_pending: no-build
+  release_requested: separate-owner-gate-never-inferred

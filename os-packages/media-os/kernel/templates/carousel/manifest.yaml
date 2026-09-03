@@ -1,0 +1,27 @@
+schema_version: 1
+slides:
+  - id: <slide-id>
+    source_path: <relative-source-path>
+    sha256: <sha256>
+    dimensions:
+      width: 1080
+      height: 1350
+    safe_zones:
+      top: 80
+      right: 80
+      bottom: 80
+      left: 80
+    text:
+      text: <slide-text>
+      text_sha256: <sha256-of-exact-utf8-slide-text>
+      claim_ref: <claim-id>
+      proposition: <ledger-proposition>
+      source_artifact:
+        id: <artifact-id>
+        sha256: <sha256>
+    alt_text: <alt-text>
+    evidence_refs: [<claim-id>]
+render_profile: <render-profile>
+destination_adaptations:
+  - destination: <destination>
+    format: <format>

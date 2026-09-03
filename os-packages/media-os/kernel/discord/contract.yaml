@@ -1,0 +1,62 @@
+schema_version: 1
+surface_type: Operate/Decide
+owner_principal: "1441423462492016821"
+registry_roots: frozen_slotted
+registry_contents: immutable_descriptors_only
+views:
+  - Campaigns
+  - Review
+  - Approvals
+  - Publishing
+  - Performance
+  - Health
+component_id: "media:v1:<view>:<action>:<opaque-id>"
+opaque_id:
+  max_length: 32
+  alphabet: alphanumeric_hyphen_underscore
+callbacks:
+  reauthorize:
+    - principal
+    - channel
+    - profile
+    - target
+  confirmation_receipt:
+    preview_minted: true
+    confirmation_state_boundary: composition_root_callback_runtime_lexical_state
+    registry_authority: none
+    receipt_binding: opaque_pending_identity
+    receipt_mac: not_required_no_signing_material
+    frozen: true
+    one_use: true
+    atomic_consume: true
+    binds:
+      - runtime_pending_identity
+      - registry_revision
+      - preview_interaction
+      - principal
+      - channel
+      - profile
+      - target
+      - exact_scope_sha256
+      - action
+      - component_id
+controls:
+  sum_type: strict
+  finite: select
+  free_form_non_sensitive: modal
+  zero_argument: button
+  navigation:
+    - Refresh
+    - Back
+    - Close
+publication:
+  requires_preview: true
+  confirmation: ephemeral
+  exact_scope: true
+  schedule: utc_rfc3339_fixed_microseconds_z
+threads: owner_created_only
+typed_commands: compatibility_fallback_only
+limits:
+  custom_id_bytes: 100
+  components: 25
+  select_choices: 25

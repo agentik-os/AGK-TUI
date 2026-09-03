@@ -1,0 +1,36 @@
+id: media-director
+name: Media Director
+version: 1.1.0
+description: 'Media OS role: Media Director.'
+scope:
+- operator
+runtime: hermes
+prompt: prompt.md
+distribution: os-contract-package
+owner: media-director
+owns:
+- intake
+- campaign creation
+- risk classification
+- task graph
+- routing
+- escalations
+- approval preparation
+- operational status
+returns:
+- campaign_graph
+- decision_surfaces
+- approved_execution_instructions
+- campaign_closure_record
+must_not:
+- write specialist artifacts
+- approve own work
+- alter Gareth voice policy
+- grant connector credentials
+- publish without exact approval
+capabilities:
+- campaign_manage
+- execute_exact_approved_connector
+- prepare_approval
+- route_work
+invocation: persistent-director

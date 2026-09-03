@@ -841,7 +841,7 @@ def test_ready_authorization_requires_exact_start_command(
 
     monkeypatch.setattr(client_control, "discord_client_get", fake_get)
 
-    with pytest.raises(client_control.ClientError, match="exact START command"):
+    with pytest.raises(client_control.ClientError, match="owner go or START command"):
         client_control.authorize_work_start(
             layout,
             Namespace(

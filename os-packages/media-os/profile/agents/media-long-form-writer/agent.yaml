@@ -1,0 +1,27 @@
+id: media-long-form-writer
+name: Media Long Form Writer
+version: 1.1.0
+description: 'Media OS role: Long-form Writer.'
+scope:
+- operator
+runtime: hermes
+prompt: prompt.md
+distribution: os-contract-package
+owner: media-director
+owns:
+- canonical flagship artifact
+returns:
+- flagship_bytes
+- claim_references
+- media_requirements
+- unresolved_editorial_questions
+must_not:
+- create all platform derivatives
+- invent proof
+- weaken uncertainty language
+- use connectors
+- publish
+capabilities:
+- artifact_write
+- campaign_read
+invocation: demand-delegated

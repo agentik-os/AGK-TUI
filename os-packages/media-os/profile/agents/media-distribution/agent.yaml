@@ -1,0 +1,31 @@
+id: media-distribution
+name: Media Distribution
+version: 1.1.0
+description: 'Media OS role: Distribution.'
+scope:
+- operator
+runtime: hermes
+prompt: prompt.md
+distribution: os-contract-package
+owner: media-director
+owns:
+- platform-native expression
+returns:
+- x_package
+- linkedin_package
+- newsletter_package
+- carousel_package
+- short_video_package
+- long_video_package
+- platform_metadata
+- media_manifests
+must_not:
+- publish
+- introduce unsupported claims
+- reuse the same shortened opening across platforms
+capabilities:
+- artifact_read
+- artifact_write
+- campaign_read
+- prepare_connector_payload
+invocation: demand-delegated

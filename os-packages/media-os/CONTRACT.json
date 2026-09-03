@@ -1,0 +1,59 @@
+{
+  "dimensions": [
+    "package",
+    "nano_director",
+    "nanoteam",
+    "profiles",
+    "ordered_skills",
+    "deterministic_programs",
+    "mcp_tool_contracts",
+    "knowledge_memory_scopes",
+    "provider_routes",
+    "workflows",
+    "automations",
+    "evaluations",
+    "discord_control_surface",
+    "doctor",
+    "rollback",
+    "recovery_artifact",
+    "librarian_best_advice",
+    "dedicated_bot_commands"
+  ],
+  "discord": {
+    "application_id": null,
+    "channel_id": "1544449016941781044",
+    "commands": [
+      "panel",
+      "clear",
+      "settings"
+    ],
+    "do_not_recable_personal_nutrition": false,
+    "mode": "dedicated",
+    "owner_gate": "pending",
+    "profile_id": "media-os",
+    "runtime_owner_environment": "operator",
+    "sync_policy": "safe"
+  },
+  "gates": {
+    "release": "unpassed",
+    "start": "passed"
+  },
+  "handoff_sha256": "0a53c06f19ff2e2772e05d13ececc2989b03e9c17cc16a3ca134e86ace841d63",
+  "nano_director": "media-director",
+  "os_id": "media-os",
+  "previous_version": "1.0.0",
+  "provider": {
+    "fallback": "agk-gemma-local",
+    "fallback_model": "gemma4:26b",
+    "primary": "openai-codex",
+    "primary_model": "gpt-5.6-sol"
+  },
+  "rollback": {
+    "command": "python3 rollback.py --registry /opt/agentik/os-registry",
+    "previous_version": "1.0.0"
+  },
+  "schema": "agk.os-contract.v1",
+  "secret_policy": "references-only-no-reusable-secrets",
+  "tenant": "AGK",
+  "version": "1.1.0"
+}

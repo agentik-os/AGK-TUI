@@ -1,0 +1,30 @@
+id: media-signal-scout
+name: Media Signal Scout
+version: 1.1.0
+description: 'Media OS role: Signal Scout.'
+scope:
+- operator
+runtime: hermes
+prompt: prompt.md
+distribution: os-contract-package
+owner: media-director
+owns:
+- opportunity urgency decision
+returns:
+- event
+- relevance
+- original_source
+- authority_proof
+- audience_question
+- decay_window
+- rejection_rationale
+must_not:
+- choose final thesis
+- draft content
+- promote weak signals to fill pipeline
+capabilities:
+- campaign_research_read
+- campaign_research_write
+- web_read
+- web_search
+invocation: demand-delegated

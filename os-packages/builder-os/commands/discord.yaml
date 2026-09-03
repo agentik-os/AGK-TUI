@@ -1,0 +1,33 @@
+schema: agk.discord-commands.v2
+mode: dedicated
+wake_path: thread+mention
+profile_id: builder-os
+runtime_owner_environment: operator
+application_id: '1543932459899555940'
+channel_id: '1543929401828446209'
+bot_user: Build OS
+owner_gate: verified
+required_native_commands:
+- panel
+- clear
+- settings
+known_extra_commands:
+- restart
+- leave
+- voice
+gateway_builtins_available:
+- plan
+- goal
+- subgoal
+- bg
+- btw
+- kanban
+- rollback
+- sessions
+registration_owner: dedicated_profile_gateway
+sync_policy: safe
+command_ui_mode: ui_only
+readback_required: true
+readback_2026_09_02:
+  global_commands: [clear, leave, panel, restart, settings, voice]
+  guild_commands: []

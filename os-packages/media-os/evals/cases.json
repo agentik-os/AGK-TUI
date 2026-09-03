@@ -1,0 +1,111 @@
+{
+  "cases": [
+    {
+      "evidence": [
+        "research/INPUT_TO_ARTIFACT_MATRIX.json",
+        "workflow.yaml",
+        "doctor output"
+      ],
+      "expected": "A scoped decision with provenance, uncertainty, doctor result, and RELEASE still unpassed.",
+      "id": "media-os-evidence-case-1",
+      "input": "Evaluate a bounded media-os decision using **Bibliographic identity:** Ann Handley, *Everybody Writes: Your New and Improved Go-To Guide to Creating Ridiculously Good Content*, 2nd ed., Wiley, 2022.; **Bibliographic identity:** William Zinsser, *On Writing Well: The Classic Guide to Writing Nonfiction*, 30th anniversary edition, HarperCollins (Harper Perennial), 2006; first published 1976.; **Bibliographic identity:** David Ogilvy, *Ogilvy on Advertising*, Vintage (Penguin Random House), 1985.",
+      "procedure": [
+        "run deterministic program",
+        "apply ordered skills",
+        "record cited evidence",
+        "check stop and rollback gates"
+      ],
+      "source_input_ids": [
+        "INPUT-01",
+        "INPUT-02",
+        "INPUT-03"
+      ]
+    },
+    {
+      "evidence": [
+        "research/INPUT_TO_ARTIFACT_MATRIX.json",
+        "workflow.yaml",
+        "doctor output"
+      ],
+      "expected": "A scoped decision with provenance, uncertainty, doctor result, and RELEASE still unpassed.",
+      "id": "media-os-evidence-case-2",
+      "input": "Evaluate a bounded media-os decision using **Bibliographic identity:** Eugene M. Schwartz, *Breakthrough Advertising*, Prentice-Hall, 1966; currently republished by Brian Kurtz / Titans Marketing.; **Bibliographic identity:** Al Ries and Jack Trout, *Positioning: The Battle for Your Mind*, McGraw-Hill, 2001 (20th anniversary edition; first published 1981).; **Bibliographic identity:** Chip Heath and Dan Heath, *Made to Stick: Why Some Ideas Survive and Others Die*, Random House, 2007.",
+      "procedure": [
+        "run deterministic program",
+        "apply ordered skills",
+        "record cited evidence",
+        "check stop and rollback gates"
+      ],
+      "source_input_ids": [
+        "INPUT-04",
+        "INPUT-05",
+        "INPUT-06"
+      ]
+    },
+    {
+      "evidence": [
+        "research/INPUT_TO_ARTIFACT_MATRIX.json",
+        "workflow.yaml",
+        "doctor output"
+      ],
+      "expected": "A scoped decision with provenance, uncertainty, doctor result, and RELEASE still unpassed.",
+      "id": "media-os-evidence-case-3",
+      "input": "Evaluate a bounded media-os decision using **Bibliographic identity:** Jonah Berger, *Contagious: Why Things Catch On*, Simon & Schuster, 2013.; **Bibliographic identity:** Robert B. Cialdini, *Influence, New and Expanded: The Psychology of Persuasion*, Harper Business (HarperCollins), 2021.; **Bibliographic identity:** Seth Godin, *This Is Marketing: You Can't Be Seen Until You Learn to See*, Portfolio (Penguin Random House), 2018.",
+      "procedure": [
+        "run deterministic program",
+        "apply ordered skills",
+        "record cited evidence",
+        "check stop and rollback gates"
+      ],
+      "source_input_ids": [
+        "INPUT-07",
+        "INPUT-08",
+        "INPUT-09"
+      ]
+    },
+    {
+      "evidence": [
+        "research/INPUT_TO_ARTIFACT_MATRIX.json",
+        "workflow.yaml",
+        "doctor output"
+      ],
+      "expected": "A scoped decision with provenance, uncertainty, doctor result, and RELEASE still unpassed.",
+      "id": "media-os-evidence-case-4",
+      "input": "Evaluate a bounded media-os decision using **Bibliographic identity:** Joe Pulizzi, *Content Inc.: Start a Content-First Business, Build a Massive Audience and Become Radically Successful (With Little to No Money)*, 2nd ed., McGraw Hill, 2021.; **Bibliographic identity:** Nicolas Cole, *The Art and Business of Online Writing: How to Beat the Game of Capturing and Keeping Attention*, independently published, 2020.; **Bibliographic identity:** Donald Miller, *Building a StoryBrand 2.0: Clarify Your Message So Customers Will Listen*, HarperCollins Leadership, 2025 (original edition 2017).",
+      "procedure": [
+        "run deterministic program",
+        "apply ordered skills",
+        "record cited evidence",
+        "check stop and rollback gates"
+      ],
+      "source_input_ids": [
+        "INPUT-10",
+        "INPUT-11",
+        "INPUT-12"
+      ]
+    },
+    {
+      "evidence": [
+        "research/INPUT_TO_ARTIFACT_MATRIX.json",
+        "workflow.yaml",
+        "doctor output"
+      ],
+      "expected": "A scoped decision with provenance, uncertainty, doctor result, and RELEASE still unpassed.",
+      "id": "media-os-evidence-case-5",
+      "input": "Evaluate a bounded media-os decision using **Bibliographic identity:** Kevin Kelly, \"1,000 True Fans\", *The Technium* (kk.org), essay, 2008 (updated 2016).; **Bibliographic identity:** Avinash Kaushik, *Web Analytics 2.0: The Art of Online Accountability and Science of Customer Centricity*, Wiley (Sybex), 2009.; **Bibliographic identity:** Douglas W. Hubbard, *How to Measure Anything: Finding the Value of Intangibles in Business*, 3rd ed., Wiley, 2014.",
+      "procedure": [
+        "run deterministic program",
+        "apply ordered skills",
+        "record cited evidence",
+        "check stop and rollback gates"
+      ],
+      "source_input_ids": [
+        "INPUT-13",
+        "INPUT-14",
+        "INPUT-15"
+      ]
+    }
+  ],
+  "os_id": "media-os",
+  "schema": "agk.os-evals.v1"
+}

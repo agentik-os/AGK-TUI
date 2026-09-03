@@ -1,0 +1,5 @@
+# Recovery
+
+Build recovery ZIPs only from the immutable package directory through the public two-argument `build_recovery_zip(source, output)` API. The builder rejects traversal, absolute paths, symlinks, duplicate or Unicode-colliding names, credentials, sessions, memories, logs, caches, private/vault content, temporary files, unknown roots, and detected secret material. It normalizes order, timestamps, permissions, and compression.
+
+The final output path is untouched until a unique staging ZIP passes CRC, exact normalized member-name comparison, source-to-extracted per-member SHA-256 comparison, complete package validation, and the fixed deterministic offline Python/package-contract test inventory. No caller callback or PASS claim is accepted. Staging and extraction are removed on every failure. `ArchiveReport` captures the fixed runner identity plus content-derived package-contract and Python-source hashes. Restore requires a fresh destination and an expected archive SHA-256; callers building a recovery artifact additionally bind exact expected member hashes.

@@ -1,0 +1,63 @@
+schema_version: 1
+risk_tiers:
+  0:
+    name: reflection
+    required_checks:
+      - privacy_reviewed
+      - voice_reviewed
+      - coherence_reviewed
+      - disclosure_reviewed
+  1:
+    name: ordinary_factual
+    inherits: 0
+    required_checks:
+      - claim_ledger
+      - claim_source_refs
+      - freshness_checked
+      - editor_approval
+  2:
+    name: consequential
+    inherits: 1
+    required_checks:
+      - primary_source_refs
+      - corroboration_or_explicit_reason
+      - uncertainty
+      - specialist_review
+  3:
+    name: high_impact
+    inherits: 2
+    required_checks:
+      - director_decision
+      - editor_decision
+      - verification_path
+      - fair_comment_when_applicable
+      - publish_or_hold_rationale
+package_review:
+  deterministic: true
+  mutates_campaign: false
+  publishes: false
+  annotation_units:
+    boundary: non_empty_prose_sentence_or_line
+    required_markers:
+      - supported_claim_id
+      - explicit_no_material_claims
+  checks:
+    - repeated_hooks
+    - unsupported_derivative_claims
+    - voice_drift
+    - cta_mismatch
+    - missing_alt_text
+    - platform_value_duplication
+fair_comment:
+  applicable_state: explicit
+  attempt_evidence:
+    contact_ref: non_empty_string
+    attempted_at: rfc3339
+  final_outcomes:
+    - attempt_sent
+    - response_received
+    - declined_to_comment
+    - no_response_after_deadline
+verdicts:
+  pass: approved
+  fail: changes_requested

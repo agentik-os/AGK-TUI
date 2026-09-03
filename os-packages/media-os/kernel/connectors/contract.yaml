@@ -1,0 +1,65 @@
+schema_version: 1
+interface: media_os.connectors.Connector
+methods:
+  capabilities:
+    arguments: []
+    returns: CapabilityReport
+  identity:
+    arguments: []
+    returns: ConnectorIdentity
+  create:
+    arguments: [frozen_request]
+    invocation_limit_per_operation: 1
+    remote_idempotency_claim: false
+    returns: CreateResult
+  read:
+    arguments: [external_id]
+    returns: ReadbackObject
+  reconcile:
+    arguments: [fingerprint, bounded_window]
+    returns: ReconciliationResult
+capability_report:
+  fields:
+    - supported_media
+    - current_limits
+    - draft_support
+    - scheduling
+    - readback
+    - readback_fields
+    - supported_processing
+    - readback_processing_fields
+    - edit
+    - delete
+    - stable_account_id
+    - visibility_modes
+    - rate_limit_state
+  unsupported: BLOCKED_CAPABILITY
+  lossy_adaptation: forbidden
+identity:
+  stable_account_identifier: opaque_public_value
+  connector_version: exact_approval_bound
+  newsletter_adapter_selection: explicit_configuration
+platform_semantics:
+  x:
+    remote_create_idempotency_claim: false
+  linkedin:
+    remote_create_idempotency_claim: false
+  short_video:
+    connector: youtube-upload
+    processing_capability: exact_required
+    readback_processing_metadata: exact_required
+    initial_visibility: private
+    later_visibility_change: separate_exact_approval
+  long_video:
+    connector: youtube-upload
+    processing_capability: exact_required
+    readback_processing_metadata: exact_required
+    initial_visibility: private
+    later_visibility_change: separate_exact_approval
+validation:
+  decoded_shapes: exact_closed
+  type_confusion: rejected
+  connector_values: detached
+  errors: bounded_redacted
+network_io: connector_implementation_only
+live_connectors_in_package: false

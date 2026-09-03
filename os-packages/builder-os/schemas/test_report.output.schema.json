@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "test-engineer output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "red_observed",
+    "green_observed",
+    "command",
+    "passed",
+    "failed",
+    "errors",
+    "fresh_session_acceptance",
+    "findings"
+  ],
+  "properties": {
+    "red_observed": {
+      "type": "boolean",
+      "description": "Failing test was executed and seen failing for the intended reason before implementation."
+    },
+    "green_observed": {
+      "type": "boolean"
+    },
+    "command": {
+      "type": "string"
+    },
+    "passed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "failed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "errors": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "output_tail": {
+      "type": "string"
+    },
+    "fresh_session_acceptance": {
+      "enum": [
+        "pass",
+        "fail",
+        "not-run"
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "severity",
+          "detail"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "blocker",
+              "major",
+              "minor",
+              "info"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

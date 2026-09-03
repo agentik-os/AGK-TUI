@@ -1,0 +1,104 @@
+schema: agk.ordered-skills.v1
+entry_role: nano-director
+ordered_skills:
+- voice-builder
+- newsletter-voice
+- niche-research
+- content-matrix
+- hook-generator
+- post-writer
+- post-formatter
+- quote-post
+- graphic-designer
+- gemini-infographic
+- gemini-carousel
+- reels-scripting
+- youtube-thumbnail
+- pinned-comment
+- profile-optimizer
+- post-scorer
+- analytics-dashboard
+- grounded-citations
+- humanizer
+guards:
+- voice-files-before-drafting
+- exact-approval-before-publication
+- readback-after-external-mutation
+- connector-gates-fail-closed
+- doctor-before-live
+- release-remains-distinct
+foundation:
+- voice-builder
+- newsletter-voice
+vendor:
+  repo: https://github.com/charlie947/social-media-skills
+  pinned_commit: d2e948719eafc8ed9e2436357ad18489bb371a81
+  license: MIT
+connector_gates:
+- id: voice-builder
+  requires: []
+  status: AVAILABLE
+- id: newsletter-voice
+  requires: []
+  status: AVAILABLE
+- id: niche-research
+  requires:
+  - claude-for-chrome
+  status: OWNER_BLOCKED
+- id: content-matrix
+  requires: []
+  status: AVAILABLE
+- id: hook-generator
+  requires: []
+  status: AVAILABLE
+- id: post-writer
+  requires: []
+  status: AVAILABLE
+- id: post-formatter
+  requires: []
+  status: AVAILABLE
+- id: quote-post
+  requires:
+  - gemini
+  status: OWNER_BLOCKED
+- id: graphic-designer
+  requires:
+  - gemini
+  status: OWNER_BLOCKED
+- id: gemini-infographic
+  requires:
+  - gemini
+  status: OWNER_BLOCKED
+- id: gemini-carousel
+  requires:
+  - gemini
+  status: OWNER_BLOCKED
+- id: reels-scripting
+  requires:
+  - apify
+  - gemini
+  status: OWNER_BLOCKED
+- id: youtube-thumbnail
+  requires:
+  - gemini
+  status: OWNER_BLOCKED
+- id: pinned-comment
+  requires: []
+  status: AVAILABLE
+- id: profile-optimizer
+  requires:
+  - gemini
+  status: OWNER_BLOCKED
+- id: post-scorer
+  requires:
+  - apify
+  status: OWNER_BLOCKED
+- id: analytics-dashboard
+  requires: []
+  status: AVAILABLE
+- id: grounded-citations
+  requires: []
+  status: AVAILABLE
+- id: humanizer
+  requires: []
+  status: AVAILABLE

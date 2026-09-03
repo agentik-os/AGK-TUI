@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "id": "campaign",
+  "work_id_format": "<campaign-id>:<stage>:v<revision>",
+  "stages": [
+    {
+      "id": "signal",
+      "owner_profile": "media-signal-scout",
+      "dependencies": [],
+      "required_returns": [
+        "event",
+        "relevance",
+        "original_source",
+        "authority_proof",
+        "audience_question",
+        "decay_window",
+        "rejection_rationale"
+      ]
+    },
+    {
+      "id": "research",
+      "owner_profile": "media-researcher",
+      "dependencies": [
+        "signal"
+      ],
+      "required_returns": [
+        "claims",
+        "direct_sources",
+        "quotations_or_timestamps",
+        "contradictions",
+        "unknowns",
+        "not_proven",
+        "mechanisms"
+      ]
+    },
+    {
+      "id": "angle",
+      "owner_profile": "media-content-strategist",
+      "dependencies": [
+        "research"
+      ],
+      "required_returns": [
+        "reader",
+        "outcome",
+        "central_tension",
+        "thesis",
+        "what_becomes_possible",
+        "flagship_format",
+        "headline",
+        "reusable_object",
+        "proof_requirements",
+        "section_plan",
+        "distribution_entryways"
+      ]
+    },
+    {
+      "id": "flagship",
+      "owner_profile": "media-long-form-writer",
+      "dependencies": [
+        "angle"
+      ],
+      "required_returns": [
+        "flagship_bytes",
+        "claim_references",
+        "media_requirements",
+        "unresolved_editorial_questions"
+      ]
+    },
+    {
+      "id": "flagship-review",
+      "owner_profile": "media-editor",
+      "dependencies": [
+        "flagship"
+      ],
+      "required_returns": [
+        "verdict",
+        "reviewed_artifacts",
+        "factual_findings",
+        "duplication_findings",
+        "voice_findings",
+        "platform_findings",
+        "risk_findings",
+        "cta_findings"
+      ]
+    },
+    {
+      "id": "distribution",
+      "owner_profile": "media-distribution",
+      "dependencies": [
+        "flagship-review"
+      ],
+      "required_returns": [
+        "x_package",
+        "linkedin_package",
+        "newsletter_package",
+        "carousel_package",
+        "short_video_package",
+        "long_video_package",
+        "platform_metadata",
+        "media_manifests"
+      ]
+    },
+    {
+      "id": "package-review",
+      "owner_profile": "media-editor",
+      "dependencies": [
+        "distribution"
+      ],
+      "required_returns": [
+        "verdict",
+        "reviewed_artifacts",
+        "factual_findings",
+        "duplication_findings",
+        "voice_findings",
+        "platform_findings",
+        "risk_findings",
+        "cta_findings"
+      ]
+    },
+    {
+      "id": "approval",
+      "owner_profile": "media-director",
+      "dependencies": [
+        "package-review"
+      ],
+      "required_returns": [
+        "decision_surfaces",
+        "approved_execution_instructions",
+        "execution_target"
+      ]
+    },
+    {
+      "id": "publication",
+      "owner_profile": "media-director",
+      "dependencies": [
+        "approval"
+      ],
+      "required_returns": [
+        "approval",
+        "execution_target",
+        "operation_key",
+        "connector_response"
+      ]
+    },
+    {
+      "id": "verified-publication",
+      "owner_profile": "media-director",
+      "dependencies": [
+        "publication"
+      ],
+      "required_returns": [
+        "publication_id",
+        "status",
+        "readback_evidence"
+      ]
+    },
+    {
+      "id": "observation",
+      "owner_profile": "media-director",
+      "dependencies": [
+        "verified-publication"
+      ],
+      "required_returns": [
+        "performance_snapshots",
+        "observations",
+        "hypotheses"
+      ]
+    },
+    {
+      "id": "experiment",
+      "owner_profile": "media-director",
+      "dependencies": [
+        "observation"
+      ],
+      "required_returns": [
+        "experiment_contract",
+        "metric_result"
+      ]
+    },
+    {
+      "id": "learning-review",
+      "owner_profile": "media-editor",
+      "dependencies": [
+        "experiment"
+      ],
+      "required_returns": [
+        "verdict",
+        "experiment_reviews",
+        "candidate_lessons"
+      ]
+    },
+    {
+      "id": "playbook-update",
+      "owner_profile": "media-director",
+      "dependencies": [
+        "learning-review"
+      ],
+      "required_returns": [
+        "decision",
+        "approved_changes",
+        "governance_record"
+      ]
+    },
+    {
+      "id": "closure",
+      "owner_profile": "media-director",
+      "dependencies": [
+        "playbook-update"
+      ],
+      "required_returns": [
+        "campaign_closure_record",
+        "open_obligations"
+      ]
+    }
+  ],
+  "blocking_classes": [
+    "external_dependency",
+    "human_input",
+    "capability",
+    "infrastructure"
+  ],
+  "identical_failure_limit": 3
+}

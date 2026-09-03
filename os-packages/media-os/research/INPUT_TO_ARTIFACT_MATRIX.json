@@ -1,0 +1,232 @@
+{
+  "os_id": "media-os",
+  "rows": [
+    {
+      "artifacts": [
+        "agents/nanoteam.yaml",
+        "profile/agents",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-01",
+      "requirement": "**Bibliographic identity:** Ann Handley, *Everybody Writes: Your New and Improved Go-To Guide to Creating Ridiculously Good Content*, 2nd ed., Wiley, 2022.",
+      "section_sha256": "f72bb8ec0ace291fd9898225f736d324392cd8480a5f713251fd61d4cfd29313",
+      "source_urls": [
+        "https://www.wiley.com/en-us/shop/general-introductory-business-management/everybody-writes-your-new-and-improved-go-to-guide-to-creating-ridiculously-good-content-2nd-edition-p-9781119854166"
+      ]
+    },
+    {
+      "artifacts": [
+        "skills/order.yaml",
+        "workflow.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-02",
+      "requirement": "**Bibliographic identity:** William Zinsser, *On Writing Well: The Classic Guide to Writing Nonfiction*, 30th anniversary edition, HarperCollins (Harper Perennial), 2006; first published 1976.",
+      "section_sha256": "6cd28958c7ba1fe9579949dc8911b6bdda22deb04bb6befe590948e55f3307a9",
+      "source_urls": [
+        "https://www.harpercollins.com/products/on-writing-well-william-zinsser"
+      ]
+    },
+    {
+      "artifacts": [
+        "programs/os_program.py",
+        "automations/automations.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-03",
+      "requirement": "**Bibliographic identity:** David Ogilvy, *Ogilvy on Advertising*, Vintage (Penguin Random House), 1985.",
+      "section_sha256": "4642ec3cdb368c855d4af60fbdf1f91978caff9c1747330442aef3b191c235b7",
+      "source_urls": [
+        "https://www.penguinrandomhouse.com/books/124131/ogilvy-on-advertising-by-david-ogilvy/"
+      ]
+    },
+    {
+      "artifacts": [
+        "contracts/tools.yaml",
+        "contracts/scopes.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-04",
+      "requirement": "**Bibliographic identity:** Eugene M. Schwartz, *Breakthrough Advertising*, Prentice-Hall, 1966; currently republished by Brian Kurtz / Titans Marketing.",
+      "section_sha256": "9a20cb5ef5ea161e535a83e69e71faa9f2d0eb550a686dcd4d8ed629e2f6fb71",
+      "source_urls": [
+        "https://breakthroughadvertisingbook.com/breakthrough-advertising-book/"
+      ]
+    },
+    {
+      "artifacts": [
+        "contracts/providers.yaml",
+        "commands/discord.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-05",
+      "requirement": "**Bibliographic identity:** Al Ries and Jack Trout, *Positioning: The Battle for Your Mind*, McGraw-Hill, 2001 (20th anniversary edition; first published 1981).",
+      "section_sha256": "ca46c64e30fe3dfecd1b598c6a5db200e8740a9862cee50d01ef2ffaa4eee339",
+      "source_urls": [
+        "https://www.mheducation.com/highered/mhp/product/positioning-battle-your-mind.html"
+      ]
+    },
+    {
+      "artifacts": [
+        "agents/nanoteam.yaml",
+        "profile/agents",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-06",
+      "requirement": "**Bibliographic identity:** Chip Heath and Dan Heath, *Made to Stick: Why Some Ideas Survive and Others Die*, Random House, 2007.",
+      "section_sha256": "4b7f3d20561dfa5c461c2d0cd529c7df9254802bf263c60332dcbacd9b9783b4",
+      "source_urls": [
+        "https://www.penguinrandomhouse.com/books/77687/made-to-stick-by-chip-heath-and-dan-heath/"
+      ]
+    },
+    {
+      "artifacts": [
+        "skills/order.yaml",
+        "workflow.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-07",
+      "requirement": "**Bibliographic identity:** Jonah Berger, *Contagious: Why Things Catch On*, Simon & Schuster, 2013.",
+      "section_sha256": "054ddc5528982d3209e0ed4765c2aa2be115c63470d51545506a8e6bdd972a8a",
+      "source_urls": [
+        "https://jonahberger.com/books/contagious/"
+      ]
+    },
+    {
+      "artifacts": [
+        "programs/os_program.py",
+        "automations/automations.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-08",
+      "requirement": "**Bibliographic identity:** Robert B. Cialdini, *Influence, New and Expanded: The Psychology of Persuasion*, Harper Business (HarperCollins), 2021.",
+      "section_sha256": "9b2bc6a410ea67dfbf04a446b8e6ae6ec99df1b0ac6c3306d6459a13b8b61c11",
+      "source_urls": [
+        "https://www.harpercollins.com/products/influence-new-and-expanded-robert-b-cialdini"
+      ]
+    },
+    {
+      "artifacts": [
+        "contracts/tools.yaml",
+        "contracts/scopes.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-09",
+      "requirement": "**Bibliographic identity:** Seth Godin, *This Is Marketing: You Can't Be Seen Until You Learn to See*, Portfolio (Penguin Random House), 2018.",
+      "section_sha256": "4e47a44062c80ef052e1e3f2a310e1a0da29feeae8de7936ca03337c5f9ebbdc",
+      "source_urls": [
+        "https://www.penguinrandomhouse.com/books/600458/this-is-marketing-by-seth-godin/"
+      ]
+    },
+    {
+      "artifacts": [
+        "contracts/providers.yaml",
+        "commands/discord.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-10",
+      "requirement": "**Bibliographic identity:** Joe Pulizzi, *Content Inc.: Start a Content-First Business, Build a Massive Audience and Become Radically Successful (With Little to No Money)*, 2nd ed., McGraw Hill, 2021.",
+      "section_sha256": "8579e1220471866b923faa0735a64a4830904bd6986840d265481bde70d81eaf",
+      "source_urls": [
+        "https://www.joepulizzi.com/books/content-inc/"
+      ]
+    },
+    {
+      "artifacts": [
+        "agents/nanoteam.yaml",
+        "profile/agents",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-11",
+      "requirement": "**Bibliographic identity:** Nicolas Cole, *The Art and Business of Online Writing: How to Beat the Game of Capturing and Keeping Attention*, independently published, 2020.",
+      "section_sha256": "006cdf92538c2940fb16421dfc4b3a7c44bba8d657223d634afa6bcc5476953a",
+      "source_urls": [
+        "https://books.google.com/books/about/The_Art_and_Business_of_Online_Writing.html?id=JO2PEQAAQBAJ",
+        "https://www.nicolascole.com/"
+      ]
+    },
+    {
+      "artifacts": [
+        "skills/order.yaml",
+        "workflow.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-12",
+      "requirement": "**Bibliographic identity:** Donald Miller, *Building a StoryBrand 2.0: Clarify Your Message So Customers Will Listen*, HarperCollins Leadership, 2025 (original edition 2017).",
+      "section_sha256": "076999b976ee7dc524c797f09ad4137cc03b9116440eb460907aa60e69192eee",
+      "source_urls": [
+        "https://storybrand.com/building-a-storybrand-book-new/"
+      ]
+    },
+    {
+      "artifacts": [
+        "programs/os_program.py",
+        "automations/automations.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-13",
+      "requirement": "**Bibliographic identity:** Kevin Kelly, \"1,000 True Fans\", *The Technium* (kk.org), essay, 2008 (updated 2016).",
+      "section_sha256": "40c67d2b086580176ce349395170d0233fc32d30898271344fc75a52ec9fbc13",
+      "source_urls": [
+        "https://kk.org/thetechnium/1000-true-fans/"
+      ]
+    },
+    {
+      "artifacts": [
+        "contracts/tools.yaml",
+        "contracts/scopes.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-14",
+      "requirement": "**Bibliographic identity:** Avinash Kaushik, *Web Analytics 2.0: The Art of Online Accountability and Science of Customer Centricity*, Wiley (Sybex), 2009.",
+      "section_sha256": "358893637af556adee24247a9dfba0ddd412f78228fe9df651ec379350ae4898",
+      "source_urls": [
+        "https://www.wiley.com/en-us/shop/general-introductory-computer-science/web-analytics-2.0-the-art-of-online-accountability-and-science-of-customer-centricity-p-9780470529393"
+      ]
+    },
+    {
+      "artifacts": [
+        "contracts/providers.yaml",
+        "commands/discord.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-15",
+      "requirement": "**Bibliographic identity:** Douglas W. Hubbard, *How to Measure Anything: Finding the Value of Intangibles in Business*, 3rd ed., Wiley, 2014.",
+      "section_sha256": "0125252ac62f3d21bd5de686218e51f2cd20fe8c7ff1b9b9e24ee09058a2fbd3",
+      "source_urls": [
+        "https://hubbardresearch.com/publications/how-to-measure-anything-study-guide/"
+      ]
+    }
+  ],
+  "schema": "agk.input-trace.v1"
+}

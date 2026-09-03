@@ -83,6 +83,22 @@ DISCORD_CHANNELS = (
     "client-status",
     "agent-activity",
 )
+DEFAULT_STATION_OWNER_USER_ID = "1441423462492016821"
+DEFAULT_STATION_DISCORD_BOT_IDS = (
+    "1541816910587625492",  # Operator
+    "1541817649661747351",  # Private
+    "1541817976586637382",  # Agentik
+    "1541817162241540126",  # Mission
+    "1541131574509314209",  # Collective
+)
+STATION_INTERAGENT_DROPIN = "30-station-interagent.conf"
+CLIENT_BATCH_POLICY_START = "<!-- AGK OWNER LINEAR BATCH POLICY: START -->"
+CLIENT_BATCH_POLICY_END = "<!-- AGK OWNER LINEAR BATCH POLICY: END -->"
+CLIENT_BATCH_POLICY = """An authenticated owner request to fix/start all Linear work is one batch start authorization.
+Run `agk client work authorize-linear-batch CLIENT_ID --channel-id CHANNEL --message-id MESSAGE` immediately.
+Create one Discord thread and one signed receipt per ready non-production issue; do not ask for repeated `START ISSUE-ID` messages.
+This does not authorize production deploy, spend, deletion, external access, or secret handling.
+"""
 
 
 class ClientError(RuntimeError):
@@ -285,6 +301,31 @@ def merge_client_upgrade(default: object, current: object) -> object:
     return copy.deepcopy(current)
 
 
+def sync_client_batch_policy(layout: Layout, slug: str) -> None:
+    """Merge the managed owner-batch policy without replacing client guidance."""
+    readme = layout.client(slug) / "README.md"
+    if not readme.is_file():
+        raise ClientError(f"registered client README is missing: {slug}")
+    current = readme.read_text(encoding="utf-8")
+    has_start = CLIENT_BATCH_POLICY_START in current
+    has_end = CLIENT_BATCH_POLICY_END in current
+    if has_start != has_end:
+        raise ClientError(f"client README has an incomplete managed policy block: {slug}")
+    managed = (
+        f"{CLIENT_BATCH_POLICY_START}\n"
+        f"{CLIENT_BATCH_POLICY.rstrip()}\n"
+        f"{CLIENT_BATCH_POLICY_END}"
+    )
+    if has_start:
+        prefix, remainder = current.split(CLIENT_BATCH_POLICY_START, 1)
+        _, suffix = remainder.split(CLIENT_BATCH_POLICY_END, 1)
+        updated = f"{prefix}{managed}{suffix}"
+    else:
+        updated = f"{current.rstrip()}\n\n{managed}\n"
+    if updated != current:
+        atomic_text(readme, updated, 0o600)
+
+
 def migrate_existing_client_configs(layout: Layout, registry: dict[str, Any]) -> None:
     for entry in registry.get("clients", []):
         slug = registry_id(entry)
@@ -294,6 +335,7 @@ def migrate_existing_client_configs(layout: Layout, registry: dict[str, Any]) ->
         config = layout.client(slug) / ".client"
         if not config.is_dir():
             raise ClientError(f"registered client config is missing: {slug}")
+        sync_client_batch_policy(layout, slug)
         manifest = yaml_document(config / "manifest.yaml")
         profile = manifest.get("profile", {}) if isinstance(manifest, dict) else {}
         profile_id = (
@@ -433,6 +475,10 @@ def integration_document(slug: str, args: argparse.Namespace) -> dict[str, Any]:
                 "fail_closed": True,
                 "dedupe_key": "linear_issue+approval_id+pr_head_sha",
                 "merge_method": "github_api_or_merge_queue",
+            },
+            "transition_adapters": {
+                "dpe_actor_ids": [],
+                "gareth_actor_id": None,
             },
             "webhook_id": None,
             "webhook_secret_set": False,
@@ -767,6 +813,27 @@ def doctor_one(layout: Layout, slug: str, *, online: bool) -> list[tuple[str, st
         (ok if isinstance(invariants, dict) and invariants.get(key) is True else fail)(
             f"workflow invariant {key}"
         )
+    start_authorization = workflow.get("human_start_authorization", {})
+    batch_authorization = (
+        start_authorization.get("batch", {})
+        if isinstance(start_authorization, dict)
+        else {}
+    )
+    accepted_sources = (
+        set(start_authorization.get("accepted_sources", []))
+        if isinstance(start_authorization, dict)
+        else set()
+    )
+    (ok if "discord_owner_batch" in accepted_sources else fail)(
+        "workflow accepts authenticated owner Linear batches"
+    )
+    (ok if isinstance(batch_authorization, dict)
+     and batch_authorization.get("thread_per_issue") is True
+     and batch_authorization.get("signed_receipt_per_issue") is True
+     and {
+         "production_deploy", "spend", "deletion", "external_access", "secret_handling"
+     } <= set(batch_authorization.get("never_implies", []))
+     else fail)("owner Linear batch keeps one thread per issue and true safety gates")
     display_names = workflow.get("display_names", {})
     for key, expected in (
         ("agent_review", "Engineering Review"),
@@ -1113,6 +1180,35 @@ def composio_proxy(
         return unwrap_proxy_payload(json.loads(result.stdout))
     except json.JSONDecodeError as error:
         raise ClientError("Composio Discord proxy returned invalid JSON") from error
+
+
+def composio_toolkit_proxy(
+    toolkit: str,
+    method: str,
+    url: str,
+    account: str,
+    data: dict[str, Any] | None = None,
+) -> object:
+    if not re.fullmatch(r"[a-z0-9_-]{2,40}", toolkit):
+        raise ClientError("Composio toolkit name is invalid")
+    executable = shutil.which("composio")
+    if not executable:
+        raise ClientError("Composio CLI is not installed in this profile")
+    command = [
+        executable, "proxy", url, "--toolkit", toolkit, "--account", account,
+        "-X", method,
+    ]
+    if data is not None:
+        command.extend(["-H", "content-type: application/json", "-d", json.dumps(data)])
+    result = subprocess.run(
+        command, text=True, capture_output=True, check=False, timeout=45
+    )
+    if result.returncode:
+        raise ClientError(f"Composio {toolkit} {method} failed")
+    try:
+        return unwrap_proxy_payload(json.loads(result.stdout)) if result.stdout.strip() else {}
+    except json.JSONDecodeError as error:
+        raise ClientError(f"Composio {toolkit} proxy returned invalid JSON") from error
 
 
 def composio_execute(tool: str, account: str, data: dict[str, Any]) -> object:
@@ -1798,6 +1894,46 @@ def discord_apply_locked(layout: Layout, slug: str) -> dict[str, Any]:
     }
 
 
+def station_discord_principals() -> list[str]:
+    owner_id = os.environ.get(
+        "AGK_STATION_OWNER_USER_ID", DEFAULT_STATION_OWNER_USER_ID
+    ).strip()
+    raw_bot_ids = os.environ.get("AGK_STATION_DISCORD_BOT_IDS", "")
+    bot_ids = (
+        [value.strip() for value in raw_bot_ids.split(",") if value.strip()]
+        if raw_bot_ids
+        else list(DEFAULT_STATION_DISCORD_BOT_IDS)
+    )
+    principals: list[str] = []
+    for value in [owner_id, *bot_ids]:
+        if not re.fullmatch(r"[0-9]{17,20}", value):
+            raise ClientError("Station Discord principal IDs must be numeric snowflakes")
+        if value not in principals:
+            principals.append(value)
+    return principals
+
+
+def write_station_interagent_dropin(layout: Layout, profile_id: str) -> Path:
+    allowed_users = ",".join(station_discord_principals())
+    dropin = (
+        layout.home
+        / ".config"
+        / "systemd"
+        / "user"
+        / f"hermes-gateway-{profile_id}.service.d"
+        / STATION_INTERAGENT_DROPIN
+    )
+    content = (
+        "[Service]\n"
+        "TimeoutStopSec=1860\n"
+        "Environment=DISCORD_ALLOW_BOTS=mentions\n"
+        "Environment=DISCORD_BOTS_REQUIRE_INLINE_MENTION=true\n"
+        f"Environment=DISCORD_ALLOWED_USERS={allowed_users}\n"
+    )
+    atomic_text(dropin, content, 0o600)
+    return dropin
+
+
 def activate_client(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
     if not args.yes:
         raise ClientError("Hermes client-profile activation requires --yes")
@@ -1856,11 +1992,13 @@ def activate_client(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
         intake_content,
         0o600,
     )
+    interagent_dropin = write_station_interagent_dropin(layout, profile_id)
     setup_required = not (profile_home / "config.yaml").is_file()
     return {
         "client_id": slug,
         "hermes_profile": profile_id,
         "created": created,
+        "station_interagent_dropin": str(interagent_dropin),
         "setup_required": setup_required,
         "next_command": (
             f"hermes --profile {profile_id} setup" if setup_required else None
@@ -1957,6 +2095,36 @@ def validate_work_start_record(
     discord = integrations.get("discord", {}) if isinstance(integrations, dict) else {}
     linear = integrations.get("linear", {}) if isinstance(integrations, dict) else {}
     non_empty = required - {"constraints"}
+    if not isinstance(authorization, dict):
+        raise ClientError("work start authorization is incomplete or mismatched")
+    linear_dpe = authorization.get("source") == "linear_dpe"
+    transition_adapters = (
+        linear.get("transition_adapters", {}) if isinstance(linear, dict) else {}
+    )
+    dpe_actor_ids = (
+        transition_adapters.get("dpe_actor_ids", [])
+        if isinstance(transition_adapters, dict)
+        else []
+    )
+    expected_actor = (
+        str(authorization.get("actor_id") or "") in {str(item) for item in dpe_actor_ids}
+        if linear_dpe and isinstance(dpe_actor_ids, list)
+        else authorization.get("actor_id") == str(discord.get("owner_user_id") or "")
+    )
+    expected_source = (
+        authorization.get("source") == "linear_dpe"
+        if linear_dpe
+        else authorization.get("source") in {"discord", "discord_owner_batch"}
+    )
+    expected_id = (
+        authorization.get("id") == f"linear:{authorization.get('message_id')}:{issue}"
+        if linear_dpe
+        else authorization.get("id")
+        in {
+            f"discord:{authorization.get('message_id')}",
+            f"discord-batch:{authorization.get('message_id')}:{issue}",
+        }
+    )
     if (
         not isinstance(authorization, dict)
         or not required <= set(authorization)
@@ -1965,15 +2133,15 @@ def validate_work_start_record(
         or authorization.get("client") != slug
         or authorization.get("issue") != issue
         or authorization.get("actor") != authorization.get("actor_id")
-        or authorization.get("actor_id") != str(discord.get("owner_user_id") or "")
-        or authorization.get("source") != "discord"
+        or not expected_actor
+        or not expected_source
         or authorization.get("guild_id") != str(discord.get("guild_id") or "")
         or authorization.get("channel_id")
         != str(discord.get("channels", {}).get("dev_requests") or "")
         or authorization.get("project")
         != str(linear.get("delivery_project_id") or "")
         or authorization.get("timestamp") != authorization.get("at")
-        or authorization.get("id") != f"discord:{authorization.get('message_id')}"
+        or not expected_id
     ):
         raise ClientError("work start authorization is incomplete or mismatched")
     verify_start_authorization_receipt(
@@ -2269,7 +2437,7 @@ def update_work_context(layout: Layout, args: argparse.Namespace) -> dict[str, A
         return record
 
 
-def discord_client_get(layout: Layout, slug: str, endpoint: str) -> dict[str, Any]:
+def discord_client_get(layout: Layout, slug: str, endpoint: str) -> Any:
     secret = layout.secret_file(validate_slug(slug))
     token = ""
     for line in secret.read_text().splitlines():
@@ -2296,9 +2464,390 @@ def discord_client_get(layout: Layout, slug: str, endpoint: str) -> dict[str, An
         ) from None
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
         raise ClientError("Discord authorization evidence lookup failed") from error
-    if not isinstance(data, dict):
+    if not isinstance(data, (dict, list)):
         raise ClientError("Discord authorization evidence is invalid")
     return data
+
+
+def discord_client_post(
+    layout: Layout, slug: str, endpoint: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    secret = layout.secret_file(validate_slug(slug))
+    token = ""
+    for line in secret.read_text().splitlines():
+        match = re.match(r"(?:export\s+)?DISCORD_BOT_TOKEN=(.+)", line)
+        if match:
+            token = match.group(1).strip().strip("'\"")
+            break
+    if not token:
+        raise ClientError("Discord dedicated bot token is unavailable")
+    body = json.dumps(payload, ensure_ascii=False).encode()
+    request = urllib.request.Request(
+        "https://discord.com/api/v10" + endpoint,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bot {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "AGK-client-control/1",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode())
+    except urllib.error.HTTPError as error:
+        raise ClientError(
+            f"Discord thread creation failed (HTTP {error.code})"
+        ) from None
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        raise ClientError("Discord thread creation failed") from error
+    if not isinstance(data, dict) or not str(data.get("id") or "").isdigit():
+        raise ClientError("Discord thread creation returned invalid evidence")
+    return data
+
+
+OWNER_LINEAR_BATCH_PHRASES = {
+    "fix it all from linear",
+    "fix all from linear",
+    "start all from linear",
+    "fix everything from linear",
+    "corrige tout depuis linear",
+    "corrige tout de linear",
+    "répare tout depuis linear",
+}
+
+
+def normalize_owner_batch_phrase(value: str) -> str:
+    return " ".join(value.casefold().strip().split())
+
+
+def client_home_channel_ids(discord: dict[str, Any]) -> set[str]:
+    channels = discord.get("channels", {}) if isinstance(discord, dict) else {}
+    if not isinstance(channels, dict):
+        return set()
+    return {str(value) for value in channels.values() if str(value).isdigit()}
+
+
+def authorization_channel_is_client_home(channel: dict[str, Any], discord: dict[str, Any]) -> bool:
+    """Owner go is valid in any client home channel or a thread under one."""
+    expected_guild = str(discord.get("guild_id") or "") if isinstance(discord, dict) else ""
+    if not expected_guild or str(channel.get("guild_id") or "") != expected_guild:
+        return False
+    allowed = client_home_channel_ids(discord)
+    channel_id = str(channel.get("id") or "")
+    parent_id = str(channel.get("parent_id") or "")
+    return bool(allowed) and (channel_id in allowed or parent_id in allowed)
+
+
+OWNER_GO_PHRASES = {
+    "go",
+    "do it",
+    "just do it",
+    "go ahead",
+    "ship it",
+    "fait le",
+    "fait-le",
+    "fais le",
+    "fais-le",
+    "vas-y",
+    "vas y",
+    "c est go",
+    "cest go",
+    "lance",
+    "go go",
+    "ok go",
+}
+
+
+def is_owner_go_intent(value: str, issue: str = "") -> bool:
+    raw = str(value or "").strip()
+    issue = str(issue or "").strip()
+    if issue and raw == f"START {issue}":
+        return True
+    normalized = normalize_owner_batch_phrase(raw)
+    if any(
+        marker in f" {normalized} "
+        for marker in (" do not ", " don't ", " dont ", " ne pas ", " stop ")
+    ):
+        return False
+    if issue and normalized == f"start {issue.lower()}":
+        return True
+    compact = " ".join(re.sub(r"[^a-z0-9à-ÿ]+", " ", normalized).split())
+    if compact in OWNER_GO_PHRASES:
+        return True
+    tails = (
+        "fait le",
+        "fais le",
+        "do it",
+        "just do it",
+        "go ahead",
+        "vas y",
+        "ship it",
+    )
+    if any(compact == phrase or compact.endswith(" " + phrase) for phrase in tails):
+        return True
+    if compact == "go" or compact.endswith(" go"):
+        return True
+    if not compact:
+        return False
+    if compact.endswith("?") and len(compact.split()) < 12:
+        return False
+    return len(compact.split()) >= 2
+
+
+def is_owner_linear_batch_intent(value: str) -> bool:
+    normalized = normalize_owner_batch_phrase(value)
+    if any(
+        marker in f" {normalized} "
+        for marker in (" do not ", " don't ", " dont ", " ne pas ", " stop ")
+    ):
+        return False
+    if normalized in OWNER_LINEAR_BATCH_PHRASES:
+        return True
+    words = re.sub(r"[^a-z0-9à-ÿ]+", " ", normalized).split()
+    text = " ".join(words)
+    english = "linear" in words and any(
+        phrase in text
+        for phrase in ("fix it all", "fix all", "fix everything", "start all")
+    )
+    french = "linear" in words and any(
+        phrase in text
+        for phrase in ("corrige tout", "répare tout", "repare tout", "lance tout")
+    )
+    return english or french
+
+
+def _batch_work_contract(
+    layout: Layout,
+    slug: str,
+    work_id: str,
+    record: dict[str, Any],
+    integrations: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str, str, Any]:
+    context = record.get("context", {})
+    if not isinstance(context, dict) or context.get("complete") is not True:
+        raise ClientError("READY_FOR_ENGINEERING context is incomplete")
+    issue = str(record.get("linear", {}).get("issue") or "")
+    linear = integrations.get("linear", {}) if isinstance(integrations, dict) else {}
+    expected_team = str(linear.get("team_id") or "") if isinstance(linear, dict) else ""
+    project = str(linear.get("delivery_project_id") or "") if isinstance(linear, dict) else ""
+    snapshot_record = context.get("linear_snapshot", {})
+    if (
+        not isinstance(snapshot_record, dict)
+        or str(snapshot_record.get("identifier") or "") != issue
+        or str(snapshot_record.get("team_id") or "") != expected_team
+        or len(str(snapshot_record.get("sha256") or "")) != 64
+    ):
+        raise ClientError("READY_FOR_ENGINEERING requires a verified Linear snapshot")
+    snapshot_path = (layout.client(slug) / str(snapshot_record.get("path") or "")).resolve()
+    try:
+        snapshot_path.relative_to(layout.client(slug).resolve())
+    except ValueError as error:
+        raise ClientError("Linear snapshot must stay inside the client boundary") from error
+    snapshot = yaml_document(snapshot_path)
+    snapshot_body = json.dumps(
+        snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    digest = hashlib.sha256(snapshot_body.encode()).hexdigest()
+    if not hmac.compare_digest(digest, str(snapshot_record.get("sha256") or "")):
+        raise ClientError("Linear snapshot digest verification failed")
+    if (
+        str(snapshot.get("identifier") or "") != issue
+        or str(snapshot.get("team_id") or "") != expected_team
+    ):
+        raise ClientError("Linear snapshot does not match the authorized issue")
+    verify_linear_snapshot_receipt(
+        layout,
+        str(snapshot_record.get("receipt") or ""),
+        {
+            "client": slug,
+            "work_id": work_id,
+            "issue": issue,
+            "team_id": expected_team,
+            "snapshot_sha256": digest,
+            "linear_updated_at": snapshot_record.get("updated_at"),
+        },
+    )
+    fields = context.get("fields", {})
+    fields = fields if isinstance(fields, dict) else {}
+    scope = fields.get("requested_outcome") or record.get("title")
+    constraints = fields.get("security_and_data_constraints")
+    if not project or not scope or constraints is None:
+        raise ClientError("start authorization contract is incomplete")
+    return context, snapshot, issue, project, constraints
+
+
+def authorize_linear_batch(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
+    """Authorize all ready Linear work from one authenticated owner message.
+
+    The message is a batch start authorization only. It never grants production,
+    deployment, spend, deletion, external-access, or secret-handling approval.
+    """
+    slug = validate_slug(args.slug)
+    if not str(args.channel_id).isdigit() or not str(args.message_id).isdigit():
+        raise ClientError("Discord authorization requires numeric channel and message ids")
+    integrations = client_configs(layout, slug)["integrations.yaml"]
+    discord = integrations.get("discord", {}) if isinstance(integrations, dict) else {}
+    expected_guild = str(discord.get("guild_id") or "")
+    expected_owner = str(discord.get("owner_user_id") or "")
+    channel = discord_client_get(layout, slug, f"/channels/{args.channel_id}")
+    if str(channel.get("guild_id") or "") != expected_guild:
+        raise ClientError("batch authorization channel belongs to another Discord guild")
+    if not authorization_channel_is_client_home(channel, discord):
+        raise ClientError("batch authorization must originate in a client Discord home or thread")
+    message = discord_client_get(
+        layout, slug, f"/channels/{args.channel_id}/messages/{args.message_id}"
+    )
+    author = message.get("author", {})
+    content = str(message.get("content") or "")
+    if (
+        str(message.get("channel_id") or "") != str(args.channel_id)
+        or not isinstance(author, dict)
+        or str(author.get("id") or "") != expected_owner
+        or author.get("bot") is True
+    ):
+        raise ClientError("batch authorization is not from the configured human owner")
+    if not is_owner_linear_batch_intent(content):
+        raise ClientError("Discord message is not an accepted Linear batch authorization")
+    message_timestamp = str(message.get("timestamp") or "")
+    if not message_timestamp:
+        raise ClientError("Discord batch message timestamp is unavailable")
+    message_timestamp = validate_start_message_freshness(message_timestamp)
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    work_root = layout.client(slug) / "state" / "work"
+    authorized: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for work_path in sorted(work_root.glob("WORK-*.yaml")):
+        record = yaml_document(work_path)
+        work_id = str(record.get("id") or "")
+        issue = str(record.get("linear", {}).get("issue") or "")
+        authorization = record.get("authorization", {})
+        if (
+            isinstance(authorization, dict)
+            and authorization.get("source") == "discord_owner_batch"
+            and str(authorization.get("message_id") or "") == str(args.message_id)
+        ):
+            authorized.append(
+                {
+                    "work_id": work_id,
+                    "issue": issue,
+                    "thread_id": str(record.get("discord", {}).get("thread_id") or ""),
+                    "idempotent": True,
+                }
+            )
+            continue
+        if record.get("status") != "backlog":
+            skipped.append({"work_id": work_id, "issue": issue, "reason": "not_backlog"})
+            continue
+        if str(record.get("environment", {}).get("target") or "") == "production":
+            skipped.append(
+                {
+                    "work_id": work_id,
+                    "issue": issue,
+                    "reason": "production_target_requires_separate_authorization",
+                }
+            )
+            continue
+        context = record.get("context", {})
+        if not isinstance(context, dict) or context.get("complete") is not True:
+            skipped.append(
+                {"work_id": work_id, "issue": issue, "reason": "context_incomplete"}
+            )
+            continue
+        try:
+            _context, snapshot, issue, project, constraints = _batch_work_contract(
+                layout, slug, work_id, record, integrations
+            )
+        except ClientError as error:
+            skipped.append(
+                {"work_id": work_id, "issue": issue, "reason": str(error)}
+            )
+            continue
+        thread = discord_client_post(
+            layout,
+            slug,
+            f"/channels/{expected_channel}/threads",
+            {
+                "name": f"{issue.lower()}-{branch_component(str(record.get('title') or 'work'))}"[:100],
+                "type": 11,
+                "auto_archive_duration": 10080,
+            },
+        )
+        # AGK_THREAD_CREATE_AUTO_WAKE_V1: fill immediately; empty thread == failed wake.
+        _aw_tid = str((thread or {}).get("id") or "")
+        if _aw_tid.isdigit():
+            discord_client_post(
+                layout,
+                slug,
+                f"/channels/{_aw_tid}/messages",
+                {"content": f"Client work thread for `{issue}` opened. Starter fill (AUTO_WAKE_V1)."},
+            )
+        fields = _context.get("fields", {})
+        fields = fields if isinstance(fields, dict) else {}
+        authorization = {
+            "id": f"discord-batch:{args.message_id}:{issue}",
+            "actor": expected_owner,
+            "actor_id": expected_owner,
+            "source": "discord_owner_batch",
+            "timestamp": now,
+            "channel_id": str(args.channel_id),
+            "message_id": str(args.message_id),
+            "guild_id": expected_guild,
+            "client": slug,
+            "project": project,
+            "issue": issue,
+            "scope": fields.get("requested_outcome") or record.get("title"),
+            "priority": snapshot.get("priority_label") or snapshot.get("priority") or "unspecified",
+            "constraints": constraints,
+            "at": now,
+            "message_sha256": hashlib.sha256(content.encode()).hexdigest(),
+            "message_timestamp": message_timestamp,
+        }
+        receipt_payload = {"work_id": work_id, **authorization}
+        receipt_payload.pop("client", None)
+        with work_lock(layout, slug, work_id):
+            current_path, current = load_work(layout, slug, work_id)
+            if current.get("status") != "backlog":
+                skipped.append(
+                    {"work_id": work_id, "issue": issue, "reason": "concurrent_transition"}
+                )
+                continue
+            authorization["receipt"] = write_start_authorization_receipt(
+                layout, slug, work_id, receipt_payload
+            )
+            current["authorization"] = authorization
+            current["status"] = "todo"
+            current["discord"] = {
+                "thread_id": str(thread["id"]),
+                "parent_channel_id": expected_channel,
+                "authorization_message_id": str(args.message_id),
+            }
+            work_event(
+                current,
+                "work.batch_start_authorized",
+                issue=issue,
+                thread_id=str(thread["id"]),
+                message_id=str(args.message_id),
+            )
+            atomic_yaml(current_path, current)
+        authorized.append(
+            {
+                "work_id": work_id,
+                "issue": issue,
+                "thread_id": str(thread["id"]),
+                "idempotent": False,
+            }
+        )
+    authorized.sort(key=lambda item: (str(item.get("issue") or ""), str(item.get("work_id") or "")))
+    skipped.sort(key=lambda item: (str(item.get("issue") or ""), str(item.get("work_id") or "")))
+    return {
+        "status": "authorized",
+        "client_id": slug,
+        "authorization_message_id": str(args.message_id),
+        "authorized": authorized,
+        "skipped": skipped,
+        "production_authorized": False,
+    }
 
 
 def validate_start_message_freshness(
@@ -2378,27 +2927,26 @@ def authorize_work_start(layout: Layout, args: argparse.Namespace) -> dict[str, 
 
     discord = integrations.get("discord", {}) if isinstance(integrations, dict) else {}
     expected_guild = str(discord.get("guild_id") or "")
-    expected_channel = str(discord.get("channels", {}).get("dev_requests") or "")
     expected_owner = str(discord.get("owner_user_id") or "")
-    if str(args.channel_id) != expected_channel:
-        raise ClientError("start authorization must originate in dev-requests")
     channel = discord_client_get(layout, slug, f"/channels/{args.channel_id}")
     if str(channel.get("guild_id") or "") != expected_guild:
         raise ClientError("start authorization channel belongs to another Discord guild")
+    if not authorization_channel_is_client_home(channel, discord):
+        raise ClientError("start authorization must originate in a client Discord home or thread")
     message = discord_client_get(
         layout, slug, f"/channels/{args.channel_id}/messages/{args.message_id}"
     )
     author = message.get("author", {})
     content = str(message.get("content") or "")
     if (
-        str(message.get("channel_id") or "") != expected_channel
+        str(message.get("channel_id") or "") != str(args.channel_id)
         or not isinstance(author, dict)
         or str(author.get("id") or "") != expected_owner
         or author.get("bot") is True
     ):
         raise ClientError("start authorization is not from the configured human owner")
-    if content != f"START {issue}":
-        raise ClientError("Discord message must be the exact START command for this issue")
+    if not is_owner_go_intent(content, issue):
+        raise ClientError("Discord message must be an owner go or START command for this issue")
     timestamp = dt.datetime.now(dt.timezone.utc).isoformat()
     context_fields = context.get("fields", {})
     context_fields = context_fields if isinstance(context_fields, dict) else {}
@@ -2417,7 +2965,7 @@ def authorize_work_start(layout: Layout, args: argparse.Namespace) -> dict[str, 
         "actor_id": expected_owner,
         "source": "discord",
         "timestamp": timestamp,
-        "channel_id": expected_channel,
+        "channel_id": str(args.channel_id),
         "message_id": str(args.message_id),
         "guild_id": expected_guild,
         "client": slug,
@@ -3414,48 +3962,21 @@ def require_release_controller_enabled(layout: Layout, slug: str) -> dict[str, A
         )
     if controller.get("fail_closed") is not True:
         raise ClientError("release controller configuration is not fail-closed")
-    raise ClientError(
-        "authenticated production approval receipts are not implemented; production remains blocked"
-    )
+    return controller
 
 
 def approve_work(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
     require_release_controller_enabled(layout, args.slug)
-    path, record = load_work(layout, args.slug, args.work_id)
-    if record.get("status") != "ready_for_cto":
-        raise ClientError("engineering approval requires READY_FOR_CTO")
-    approval = {
-        "id": args.approval_id,
-        "actor": args.actor,
-        "at": dt.datetime.now(dt.timezone.utc).isoformat(),
-    }
-    record.setdefault("approvals", {})["engineering"] = approval
-    record["status"] = "cto_approved"
-    work_event(record, "work.engineering_approved", **approval)
-    atomic_yaml(path, record)
-    return record
+    raise ClientError(
+        "production approval is accepted only from an authenticated Gareth Linear transition"
+    )
 
 
 def authorize_deploy(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
     require_release_controller_enabled(layout, args.slug)
-    path, record = load_work(layout, args.slug, args.work_id)
-    if record.get("status") != "cto_approved":
-        raise ClientError("deployment authorization requires CTO_APPROVED")
-    engineering = record.get("approvals", {}).get("engineering", {})
-    if args.approval_id == engineering.get("id"):
-        raise ClientError(
-            "deployment authorization must be separate from engineering approval"
-        )
-    approval = {
-        "id": args.approval_id,
-        "actor": args.actor,
-        "at": dt.datetime.now(dt.timezone.utc).isoformat(),
-    }
-    record.setdefault("approvals", {})["production"] = approval
-    record["status"] = "ready_to_deploy"
-    work_event(record, "work.production_authorized", **approval)
-    atomic_yaml(path, record)
-    return record
+    raise ClientError(
+        "production authorization is created only by an authenticated Gareth Linear transition"
+    )
 
 
 def apply_review_action(layout: Layout, args: argparse.Namespace) -> dict[str, Any]:
@@ -3885,6 +4406,921 @@ def complete_run_locked(
     return record
 
 
+def _linear_transition_work(
+    layout: Layout, slug: str, issue: str
+) -> tuple[Path, dict[str, Any]]:
+    matches = []
+    for path in (layout.client(slug) / "state" / "work").glob("WORK-*.yaml"):
+        record = yaml_document(path)
+        if (
+            record.get("client_id") == slug
+            and str(record.get("linear", {}).get("issue") or "") == issue
+        ):
+            matches.append((path, record))
+    if len(matches) != 1:
+        raise ClientError("Linear transition must resolve exactly one canonical AGK work")
+    return matches[0]
+
+
+def _ensure_linear_issue_thread(
+    layout: Layout,
+    slug: str,
+    work_path: Path,
+    record: dict[str, Any],
+    integrations: dict[str, Any],
+) -> tuple[str, str, bool]:
+    discord = integrations.get("discord", {}) if isinstance(integrations, dict) else {}
+    guild_id = str(discord.get("guild_id") or "") if isinstance(discord, dict) else ""
+    channels = discord.get("channels", {}) if isinstance(discord, dict) else {}
+    parent_id = str(channels.get("dev_requests") or "") if isinstance(channels, dict) else ""
+    if not parent_id.isdigit() and isinstance(channels, dict):
+        parent_id = next((str(value) for value in channels.values() if str(value).isdigit()), "")
+    existing_bound = str(record.get("discord", {}).get("thread_id") or "")
+    if existing_bound.isdigit():
+        return existing_bound, str(record.get("discord", {}).get("thread_name") or existing_bound), False
+    if not guild_id.isdigit() or not parent_id.isdigit():
+        raise ClientError("DPE Todo dispatch requires a client Discord home channel")
+    issue = str(record.get("linear", {}).get("issue") or "")
+    work_id = str(record.get("id") or "")
+    thread_name = f"{issue.lower()}-{work_id.lower()}"[:100]
+    existing_id = str(record.get("discord", {}).get("thread_id") or "")
+    active = discord_client_get(layout, slug, f"/guilds/{guild_id}/threads/active")
+    if not isinstance(active, dict):
+        raise ClientError("Discord active thread readback is malformed")
+    threads = active.get("threads")
+    if not isinstance(threads, list):
+        raise ClientError("Discord active thread collection is malformed")
+    matching = [
+        item for item in threads
+        if isinstance(item, dict)
+        and str(item.get("parent_id") or "") == parent_id
+        and str(item.get("name") or "") == thread_name
+    ] if isinstance(threads, list) else []
+    if len(matching) > 1:
+        raise ClientError("ambiguous duplicate Discord issue threads")
+    if existing_id:
+        if matching and str(matching[0].get("id") or "") != existing_id:
+            raise ClientError("recorded Discord issue thread conflicts with live topology")
+        thread_id = existing_id
+        created = False
+    elif matching:
+        thread_id = str(matching[0].get("id") or "")
+        created = False
+    else:
+        thread = discord_client_post(
+            layout,
+            slug,
+            f"/channels/{parent_id}/threads",
+            {
+                "name": thread_name,
+                "type": 11,
+                "auto_archive_duration": 10080,
+            },
+        )
+        thread_id = str(thread.get("id") or "")
+        created = True
+        # AGK_THREAD_CREATE_AUTO_WAKE_V1: never leave issue threads empty after create.
+        if thread_id.isdigit():
+            discord_client_post(
+                layout,
+                slug,
+                f"/channels/{thread_id}/messages",
+                {"content": f"Issue thread `{thread_name}` opened. Starter fill (AUTO_WAKE_V1)."},
+            )
+    if not thread_id.isdigit():
+        raise ClientError("Discord issue thread has no valid id")
+    live = discord_client_get(layout, slug, f"/channels/{thread_id}")
+    if (
+        not isinstance(live, dict)
+        or str(live.get("id") or "") != thread_id
+        or str(live.get("guild_id") or "") != guild_id
+        or str(live.get("parent_id") or "") != parent_id
+        or int(live.get("type", -1)) not in {11, 12}
+        or str(live.get("name") or "") != thread_name
+    ):
+        raise ClientError("Discord issue thread readback does not match its lineage")
+    record.setdefault("discord", {})["thread_id"] = thread_id
+    atomic_yaml(work_path, record)
+    idempotency_key = f"linear-todo:{slug}:{work_id}"
+    marker = f"<!-- agk-idempotency:{idempotency_key} -->"
+    message_id = str(record.get("discord", {}).get("dispatch_message_id") or "")
+    messages = discord_client_get(
+        layout, slug, f"/channels/{thread_id}/messages?limit=100"
+    )
+    if not isinstance(messages, list):
+        raise ClientError("Discord issue dispatch listing is malformed")
+    matching_messages = [
+        item for item in messages
+        if isinstance(item, dict) and marker in str(item.get("content") or "")
+    ]
+    if len(matching_messages) > 1:
+        raise ClientError("ambiguous duplicate Discord issue dispatches")
+    listed_id = str(matching_messages[0].get("id") or "") if matching_messages else ""
+    if message_id and listed_id and listed_id != message_id:
+        raise ClientError("persisted Discord dispatch conflicts with marker lineage")
+    if not message_id:
+        message_id = listed_id
+    if not message_id:
+        message = discord_client_post(
+            layout,
+            slug,
+            f"/channels/{thread_id}/messages",
+            {
+                "content": work_session_prompt(record) + "\n\n" + marker,
+                "allowed_mentions": {"parse": []},
+            },
+        )
+        message_id = str(message.get("id") or "")
+    if not message_id.isdigit():
+        raise ClientError("Discord issue dispatch returned no valid message id")
+    exact = discord_client_get(
+        layout, slug, f"/channels/{thread_id}/messages/{message_id}"
+    )
+    if (
+        not isinstance(exact, dict)
+        or str(exact.get("id") or "") != message_id
+        or marker not in str(exact.get("content") or "")
+    ):
+        raise ClientError("Discord issue dispatch readback does not match idempotency lineage")
+    record.setdefault("discord", {})["dispatch_message_id"] = message_id
+    atomic_yaml(work_path, record)
+    return thread_id, message_id, created
+
+
+def write_production_authorization_receipt(
+    layout: Layout, slug: str, work_id: str, payload: dict[str, Any]
+) -> str:
+    signed = {"client": validate_slug(slug), "work_id": work_id, **payload}
+    canonical = json.dumps(signed, sort_keys=True, separators=(",", ":"))
+    receipt = {
+        **signed,
+        "signature": hmac.new(
+            control_plane_audit_key(layout), canonical.encode(), hashlib.sha256
+        ).hexdigest(),
+    }
+    relative = Path("audit") / "production-authorizations" / slug / f"{work_id}.json"
+    path = layout.system / relative
+    if path.exists():
+        if yaml_document(path) != receipt:
+            raise ClientError("immutable production authorization receipt already exists")
+        return str(relative)
+    atomic_text(path, json.dumps(receipt, sort_keys=True, indent=2) + "\n", 0o400)
+    return str(relative)
+
+
+def _github_pr_coordinates(repository: str, pull_request: str) -> tuple[str, str, int]:
+    match = re.fullmatch(
+        r"https://github\.com/([^/]+)/([^/]+)/pull/([1-9][0-9]*)/?", pull_request
+    )
+    if not match or f"{match.group(1)}/{match.group(2)}" != repository:
+        raise ClientError("production gate requires the canonical GitHub pull request URL")
+    return match.group(1), match.group(2), int(match.group(3))
+
+
+def linear_transition_policy(integrations: dict[str, Any]) -> dict[str, Any]:
+    linear = integrations.get("linear", {})
+    adapters = linear.get("transition_adapters", {}) if isinstance(linear, dict) else {}
+    controller = linear.get("release_controller", {}) if isinstance(linear, dict) else {}
+    if not isinstance(adapters, dict):
+        raise ClientError("Linear transition policy is malformed")
+    dpe_ids = adapters.get("dpe_actor_ids", [])
+    gareth = str(adapters.get("gareth_actor_id") or "")
+    duplicate_gareth = (
+        str(controller.get("gareth_actor_id") or "")
+        if isinstance(controller, dict) else ""
+    )
+    duplicate_dpe = controller.get("dpe_actor_ids") if isinstance(controller, dict) else None
+    if (
+        not isinstance(dpe_ids, list)
+        or not dpe_ids
+        or any(not str(item) for item in dpe_ids)
+        or len({str(item) for item in dpe_ids}) != len(dpe_ids)
+        or not gareth
+        or gareth in {str(item) for item in dpe_ids}
+        or (duplicate_gareth and duplicate_gareth != gareth)
+        or (
+            duplicate_dpe is not None
+            and (
+                not isinstance(duplicate_dpe, list)
+                or {str(item) for item in duplicate_dpe}
+                != {str(item) for item in dpe_ids}
+            )
+        )
+    ):
+        raise ClientError("Linear transition policy sources disagree or are incomplete")
+    return {"dpe_actor_ids": [str(item) for item in dpe_ids], "gareth_actor_id": gareth}
+
+
+def release_controller_effect(
+    layout: Layout, slug: str, action: str, request: dict[str, Any]
+) -> dict[str, Any]:
+    if request.get("dry_run") is True:
+        raise ClientError("synthetic dry-run requires an injected no-network effect adapter")
+    integrations = client_configs(layout, slug)["integrations.yaml"]
+    github = integrations.get("github", {})
+    linear = integrations.get("linear", {})
+    vercel = integrations.get("vercel", {})
+    if action in {"inspect_pull_request", "inspect_merge", "merge_pull_request"}:
+        owner, repo, number = _github_pr_coordinates(
+            str(request["repository"]), str(request["pull_request"])
+        )
+        account = str(github.get("account_alias") or "")
+        base = f"https://api.github.com/repos/{owner}/{repo}"
+        pr_url = f"{base}/pulls/{number}"
+        pr = composio_toolkit_proxy("github", "GET", pr_url, account)
+        if not isinstance(pr, dict):
+            raise ClientError("GitHub pull request readback is malformed")
+        head = pr.get("head", {}) if isinstance(pr.get("head"), dict) else {}
+        base_record = pr.get("base", {}) if isinstance(pr.get("base"), dict) else {}
+        head_sha = str(head.get("sha") or "").lower()
+        base_ref = str(base_record.get("ref") or "")
+        if (
+            str(pr.get("html_url") or "") != request["pull_request"]
+            or head_sha != str(request["head_sha"]).lower()
+            or base_ref != "main"
+        ):
+            raise ClientError("GitHub pull request no longer matches the approved SHA/main target")
+        if action == "inspect_merge":
+            return {
+                "merged": pr.get("merged") is True,
+                "head_sha": head_sha,
+                "base_ref": base_ref,
+            }
+        if action == "merge_pull_request":
+            merged = composio_toolkit_proxy(
+                "github", "PUT", f"{pr_url}/merge", account,
+                {"sha": request["head_sha"], "merge_method": "squash"},
+            )
+            if not isinstance(merged, dict) or merged.get("merged") is not True:
+                raise ClientError("GitHub refused the approved pull request merge")
+            readback = composio_toolkit_proxy("github", "GET", pr_url, account)
+            readback_head = (
+                readback.get("head", {}) if isinstance(readback, dict)
+                and isinstance(readback.get("head"), dict) else {}
+            )
+            readback_base = (
+                readback.get("base", {}) if isinstance(readback, dict)
+                and isinstance(readback.get("base"), dict) else {}
+            )
+            return {
+                "merged": isinstance(readback, dict) and readback.get("merged") is True,
+                "head_sha": str(readback_head.get("sha") or "").lower(),
+                "base_ref": str(readback_base.get("ref") or ""),
+            }
+        status = composio_toolkit_proxy(
+            "github", "GET", f"{base}/commits/{head_sha}/status", account
+        )
+        reviews: list[dict[str, Any]] = []
+        for page in range(1, 11):
+            page_reviews = composio_toolkit_proxy(
+                "github", "GET", f"{pr_url}/reviews?per_page=100&page={page}", account
+            )
+            if not isinstance(page_reviews, list):
+                raise ClientError("GitHub pull request review readback is malformed")
+            reviews.extend(item for item in page_reviews if isinstance(item, dict))
+            if len(page_reviews) < 100:
+                break
+        else:
+            raise ClientError("GitHub pull request reviews exceed the bounded review scan")
+        latest_reviews: dict[str, str] = {}
+        for review in reviews:
+            user = review.get("user", {})
+            user_id = str(user.get("id") or user.get("login") or "") if isinstance(user, dict) else ""
+            state = str(review.get("state") or "").upper()
+            review_sha = str(review.get("commit_id") or "").lower()
+            if (
+                user_id
+                and review_sha == head_sha
+                and state in {"APPROVED", "CHANGES_REQUESTED"}
+            ):
+                latest_reviews[user_id] = state
+        return {
+            "repository": request["repository"],
+            "pull_request": request["pull_request"],
+            "head_sha": head_sha,
+            "base_ref": base_ref,
+            "mergeable": pr.get("mergeable") is True or pr.get("merged") is True,
+            "ci_passed": isinstance(status, dict)
+            and str(status.get("state") or "").lower() == "success",
+            "review_passed": bool(latest_reviews)
+            and "APPROVED" in latest_reviews.values()
+            and "CHANGES_REQUESTED" not in latest_reviews.values(),
+        }
+    if action in {"inspect_linear_state", "transition_linear"}:
+        if action == "inspect_linear_state":
+            query = """query AGKReleaseIssue($issueId: String!) {
+  issue(id: $issueId) { identifier state { id name } }
+}"""
+            raw = composio_execute(
+                "LINEAR_RUN_QUERY_OR_MUTATION",
+                str(linear.get("account_alias") or ""),
+                {"query_or_mutation": query, "variables": {"issueId": request["issue"]}},
+            )
+            issue_record = linear_issue_from_response(raw, str(request["issue"]))
+            current_state = issue_record.get("state", {})
+            return {
+                "issue": request["issue"],
+                "state_id": str(current_state.get("id") or "")
+                if isinstance(current_state, dict) else "",
+            }
+        mutation = """mutation AGKReleaseState($issueId: String!, $stateId: String!) {
+  issueUpdate(id: $issueId, input: {stateId: $stateId}) {
+    success
+    issue { identifier state { id name } }
+  }
+}"""
+        raw = composio_execute(
+            "LINEAR_RUN_QUERY_OR_MUTATION",
+            str(linear.get("account_alias") or ""),
+            {
+                "query_or_mutation": mutation,
+                "variables": {"issueId": request["issue"], "stateId": request["state_id"]},
+            },
+        )
+        issue = linear_issue_from_response(raw, str(request["issue"]))
+        state = issue.get("state", {}) if isinstance(issue, dict) else {}
+        return {"issue": request["issue"], "state_id": str(state.get("id") or "")}
+    if action in {"inspect_staging", "observe_vercel_production"}:
+        raw = composio_execute(
+            "VERCEL_LIST_DEPLOYMENTS",
+            str(vercel.get("account_alias") or ""),
+            {"projectId": str(request["project_id"])},
+        )
+        deployments = list(nested_objects(raw))
+        match = next(
+            (
+                item for item in deployments
+                if str(item.get("meta", {}).get("githubCommitSha") or item.get("head_sha") or "")
+                == request["head_sha"]
+                and str(
+                    item.get("projectId")
+                    or item.get("project_id")
+                    or (item.get("project", {}).get("id")
+                        if isinstance(item.get("project"), dict) else "")
+                ) == request["project_id"]
+                and (
+                    action != "observe_vercel_production"
+                    or str(item.get("target") or item.get("environment") or "").lower()
+                    == "production"
+                )
+            ),
+            None,
+        )
+        if not isinstance(match, dict):
+            raise ClientError("Vercel returned no deployment for the approved SHA")
+        if action == "inspect_staging":
+            return {
+                "url": str(match.get("url") or ""),
+                "build_version": str(match.get("name") or match.get("id") or ""),
+                "head_sha": request["head_sha"],
+            }
+        return {
+            "ready": str(match.get("state") or match.get("readyState") or "").upper() == "READY",
+            "head_sha": request["head_sha"],
+            "deployment_id": str(match.get("id") or match.get("uid") or ""),
+        }
+    raise ClientError(f"unsupported release controller effect: {action}")
+
+
+def _require_release_gate_record(
+    layout: Layout, slug: str, work_id: str, record: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+    if record.get("status") not in {"ready_for_cto", "ready_to_deploy", "verified"}:
+        raise ClientError("Approved for Prod requires canonical CTO Review work")
+    validate_work_start_record(layout, slug, work_id, record)
+    repository = record.get("repository", {})
+    evidence = record.get("evidence", {})
+    if not isinstance(repository, dict) or not isinstance(evidence, dict):
+        raise ClientError("production gate record is malformed")
+    repo = str(repository.get("repo") or "")
+    pr = str(repository.get("pull_request") or "")
+    sha = str(repository.get("commit") or "").lower()
+    _github_pr_coordinates(repo, pr)
+    if not re.fullmatch(r"[a-f0-9]{40}", sha):
+        raise ClientError("production gate requires the exact 40-character PR head SHA")
+    missing = []
+    for key in ("engineering_review_passed", "ci_passed", "qa_passed"):
+        if evidence.get(key) is not True:
+            missing.append(key)
+    if evidence.get("security_disposition") not in {"passed", "not_required"}:
+        missing.append("security_disposition")
+    if not evidence.get("security_decision_id"):
+        missing.append("security_decision_id")
+    for key in (
+        "staging_preview", "staging_build_version", "screenshots",
+        "validation_steps", "rollback_plan",
+    ):
+        if not evidence.get(key):
+            missing.append(key)
+    business = evidence.get("business_review", {})
+    if (
+        not isinstance(business, dict)
+        or business.get("result") != "approved"
+        or not {"actor_id", "decision_id", "at"}
+        <= {key for key, value in business.items() if value}
+    ):
+        missing.append("business_review")
+    if missing:
+        raise ClientError("Approved for Prod gates are incomplete: " + ", ".join(missing))
+    validate_qa_evidence(layout, slug, work_id, evidence)
+    return repository, evidence, pr, sha
+
+
+def _persist_release_run(run_path: Path, run: dict[str, Any]) -> None:
+    atomic_yaml(run_path, {"schema_version": SCHEMA_VERSION, **run})
+
+
+def _finalize_release_work(
+    work_path: Path,
+    record: dict[str, Any],
+    run: dict[str, Any],
+    sha: str,
+) -> None:
+    deployment_id = str(run.get("deployment_id") or "")
+    required_phases = {
+        "release_queued", "pre_merge_gate", "merge", "deploying",
+        "vercel_observed", "production_verify",
+    }
+    phases = run.get("phases", {})
+    if (
+        run.get("status") != "completed"
+        or not deployment_id
+        or not isinstance(phases, dict)
+        or any(
+            not isinstance(phases.get(phase), dict)
+            or phases[phase].get("status") != "completed"
+            for phase in required_phases
+        )
+    ):
+        raise ClientError("completed AGK Run lacks finalization receipts")
+    if record.get("status") != "verified":
+        record["status"] = "verified"
+        record.setdefault("evidence", {})["production_health_verified"] = True
+        work_event(
+            record, "work.production_verified", run_id=run["id"],
+            deployment_id=deployment_id, commit=sha,
+        )
+        atomic_yaml(work_path, record)
+
+
+def _governed_release_effect(
+    layout: Layout,
+    slug: str,
+    run: dict[str, Any],
+    run_path: Path,
+    phase: str,
+    effect_adapter: Any,
+    action: str,
+    request: dict[str, Any],
+    expected: dict[str, Any],
+    *,
+    reconcile_action: str | None = None,
+    allowed_reconcile: list[dict[str, Any]] | None = None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    phases = run.setdefault("phases", {})
+    phase_record = phases.get(phase, {})
+    if isinstance(phase_record, dict) and phase_record.get("status") == "completed":
+        if phase_record.get("result") != expected:
+            raise ClientError(f"release phase {phase} receipt is inconsistent")
+        return expected
+    phases[phase] = {"status": "prepared", "action": action, "expected": expected}
+    run["phase"] = phase
+    run["status"] = "planned" if dry_run else "running"
+    if not dry_run:
+        _persist_release_run(run_path, run)
+    result = None
+    if reconcile_action:
+        observed = effect_adapter(layout, slug, reconcile_action, request)
+        if observed == expected:
+            result = observed
+        elif allowed_reconcile is None or observed not in allowed_reconcile:
+            raise ClientError(f"release phase {phase} is in an unexpected remote state")
+    if result is None:
+        result = effect_adapter(layout, slug, action, request)
+    if result != expected:
+        raise ClientError(f"release phase {phase} authoritative readback mismatch")
+    phases[phase] = {
+        "status": "completed", "action": action, "result": result,
+    }
+    if not dry_run:
+        _persist_release_run(run_path, run)
+    return result
+
+
+def _handle_gareth_release_transition(
+    layout: Layout,
+    slug: str,
+    payload: dict[str, Any],
+    raw_body: bytes,
+    integrations: dict[str, Any],
+    record: dict[str, Any],
+    *,
+    dry_run: bool,
+    effect_adapter: Any,
+) -> dict[str, Any]:
+    linear = integrations["linear"]
+    adapters = linear_transition_policy(integrations)
+    actor_id = str(payload.get("actor", {}).get("id") or "")
+    if actor_id != str(adapters.get("gareth_actor_id") or "") or not actor_id:
+        raise ClientError("Approved for Prod transition is not from authenticated Gareth")
+    require_release_controller_enabled(layout, slug)
+    work_id = str(record.get("id") or "")
+    issue = str(record.get("linear", {}).get("issue") or "")
+    repository, evidence, pr, sha = _require_release_gate_record(
+        layout, slug, work_id, record
+    )
+    vercel = integrations.get("vercel", {})
+    projects = vercel.get("project_ids", []) if isinstance(vercel, dict) else []
+    if not isinstance(vercel, dict) or vercel.get("enabled") is not True or len(projects) != 1:
+        raise ClientError("release controller requires exactly one canonical Vercel project")
+    state_ids = linear.get("workflow_state_ids", {})
+    required_states = {
+        "ready_to_deploy": str(state_ids.get("ready_to_deploy") or ""),
+        "production": str(state_ids.get("production") or ""),
+        "verified": str(state_ids.get("verified") or ""),
+    }
+    if any(not value for value in required_states.values()) or len(set(required_states.values())) != 3:
+        raise ClientError("release controller Linear state mappings are incomplete or ambiguous")
+    request = {
+        "dry_run": dry_run, "issue": issue, "work_id": work_id,
+        "repository": repository["repo"], "pull_request": pr, "head_sha": sha,
+        "project_id": str(projects[0]),
+    }
+    webhook_id = str(payload.get("webhookId") or payload.get("id") or "")
+    approval_id = f"linear:{webhook_id}:{sha}"
+    authorization = {
+        "id": approval_id, "actor": actor_id, "actor_id": actor_id,
+        "source": "linear_webhook", "webhook_id": webhook_id,
+        "issue": issue, "work_id": work_id, "pull_request": pr,
+        "head_sha": sha, "ci_passed": True, "review_passed": True,
+        "qa_passed": True, "security_disposition": evidence["security_disposition"],
+        "security_decision_id": evidence["security_decision_id"],
+        "staging_preview": evidence["staging_preview"],
+        "staging_build_version": evidence["staging_build_version"],
+        "business_decision_id": evidence["business_review"]["decision_id"],
+        "rollback_plan_sha256": hashlib.sha256(
+            str(evidence["rollback_plan"]).encode()
+        ).hexdigest(),
+        "payload_sha256": hashlib.sha256(raw_body).hexdigest(),
+    }
+    synthetic_run_id = "RUN-" + hashlib.sha256(approval_id.encode()).hexdigest()[:12].upper()
+    run = {
+        "id": synthetic_run_id, "client_id": slug, "work_id": work_id,
+        "linear_issue": issue, "action": "deploy_production", "commit": sha,
+        "approval_id": approval_id, "rollback_available": True,
+        "status": "planned" if dry_run else "running", "phases": {},
+    }
+    work_path = layout.client(slug) / "state" / "work" / f"{work_id}.yaml"
+    run_path = layout.client(slug) / "state" / "runs" / f"{run['id']}.yaml"
+    existing = record.get("approvals", {}).get("production")
+    if isinstance(existing, dict) and existing.get("id") and not dry_run:
+        comparable = {key: value for key, value in existing.items() if key != "receipt"}
+        if comparable != authorization or record.get("release_run_id") != run["id"]:
+            raise ClientError("existing production authorization does not match this transition")
+        persisted = yaml_document(run_path)
+        completed_run = {
+            key: value for key, value in persisted.items() if key != "schema_version"
+        }
+        required_completed_run = {
+            "id": synthetic_run_id, "client_id": slug, "work_id": work_id,
+            "linear_issue": issue, "action": "deploy_production", "commit": sha,
+            "approval_id": approval_id,
+        }
+        if any(
+            completed_run.get(key) != value
+            for key, value in required_completed_run.items()
+        ):
+            raise ClientError("persisted AGK Run lineage does not match production authorization")
+        if completed_run.get("status") == "completed":
+            _finalize_release_work(work_path, record, completed_run, sha)
+            return {
+                "status": "production_verify", "production_authorization": existing,
+                "run": completed_run, "linear_states": required_states,
+                "vercel_deployment_id": completed_run.get("deployment_id"),
+                "lineage": {"issue": issue, "work_id": work_id,
+                            "session": record.get("agent", {}).get("session")},
+                "idempotent": True,
+            }
+    inspected = effect_adapter(layout, slug, "inspect_pull_request", request)
+    if inspected != {
+        "repository": repository["repo"], "pull_request": pr, "head_sha": sha,
+        "base_ref": "main", "mergeable": True, "ci_passed": True,
+        "review_passed": True,
+    }:
+        raise ClientError("GitHub PR/SHA/CI/review attestation does not match the release gate")
+    staging = effect_adapter(layout, slug, "inspect_staging", request)
+    if (
+        staging.get("url") != evidence.get("staging_preview")
+        or staging.get("build_version") != evidence.get("staging_build_version")
+        or str(staging.get("head_sha") or "").lower() != sha
+    ):
+        raise ClientError("Vercel staging attestation does not match the approved SHA/build")
+    if isinstance(existing, dict) and existing.get("id"):
+        comparable = {key: value for key, value in existing.items() if key != "receipt"}
+        if comparable != authorization or record.get("release_run_id") != run["id"]:
+            raise ClientError("existing production authorization does not match this transition")
+        if dry_run:
+            raise ClientError("synthetic dry-run cannot reuse a committed production authorization")
+        persisted = yaml_document(run_path)
+        run = {key: value for key, value in persisted.items() if key != "schema_version"}
+        required_run = {
+            "id": synthetic_run_id, "client_id": slug, "work_id": work_id,
+            "linear_issue": issue, "action": "deploy_production", "commit": sha,
+            "approval_id": approval_id,
+        }
+        if any(run.get(key) != value for key, value in required_run.items()):
+            raise ClientError("persisted AGK Run lineage does not match production authorization")
+        authorization = existing
+        if run.get("status") == "completed":
+            _finalize_release_work(work_path, record, run, sha)
+            production = {
+                "deployment_id": run.get("deployment_id"), "head_sha": sha, "ready": True,
+            }
+            return {
+                "status": "production_verify", "production_authorization": authorization,
+                "run": run, "linear_states": required_states,
+                "vercel_deployment_id": production["deployment_id"],
+                "lineage": {"issue": issue, "work_id": work_id,
+                            "session": record.get("agent", {}).get("session")},
+                "idempotent": True,
+            }
+    elif record.get("status") != "ready_for_cto":
+        raise ClientError("release resume requires a matching production authorization")
+    elif not dry_run:
+        authorization["receipt"] = write_production_authorization_receipt(
+            layout, slug, work_id, authorization
+        )
+        record.setdefault("approvals", {})["production"] = authorization
+        record["status"] = "ready_to_deploy"
+        record["release_run_id"] = run["id"]
+        work_event(record, "work.production_authorized", **authorization)
+        _persist_release_run(run_path, run)
+        atomic_yaml(work_path, record)
+    try:
+        _governed_release_effect(
+            layout, slug, run, run_path, "release_queued", effect_adapter,
+            "transition_linear",
+            {**request, "state_id": required_states["ready_to_deploy"], "phase": "queue"},
+            {"state_id": required_states["ready_to_deploy"], "issue": issue},
+            reconcile_action="inspect_linear_state",
+            allowed_reconcile=[{"state_id": str(state_ids["cto_approved"]), "issue": issue}],
+            dry_run=dry_run,
+        )
+        _governed_release_effect(
+            layout, slug, run, run_path, "pre_merge_gate", effect_adapter,
+            "inspect_pull_request", request,
+            {
+                "repository": repository["repo"], "pull_request": pr,
+                "head_sha": sha, "base_ref": "main", "mergeable": True,
+                "ci_passed": True, "review_passed": True,
+            },
+            dry_run=dry_run,
+        )
+        _governed_release_effect(
+            layout, slug, run, run_path, "merge", effect_adapter,
+            "merge_pull_request", request,
+            {"merged": True, "head_sha": sha, "base_ref": "main"},
+            reconcile_action="inspect_merge",
+            allowed_reconcile=[
+                {"merged": False, "head_sha": sha, "base_ref": "main"}
+            ],
+            dry_run=dry_run,
+        )
+        _governed_release_effect(
+            layout, slug, run, run_path, "deploying", effect_adapter,
+            "transition_linear",
+            {**request, "state_id": required_states["production"], "phase": "deploy"},
+            {"state_id": required_states["production"], "issue": issue},
+            reconcile_action="inspect_linear_state",
+            allowed_reconcile=[
+                {"state_id": required_states["ready_to_deploy"], "issue": issue}
+            ],
+            dry_run=dry_run,
+        )
+        run.setdefault("phases", {})["vercel_observed"] = {
+            "status": "prepared", "action": "observe_vercel_production",
+        }
+        if not dry_run:
+            _persist_release_run(run_path, run)
+        production = effect_adapter(layout, slug, "observe_vercel_production", request)
+        if (
+            production.get("ready") is not True
+            or str(production.get("head_sha") or "").lower() != sha
+            or not production.get("deployment_id")
+        ):
+            raise ClientError("Vercel production observation did not verify the approved SHA")
+        run["phases"]["vercel_observed"] = {
+            "status": "completed", "action": "observe_vercel_production",
+            "result": production,
+        }
+        if not dry_run:
+            _persist_release_run(run_path, run)
+        _governed_release_effect(
+            layout, slug, run, run_path, "production_verify", effect_adapter,
+            "transition_linear",
+            {**request, "state_id": required_states["verified"], "phase": "verify"},
+            {"state_id": required_states["verified"], "issue": issue},
+            reconcile_action="inspect_linear_state",
+            allowed_reconcile=[
+                {"state_id": required_states["production"], "issue": issue}
+            ],
+            dry_run=dry_run,
+        )
+    except Exception:
+        if not dry_run:
+            run["status"] = "uncertain"
+            _persist_release_run(run_path, run)
+        raise
+    if not dry_run:
+        run.update(
+            {"status": "completed", "result": "success",
+             "deployment_id": production["deployment_id"]}
+        )
+        _persist_release_run(run_path, run)
+        _finalize_release_work(work_path, record, run, sha)
+    return {
+        "status": "synthetic_dry_run_verified" if dry_run else "production_verify",
+        "production_authorization": authorization, "run": run,
+        "linear_states": required_states,
+        "vercel_deployment_id": production["deployment_id"],
+        "lineage": {
+            "issue": issue, "work_id": work_id,
+            "session": record.get("agent", {}).get("session"),
+        },
+    }
+
+
+def _handle_linear_transition_unlocked(
+    layout: Layout,
+    slug: str,
+    raw_body: bytes,
+    signature: str,
+    secret: str,
+    *,
+    now_ms: int | None = None,
+    dry_run: bool = False,
+    effect_adapter: Any | None = None,
+) -> dict[str, Any]:
+    slug = validate_slug(slug)
+    payload = verify_linear_webhook(raw_body, signature, secret, now_ms=now_ms)
+    if payload.get("type") != "Issue" or payload.get("action") != "update":
+        raise ClientError("Linear transition adapter accepts only Issue update events")
+    data = payload.get("data", {})
+    actor = payload.get("actor", {})
+    if not isinstance(data, dict) or not isinstance(actor, dict):
+        raise ClientError("Linear transition payload is incomplete")
+    issue = validate_issue(str(data.get("identifier") or ""))
+    actor_id = str(actor.get("id") or "")
+    webhook_id = str(payload.get("webhookId") or payload.get("id") or "")
+    state = data.get("state", {})
+    team = data.get("team", {})
+    if not webhook_id or not isinstance(state, dict) or not isinstance(team, dict):
+        raise ClientError("Linear transition identity is incomplete")
+    integrations = client_configs(layout, slug)["integrations.yaml"]
+    linear = integrations.get("linear", {}) if isinstance(integrations, dict) else {}
+    if not isinstance(linear, dict) or linear.get("enabled") is not True:
+        raise ClientError("Linear is not enabled for this client")
+    if str(team.get("id") or "") != str(linear.get("team_id") or ""):
+        raise ClientError("Linear transition belongs to another client team")
+    state_ids = linear.get("workflow_state_ids", {})
+    todo_state = str(state_ids.get("todo") or "") if isinstance(state_ids, dict) else ""
+    approved_state = (
+        str(state_ids.get("cto_approved") or "") if isinstance(state_ids, dict) else ""
+    )
+    incoming_state = str(state.get("id") or "")
+    updated_from = payload.get("updatedFrom", {})
+    previous_state = (
+        str(updated_from.get("stateId") or "")
+        if isinstance(updated_from, dict)
+        else ""
+    )
+    if not previous_state or previous_state == incoming_state:
+        raise ClientError("Linear event does not attest an actual state change")
+    path, record = _linear_transition_work(layout, slug, issue)
+    if incoming_state == approved_state and approved_state:
+        expected_previous = str(state_ids.get("ready_for_cto") or "")
+        if not expected_previous or previous_state != expected_previous:
+            raise ClientError("Approved for Prod transition did not originate at CTO Review")
+        return _handle_gareth_release_transition(
+            layout, slug, payload, raw_body, integrations, record,
+            dry_run=dry_run,
+            effect_adapter=effect_adapter or release_controller_effect,
+        )
+    if incoming_state != todo_state or not todo_state:
+        raise ClientError("unsupported Linear transition state")
+    expected_previous = str(state_ids.get("backlog") or "")
+    if not expected_previous or previous_state != expected_previous:
+        raise ClientError("Todo transition did not originate at canonical Backlog")
+    adapters = linear_transition_policy(integrations)
+    dpe_ids = adapters["dpe_actor_ids"]
+    if actor_id not in set(dpe_ids):
+        raise ClientError("Todo transition is not from an authenticated DPE actor")
+    prior = record.get("linear_transition", {})
+    if isinstance(prior, dict) and prior.get("webhook_id") not in {None, webhook_id}:
+        raise ClientError("work already consumed a different Linear transition")
+    if record.get("status") not in {"backlog", "todo"}:
+        raise ClientError("DPE Todo transition requires canonical Backlog work")
+    context, snapshot, _issue, project, constraints = _batch_work_contract(
+        layout, slug, str(record.get("id") or ""), record, integrations
+    )
+    if dry_run:
+        return {
+            "status": "dry_run", "client_id": slug, "work_id": record["id"],
+            "issue": issue, "external_writes": False,
+            "planned_actions": ["ensure_discord_issue_thread", "dispatch_issue_prompt", "transition_todo"],
+        }
+    idempotency_key = f"linear-todo:{slug}:{record['id']}"
+    record["linear_transition"] = {
+        "webhook_id": webhook_id, "actor_id": actor_id,
+        "state_id": todo_state, "payload_sha256": hashlib.sha256(raw_body).hexdigest(),
+        "idempotency_key": idempotency_key, "phase": "dispatch_prepared",
+    }
+    atomic_yaml(path, record)
+    thread_id, message_id, created = _ensure_linear_issue_thread(
+        layout, slug, path, record, integrations
+    )
+    if record.get("status") == "todo" and isinstance(prior, dict) and prior.get("webhook_id") == webhook_id:
+        record["linear_transition"] = prior
+        atomic_yaml(path, record)
+        return {
+            "status": "todo_dispatched", "client_id": slug, "work_id": record["id"],
+            "issue": issue, "thread_id": thread_id, "message_id": message_id,
+            "idempotent": True,
+        }
+    timestamp = dt.datetime.fromtimestamp(
+        int(payload["webhookTimestamp"]) / 1000, tz=dt.timezone.utc
+    ).isoformat()
+    fields = context.get("fields", {}) if isinstance(context, dict) else {}
+    fields = fields if isinstance(fields, dict) else {}
+    discord = integrations.get("discord", {})
+    authorization = {
+        "id": f"linear:{webhook_id}:{issue}", "actor": actor_id,
+        "actor_id": actor_id, "source": "linear_dpe", "timestamp": timestamp,
+        "channel_id": str(discord.get("channels", {}).get("dev_requests") or ""),
+        "message_id": webhook_id, "guild_id": str(discord.get("guild_id") or ""),
+        "client": slug, "project": project, "issue": issue,
+        "scope": fields.get("requested_outcome") or record.get("title"),
+        "priority": snapshot.get("priority_label") or snapshot.get("priority") or "unspecified",
+        "constraints": constraints, "at": timestamp,
+        "message_sha256": hashlib.sha256(raw_body).hexdigest(),
+        "message_timestamp": timestamp,
+    }
+    receipt_payload = {"work_id": record["id"], **authorization}
+    receipt_payload.pop("client", None)
+    authorization["receipt"] = write_start_authorization_receipt(
+        layout, slug, record["id"], receipt_payload
+    )
+    record["authorization"] = authorization
+    record["status"] = "todo"
+    record["discord"] = {
+        "thread_id": thread_id, "parent_channel_id": authorization["channel_id"],
+        "dispatch_message_id": message_id,
+    }
+    record["linear_transition"] = {
+        "webhook_id": webhook_id, "actor_id": actor_id,
+        "state_id": todo_state, "payload_sha256": hashlib.sha256(raw_body).hexdigest(),
+        "idempotency_key": idempotency_key, "phase": "completed",
+    }
+    work_event(
+        record, "work.linear_todo_dispatched", actor=actor_id,
+        webhook_id=webhook_id, thread_id=thread_id, message_id=message_id,
+    )
+    atomic_yaml(path, record)
+    return {
+        "status": "todo_dispatched", "client_id": slug, "work_id": record["id"],
+        "issue": issue, "thread_id": thread_id, "message_id": message_id,
+        "thread_created": created, "idempotent": False,
+    }
+
+
+def handle_linear_transition(
+    layout: Layout,
+    slug: str,
+    raw_body: bytes,
+    signature: str,
+    secret: str,
+    *,
+    now_ms: int | None = None,
+    dry_run: bool = False,
+    effect_adapter: Any | None = None,
+) -> dict[str, Any]:
+    """Serialize one authenticated issue transition across all local/external effects."""
+    slug = validate_slug(slug)
+    payload = verify_linear_webhook(raw_body, signature, secret, now_ms=now_ms)
+    data = payload.get("data", {})
+    if not isinstance(data, dict):
+        raise ClientError("Linear transition payload is incomplete")
+    issue = validate_issue(str(data.get("identifier") or ""))
+    _path, record = _linear_transition_work(layout, slug, issue)
+    work_id = str(record.get("id") or "")
+    with work_lock(layout, slug, work_id):
+        return _handle_linear_transition_unlocked(
+            layout, slug, raw_body, signature, secret, now_ms=now_ms,
+            dry_run=dry_run, effect_adapter=effect_adapter,
+        )
+
+
 def verify_linear_webhook(
     raw_body: bytes,
     signature: str,
@@ -4010,6 +5446,10 @@ def command_parser() -> argparse.ArgumentParser:
     authorize_start.add_argument("work_id")
     authorize_start.add_argument("--channel-id", required=True)
     authorize_start.add_argument("--message-id", required=True)
+    authorize_batch = work_sub.add_parser("authorize-linear-batch")
+    authorize_batch.add_argument("slug")
+    authorize_batch.add_argument("--channel-id", required=True)
+    authorize_batch.add_argument("--message-id", required=True)
     quarantine = work_sub.add_parser("quarantine-legacy")
     quarantine.add_argument("slug")
     quarantine.add_argument("work_id")
@@ -4099,6 +5539,14 @@ def command_parser() -> argparse.ArgumentParser:
     run_complete.add_argument("run_id")
     run_complete.add_argument("--result", choices=("success", "failure"), required=True)
     run_complete.add_argument("--evidence", action="append", default=[])
+
+    transition_event = commands.add_parser("linear-transition")
+    transition_event.add_argument("slug")
+    transition_event.add_argument("--body", type=Path, required=True)
+    transition_event.add_argument("--signature", required=True)
+    transition_event.add_argument("--secret-env", default="LINEAR_WEBHOOK_SECRET")
+    transition_event.add_argument("--now-ms", type=int)
+    transition_event.add_argument("--dry-run", action="store_true")
 
     webhook = commands.add_parser("verify-linear-webhook")
     webhook.add_argument("--body", type=Path, required=True)
@@ -4195,6 +5643,8 @@ def main(argv: list[str] | None = None) -> int:
                 print_json(update_work_context(layout, args))
             elif args.work_command == "authorize-start":
                 print_json(authorize_work_start(layout, args))
+            elif args.work_command == "authorize-linear-batch":
+                print_json(authorize_linear_batch(layout, args))
             elif args.work_command == "quarantine-legacy":
                 print_json(
                     quarantine_legacy_work(
@@ -4237,6 +5687,19 @@ def main(argv: list[str] | None = None) -> int:
                 start_run(layout, args)
                 if args.run_command == "start"
                 else complete_run(layout, args)
+            )
+            return 0
+        if args.command == "linear-transition":
+            print_json(
+                handle_linear_transition(
+                    layout,
+                    args.slug,
+                    args.body.read_bytes(),
+                    args.signature,
+                    os.environ.get(args.secret_env, ""),
+                    now_ms=args.now_ms,
+                    dry_run=args.dry_run,
+                )
             )
             return 0
         if args.command == "verify-linear-webhook":

@@ -1,0 +1,11 @@
+id: specification-reviewer
+name: Specification Reviewer
+version: 0.5.0
+description: "Independent reviewer of the four onboarding gates, designs, and handoffs; traces requirement to artifact and names unproven assumptions."
+scope:
+- operator
+runtime: hermes
+hermes_requires: ">=0.21.0"
+prompt: prompt.md
+distribution: os-contract-package
+owner: master-os-builder

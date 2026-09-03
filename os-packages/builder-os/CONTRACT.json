@@ -1,0 +1,125 @@
+{
+  "dimensions": [
+    "package",
+    "nano_director",
+    "nanoteam",
+    "profiles",
+    "ordered_skills",
+    "deterministic_programs",
+    "mcp_tool_contracts",
+    "knowledge_memory_scopes",
+    "provider_routes",
+    "workflows",
+    "automations",
+    "evaluations",
+    "discord_control_surface",
+    "doctor",
+    "rollback",
+    "recovery_artifact",
+    "librarian_best_advice",
+    "dedicated_bot_commands",
+    "onboarding_ledger",
+    "owner_validation_gates",
+    "hermes_feature_alignment"
+  ],
+  "discord": {
+    "application_id": "1543932459899555940",
+    "bot_user": "Build OS",
+    "channel_id": "1543929401828446209",
+    "commands": [
+      "panel",
+      "clear",
+      "settings"
+    ],
+    "do_not_recable_personal_nutrition": false,
+    "known_extra_commands": [
+      "restart",
+      "leave",
+      "voice"
+    ],
+    "mode": "dedicated",
+    "owner_gate": "verified",
+    "profile_id": "builder-os",
+    "runtime_owner_environment": "operator",
+    "sync_policy": "safe"
+  },
+  "gates": {
+    "release": "unpassed",
+    "start": "passed"
+  },
+  "handoff_sha256": "04c1386777b3c1f275609b1e5b2af82d093a6d0af1c5f76063b20e5c6393e606",
+  "hermes": {
+    "check": "python3 programs/os_program.py hermes-check --hermes-root <tree>",
+    "features_used": [
+      "delegate_task.output_schema",
+      "delegate_task.roles",
+      "delegate_task.failure_visibility",
+      "kanban.review_lane",
+      "kanban.request_review_tool",
+      "goal.quality_gates",
+      "goal.completion_contract",
+      "plan.builtin",
+      "checkpoints",
+      "cron.doctor",
+      "approvals.unattended_mode",
+      "profile.distribution",
+      "peer.async_runs",
+      "sdlc_review_skill",
+      "protected_instruction_files",
+      "session_side_question"
+    ],
+    "inspected_commit": "cdd4b44f",
+    "inspected_tree": "/home/operator/workspace/hermes-agent-0.21-staging",
+    "inspected_version": "0.21.0",
+    "min_version": "0.21.0"
+  },
+  "nano_director": "master-os-builder",
+  "nanoteam": [
+    "domain-scout",
+    "specification-reviewer",
+    "test-engineer",
+    "recovery-auditor"
+  ],
+  "onboarding": {
+    "ledger": "research/ONBOARDING_LEDGER.json",
+    "max_approaches": 20,
+    "max_sources": 20,
+    "referee": "python3 programs/os_program.py validate-onboarding --ledger research/ONBOARDING_LEDGER.json",
+    "schema": "schemas/onboarding_ledger.schema.json",
+    "source_kinds": [
+      "book",
+      "video",
+      "web",
+      "paper",
+      "standard",
+      "documentation",
+      "course",
+      "podcast"
+    ],
+    "validation_gates": [
+      "plan",
+      "orchestration",
+      "programming",
+      "agentic"
+    ]
+  },
+  "os_id": "builder-os",
+  "previous_version": "0.4.4",
+  "provider": {
+    "fallback": "openai-codex",
+    "fallback_2": "agk-gemma-local",
+    "fallback_2_model": "gemma4:26b",
+    "fallback_model": "gpt-5.6-sol",
+    "primary": "anthropic",
+    "primary_model": "claude-fable-5.1"
+  },
+  "rollback": {
+    "command": "python3 rollback.py --registry /opt/agentik/os-registry",
+    "confirm": "builder-os@0.4.4",
+    "previous_version": "0.4.4"
+  },
+  "schema": "agk.os-contract.v1",
+  "secret_policy": "references-only-no-reusable-secrets",
+  "tenant": "AGK",
+  "version": "0.5.0"
+}

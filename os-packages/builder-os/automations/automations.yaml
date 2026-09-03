@@ -1,0 +1,32 @@
+schema: agk.automations.v2
+os_id: builder-os
+director: master-os-builder
+default: disabled
+fresh_session_acceptance_required: true
+hermes:
+  cron_mode: deny
+  unattended_mode: deny
+  doctor: hermes cron doctor
+allowed:
+- id: builder-os-doctor
+  side_effect: read-only
+  bounded: true
+  command: python3 doctor.py
+- id: builder-os-contract-tests
+  side_effect: local-test
+  bounded: true
+- id: builder-os-cron-doctor
+  side_effect: read-only
+  bounded: true
+  command: hermes -p builder-os cron doctor
+- id: builder-os-hermes-check
+  side_effect: read-only
+  bounded: true
+  command: python3 programs/os_program.py hermes-check
+forbidden:
+- auto-release
+- auto-oauth
+- secret-rotation
+- cross-tenant-mutation
+- auto-merge
+- unattended-approval

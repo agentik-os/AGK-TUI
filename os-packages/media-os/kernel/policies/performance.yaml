@@ -1,0 +1,86 @@
+schema_version: 1
+scope: environment:agentik
+activation: forbidden
+lanes:
+  observational_outcomes: hypotheses
+  prespecified_replicated_tests: candidate_lessons
+  approved_lessons: approved_rules
+metric_contract:
+  required_fields:
+    - name
+    - version
+    - platform
+    - source_field
+    - numerator
+    - denominator
+    - eligible_population
+    - snapshot_age_hours
+    - missing_data
+    - objective
+    - funnel_stage
+    - attribution_limits
+  fixed_age_snapshots: required
+  raw_counts_with_derived_rates: required
+experiment_contract:
+  required_fields:
+    - experiment_id
+    - scope
+    - version
+    - approval_state
+    - approval_id
+    - approved_by
+    - hypothesis
+    - primary_metric
+    - guardrails
+    - minimum_effect
+    - assignment_method
+    - starts_at
+    - horizon_hours
+    - stopping_rule
+  approved_contract_required_for_evaluation: true
+  stopping_rule_semantics: AT_DECISION_HORIZON
+  interpretable_factor_limit: 1
+  experimental_unit:
+    - post
+    - campaign
+    - assigned_audience_unit
+  confirmatory_metrics_separate_from_exploratory_cuts: required
+guardrail_specification:
+  required_fields:
+    - version
+    - metric
+    - harm_direction
+    - minimum_adverse_effect
+    - stopping_semantics
+  harm_directions:
+    - INCREASE
+    - DECREASE
+  stopping_semantics: STOP_WHEN_THRESHOLD_REACHED
+evaluation:
+  implementation: deterministic_stdlib
+  matching_snapshot_ages: required
+  explicit_as_of_timestamp: required
+  decision_horizon_enforcement: required
+  rate_difference: required
+  confidence_interval: required
+  matched_block_difference: required_when_assignment_method_is_matched_blocks
+  guardrail_checks: required_when_prespecified
+  leave_one_unit_out_sensitivity: required
+  decision_states:
+    - KEEP
+    - PROVISIONAL
+    - TEST
+    - STOP_HARM
+    - STOP_FUTILITY
+    - INVALID
+promotion:
+  single_result_to_rule: forbidden
+  minimum_distinct_evidence_refs: 2
+  minimum_distinct_experiment_results: 2
+  aliased_result_references: forbidden
+  replicated_scoped_evidence: required
+  named_owner: required
+  explicit_approval: required
+  effective_date: required
+  expiry_or_revalidation_condition: required
+  target: Playbooks/Approved

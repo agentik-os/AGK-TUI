@@ -1,0 +1,25 @@
+schema: agk.scopes.v2
+tenant: AGK
+knowledge:
+  read:
+  - package:builder-os
+  - handoff:validated
+  - registry:/opt/agentik/os-registry (read-only)
+  - librarian-pack:theme (read-only)
+  - hermes-docs:llms.txt
+  write:
+  - artifacts:builder-os
+  - release:<workspace>/release/os/<os-id>
+memory:
+  write:
+  - stable-lessons-only
+  forbidden:
+  - secrets
+  - private-state
+  - collective-state
+  - temporary-progress
+  - onboarding-ledger-content (lives in the package, not memory)
+checkpoints:
+  enabled: true
+  scope: package and release workspaces only
+provenance_required: true

@@ -1,0 +1,46 @@
+schema: agk.workflow.v1
+os_id: media-os
+director: media-director
+ordered_skills:
+- voice-builder
+- newsletter-voice
+- niche-research
+- content-matrix
+- hook-generator
+- post-writer
+- post-formatter
+- quote-post
+- graphic-designer
+- gemini-infographic
+- gemini-carousel
+- reels-scripting
+- youtube-thumbnail
+- pinned-comment
+- profile-optimizer
+- post-scorer
+- analytics-dashboard
+- grounded-citations
+- humanizer
+handoff_sha256: 0a53c06f19ff2e2772e05d13ececc2989b03e9c17cc16a3ca134e86ace841d63
+kernel_flow: kernel/flows/campaign.yaml
+states:
+- intake
+- signal-scan
+- research
+- angle
+- long-form-draft
+- editorial-review
+- distribution-pack
+- exact-approval
+- publish
+- readback
+- performance
+- learning-review
+- closure
+gates:
+  exact-approval: owner-only; exact asset sha256; one-use
+  publish: connector allowlisted and connected
+  readback: external readback required before performance
+start: passed
+release: unpassed
+invalid_transition: BLOCKED

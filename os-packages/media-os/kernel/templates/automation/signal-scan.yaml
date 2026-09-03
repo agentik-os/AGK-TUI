@@ -1,0 +1,23 @@
+schema_version: 1
+id: signal-scan
+schedule: "17 */4 * * *"
+owner_profile: media-director
+board: media-os
+workdir: /home/operator/.hermes/profiles/media-os/workspace
+provider:
+  primary: openai-codex
+  fallback: [openai]
+skills: [media-signal-triage]
+tools: [signal_read, triage_card_create]
+budget:
+  max_runs: 1
+  max_items: 50
+  max_tokens: 6000
+dedupe_key: media-os.signal-scan
+no_change: silent
+destination: media-os:triage
+continuity: resume_deduped
+timeout_seconds: 300
+failure_alert: owner_dm
+checks: [signal_scan]
+action: create_triage_cards_only

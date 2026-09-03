@@ -1,0 +1,42 @@
+schema: agk.nanoteam.v2
+director: master-os-builder
+delegation:
+  engine: delegate_task
+  max_spawn_depth: 2
+  max_concurrent_children: 10
+  output_schema_required: true
+  failure_visibility: surfaced-to-parent-and-owner
+roles:
+- id: domain-scout
+  purpose: Discovery and Librarian research intake — canonical sources (<=20) and approaches (<=20) with honest provenance.
+  delegation_role: leaf
+  toolsets: [web, file, skills, session_search]
+  output_schema: schemas/domain_scout.output.schema.json
+  may_self_approve: false
+  budget: {max_iterations: 120, child_timeout_seconds: 1500}
+- id: specification-reviewer
+  purpose: Independent review of the plan, orchestration, programming, and agentic gates; requirement→artifact trace; unproven assumptions.
+  delegation_role: leaf
+  toolsets: [file, skills, session_search]
+  output_schema: schemas/review.output.schema.json
+  may_self_approve: false
+  budget: {max_iterations: 80, child_timeout_seconds: 900}
+- id: test-engineer
+  purpose: RED before GREEN, evals, fresh-session acceptance, regression sweep.
+  delegation_role: leaf
+  toolsets: [terminal, file, skills]
+  output_schema: schemas/test_report.output.schema.json
+  may_self_approve: false
+  budget: {max_iterations: 150, child_timeout_seconds: 1800}
+- id: recovery-auditor
+  purpose: Doctor, rollback dry-run on fixtures and live targets (non-destructive), recovery ZIP hash, secret scan.
+  delegation_role: leaf
+  toolsets: [terminal, file]
+  output_schema: schemas/recovery_audit.output.schema.json
+  may_self_approve: false
+  budget: {max_iterations: 80, child_timeout_seconds: 900}
+review_lane:
+  engine: kanban
+  skill: sdlc-review
+  self_review: false
+escalation: nano-director

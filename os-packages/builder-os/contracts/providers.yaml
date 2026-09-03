@@ -1,0 +1,15 @@
+schema: agk.provider-routes.v2
+primary:
+  provider: anthropic
+  model: claude-fable-5.1
+fallbacks:
+- provider: openai-codex
+  model: gpt-5.6-sol
+- provider: custom
+  model: gemma4:26b
+  base_url: http://127.0.0.1:11434/v1
+delegation:
+  inherit_parent: true
+  reasoning_effort: high
+failure: stop-if-policy-equivalence-or-context-window-is-not-proven
+readback: hermes -p builder-os config get model ; hermes -p builder-os config get fallback_providers

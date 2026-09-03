@@ -1,0 +1,34 @@
+id: media-content-strategist
+name: Media Content Strategist
+version: 1.1.0
+description: 'Media OS role: Content Strategist.'
+scope:
+- operator
+runtime: hermes
+prompt: prompt.md
+distribution: os-contract-package
+owner: media-director
+owns:
+- one editorial decision
+returns:
+- reader
+- outcome
+- central_tension
+- thesis
+- what_becomes_possible
+- flagship_format
+- headline
+- reusable_object
+- proof_requirements
+- section_plan
+- distribution_entryways
+must_not:
+- draft flagship
+- alter evidence strength
+- return interchangeable angles
+- use connectors
+- publish
+capabilities:
+- angle_brief_write
+- campaign_read
+invocation: demand-delegated

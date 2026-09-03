@@ -1,0 +1,69 @@
+schema: agk.tool-contracts.v2
+hermes_min_version: 0.21.0
+default: deny
+tools:
+- id: file
+  hermes_toolset: file
+  side_effect: local-write
+  exact_target_required: true
+  readback_required: true
+  protected_instruction_files: true
+- id: terminal
+  hermes_toolset: terminal
+  side_effect: local-exec
+  approvals: smart
+  unattended_mode: deny
+- id: web
+  hermes_toolset: web
+  side_effect: network-read
+  source_provenance_required: true
+- id: browser
+  hermes_toolset: browser
+  side_effect: network-read
+  source_provenance_required: true
+- id: execute_code
+  hermes_toolset: code_execution
+  side_effect: local-exec
+  use_for: batch tool orchestration and filtering large outputs
+- id: delegate_task
+  hermes_toolset: delegation
+  side_effect: bounded-subagent
+  output_schema_required: true
+  roles: [leaf, orchestrator]
+  max_spawn_depth: 2
+  max_concurrent_children: 10
+- id: kanban
+  hermes_toolset: kanban
+  side_effect: durable-task
+  review_lane_required: true
+  self_complete_own_review: false
+- id: cronjob
+  hermes_toolset: cronjob
+  side_effect: scheduled-run
+  fresh_session_acceptance_required: true
+  doctor: hermes cron doctor
+- id: clarify
+  hermes_toolset: clarify
+  side_effect: owner-question
+  use_only_at: [plan-gate, orchestration-gate, programming-gate, agentic-gate, blocker]
+- id: todo
+  hermes_toolset: todo
+  side_effect: session-state
+- id: memory
+  hermes_toolset: memory
+  side_effect: durable-memory
+  write_policy: stable-lessons-only
+- id: skills
+  hermes_toolset: skills
+  side_effect: local-write
+  curator: enabled
+- id: session_search
+  hermes_toolset: session_search
+  side_effect: read
+forbidden:
+- secret-echo
+- unbounded-loop
+- release-self-approval
+- self-review-of-own-implementation
+- discord-token-request-in-chat
+- cross-tenant-mutation

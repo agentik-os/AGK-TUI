@@ -1,0 +1,39 @@
+schema_version: 1
+root: Media OS
+files:
+  - path: Index.md
+    template: index.md
+  - path: Brand/Voice.md
+    template: brand-voice.md
+  - path: Brand/Audience.md
+    template: brand-audience.md
+  - path: Brand/Offers.md
+    template: brand-offers.md
+  - path: Brand/Proof.md
+    template: brand-proof.md
+  - path: Brand/Boundaries.md
+    template: brand-boundaries.md
+  - path: Editorial/Angles.md
+    template: editorial-angles.md
+  - path: Editorial/Hooks.md
+    template: editorial-hooks.md
+  - path: Editorial/Review Rules.md
+    template: editorial-review-rules.md
+  - path: Editorial/Risk Tiers.md
+    template: editorial-risk-tiers.md
+  - path: Editorial/Corrections.md
+    template: editorial-corrections.md
+  - path: Platforms/X.md
+    template: platform-x.md
+  - path: Platforms/LinkedIn.md
+    template: platform-linkedin.md
+  - path: Platforms/Newsletter.md
+    template: platform-newsletter.md
+  - path: Platforms/Carousel.md
+    template: platform-carousel.md
+  - path: Platforms/Short Video.md
+    template: platform-short-video.md
+  - path: Platforms/Long Video.md
+    template: platform-long-video.md
+  - path: Performance/Metric Contracts.md
+    template: performance-metric-contracts.md

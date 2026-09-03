@@ -1,0 +1,20 @@
+schema_version: 1
+material_correction:
+  immutable_lineage_required: true
+  affected_derivatives_required: true
+  staged_changes_required: true
+  approval_required: true
+  external_readback_required: true
+  deletion_is_default: false
+artifact_store:
+  address: sha256
+  payload_mode: "0444"
+  manifest_mode: "0444"
+  object_directory_mode: "0555"
+  shard_directory_mode: "0555"
+  source_path_contract: descriptor_open_no_symlink_ancestors
+  mutation_serialization: cross_process_per_shard_lock
+  staging_namespace: locked_sibling_in_shard
+  collision_verification:
+    - payload_bytes
+    - manifest_bytes

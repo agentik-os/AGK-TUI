@@ -1,0 +1,32 @@
+schema: agk.workflow.v2
+os_id: builder-os
+director: master-os-builder
+hermes_min_version: 0.21.0
+ordered_skills:
+- os-onboarding
+- librarian-builder-handoff
+- verified-builder
+- test-driven-development
+handoff_sha256: 04c1386777b3c1f275609b1e5b2af82d093a6d0af1c5f76063b20e5c6393e606
+states:
+- intake
+- discovery
+- librarian-research
+- approach-extraction
+- merge-synthesis
+- plan-gate
+- orchestration-gate
+- programming-gate
+- agentic-gate
+- start
+- red
+- green
+- review
+- package
+- doctor
+- live-verification
+- rollback-proof
+- return-evidence
+start: passed
+release: unpassed
+invalid_transition: BLOCKED

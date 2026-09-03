@@ -1,0 +1,55 @@
+schema_version: 1
+owner_principal: "1441423462492016821"
+review_evidence:
+  verdict: PASS
+  provenance: canonical_task3_review_execution_repository
+  execution: media_os.editorial.review_package
+  issuance_input: opaque_review_reference
+  resolver_capability: read_only
+  repository_writer: composition_root_executor_only
+  direct_row_insertion: unavailable
+  reference_revalidated: true
+  signing_material_exposed: false
+  direct_caller_bytes: rejected
+  immutable: true
+  digest: sha256
+  storage: canonical_sqlite
+  digest_recomputed_on_issue: true
+  campaign_artifact_bound: true
+  foreign_key_enforced: true
+scope_fields:
+  - campaign_id
+  - artifact_sha256
+  - platform
+  - account_id
+  - publication_mode
+  - scheduled_at
+  - connector_version
+  - preview_ref
+approval_fields:
+  - approved_by
+  - approved_at
+  - expires_at
+  - consumed_at
+one_use: true
+expiry_clock: utc_rfc3339_fixed_microseconds_z
+supersession_scope:
+  - campaign_id
+  - platform
+  - account_id
+consume_transaction:
+  begin: immediate
+  recorder_capability: immutable_value_only
+  service_owned_sql: true
+  attempt_record_required: true
+  exact_readback_required: true
+  rollback_on_record_failure: true
+database_path:
+  trusted_root_required: true
+  trusted_root_owner: operator_effective_uid
+  trusted_root_mode: "0700"
+  symlinks: forbidden
+  final_target: regular_file
+  observable_root_db_inode_checks: true
+  fd_bound_sqlite_connect: unavailable_python_stdlib
+  same_owner_validate_connect_replacement: outside_trust_model

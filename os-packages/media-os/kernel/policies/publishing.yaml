@@ -1,0 +1,74 @@
+schema_version: 1
+publication:
+  preflight:
+    - exact_frozen_request
+    - one_use_exact_approval
+    - runtime_capabilities
+    - stable_non_secret_account_identity
+    - connector_version
+    - media_publication_blocked_until_task8_authoritative_bytes
+  durable_attempt_before_mutation: true
+  create_invocations_per_operation: 1
+  local_operation_key:
+    purposes: [audit, local_dedupe]
+    remote_idempotency_claim: false
+  readback_comparison:
+    - normalized_material_text
+    - media_sha256
+    - manifest_sha256
+    - account_id
+    - visibility
+    - scheduled_at
+    - external_id
+    - fingerprint
+    - processing_state
+    - metadata_state
+  staging:
+    video_initial_visibility: private
+    video_processing_and_metadata: exact_before_verified
+    later_visibility: separate_exact_approval
+  media_bytes:
+    missing_for_media: AUTHORITATIVE_MEDIA_BYTES_REQUIRED
+    caller_supplied_values_are_authority: false
+    all_media_publication: blocked_before_approval_consumption
+    inference_from_hash_or_path: forbidden
+    task7_schema_migration_before_live_activation: required
+  newsletter_send_scope:
+    request_contract: NewsletterSendRequest
+    request_contract_is_authority: false
+    decoded_mapping:
+      parser: NewsletterSendRequest.from_mapping
+      shape: exact_closed
+      fields: [approval_id, source_publication_id, draft_external_id, account_id, provider, connector_version, send_mode, scheduled_at]
+      scheduled_at: utc_rfc3339_fixed_microseconds_z_or_null
+      dataclass_scheduled_at: aware_utc_datetime_or_null
+      direct: scheduled_at_null
+      scheduled: scheduled_at_required
+    draft_creation: NEWSLETTER_DRAFT_PREPARATION_UNAVAILABLE
+    scheduled_publication: NEWSLETTER_SCHEDULED_SEND_SCOPE_UNAVAILABLE
+    direct_send: NEWSLETTER_DIRECT_SEND_SCOPE_UNAVAILABLE
+    draft_approval_reuse_for_send: forbidden
+  success_state: PUBLISHED_VERIFIED
+  deterministic_failure_state: PUBLISH_FAILED
+  ambiguous_transport_state: PUBLISH_UNKNOWN
+  blind_retry: forbidden
+reconciliation:
+  separate_transition: true
+  connector_method: reconcile
+  inputs: [artifact_fingerprint, bounded_time_window]
+  maximum_window_minutes: 15
+  outcomes:
+    exact_single_match: PUBLISHED_VERIFIED
+    verified_absence: new_human_approved_operation_required
+    ambiguous_or_duplicate: human_review_PUBLISH_UNKNOWN
+  create_allowed: false
+campaigns:
+  persistence: immutable_detached_per_target_records
+  aggregate_success_from_partial_targets: forbidden
+restart:
+  load_durable_state: required
+  create_after_mutation_boundary: forbidden
+security:
+  sensitive_values_in_records_or_errors: forbidden
+  raw_connector_exceptions: forbidden
+  live_network_in_core_executor: forbidden

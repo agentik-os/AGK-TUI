@@ -1,0 +1,14 @@
+schema: agk.provider-routes.v1
+primary:
+  provider: openai-codex
+  model: gpt-5.6-sol
+fallbacks:
+- provider: anthropic
+  model: claude-fable-5.1
+  when: openai exhausted
+- provider: agk-gemma-local
+  model: gemma4:26b
+fallback:
+  provider: agk-gemma-local
+  model: gemma4:26b
+failure: stop-if-policy-equivalence-or-context-window-is-not-proven

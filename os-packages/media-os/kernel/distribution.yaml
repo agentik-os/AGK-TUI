@@ -1,0 +1,29 @@
+schema_version: 1
+tenant: gareth-founder-media
+platforms:
+  - x
+  - linkedin
+  - newsletter
+  - carousel
+  - short_video
+  - long_video
+profiles:
+  media-director:
+    discord_facing: true
+  media-signal-scout:
+    discord_facing: false
+  media-researcher:
+    discord_facing: false
+  media-content-strategist:
+    discord_facing: false
+  media-long-form-writer:
+    discord_facing: false
+  media-distribution:
+    discord_facing: false
+  media-editor:
+    discord_facing: false
+publication:
+  unattended: false
+  exact_target_approval_required: true
+  external_readback_required: true
+  blind_retry: false

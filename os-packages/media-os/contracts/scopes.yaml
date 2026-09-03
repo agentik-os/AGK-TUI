@@ -1,0 +1,25 @@
+schema: agk.scopes.v1
+tenant: AGK
+knowledge:
+  read:
+  - package:media-os
+  - handoff:validated
+  - kernel:OS.md
+  - obsidian:Agentik/Media (read-only until bound)
+  write:
+  - artifacts:media-os
+  - workspace:about-me.md
+  - workspace:voice.md
+  - workspace:newsletter-voice.md
+  - workspace:campaigns/*
+memory:
+  write:
+  - stable-lessons-only
+  - accepted-playbook-changes
+  forbidden:
+  - secrets
+  - private-state
+  - collective-state
+  - client-state
+  - temporary-progress
+provenance_required: true

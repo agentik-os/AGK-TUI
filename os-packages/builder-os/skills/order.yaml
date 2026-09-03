@@ -1,0 +1,28 @@
+schema: agk.ordered-skills.v2
+entry_role: nano-director
+ordered_skills:
+- os-onboarding
+- librarian-builder-handoff
+- verified-builder
+- test-driven-development
+hermes_builtins_used:
+- /plan
+- /goal
+- /goal gate add
+- /btw
+- /rollback
+- delegate_task
+- kanban review lane (sdlc-review)
+- todo
+- clarify
+guards:
+- discovery-before-design
+- sources-le-20
+- approaches-le-20
+- merge-matrix-complete
+- four-gates-validated
+- start-passed
+- red-before-green
+- review-lane-not-self
+- doctor-before-live
+- release-remains-distinct

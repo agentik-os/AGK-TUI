@@ -1,0 +1,32 @@
+schema_version: '1.0'
+profile_id: media-os
+owner_environment: operator
+runtime_owner_environment: operator
+linux_user: operator
+os_id: media-os
+os_version: 1.1.0
+agent_ids:
+- media-director
+- media-signal-scout
+- media-researcher
+- media-content-strategist
+- media-long-form-writer
+- media-distribution
+- media-editor
+provider:
+  primary: openai-codex
+  primary_model: gpt-5.6-sol
+  fallback: agk-gemma-local
+  fallback_model: gemma4:26b
+discord:
+  mode: dedicated
+  application_id: null
+  channel_id: '1544449016941781044'
+  owner_gate: pending
+  command_sync_policy: safe
+  token_policy: profile-secret-reference
+  do_not_recable_personal_nutrition: false
+doctor:
+  required: true
+rollback:
+  strategy: reactivate-previous-immutable-package-and-restore-profile-snapshot

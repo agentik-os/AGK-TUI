@@ -1,0 +1,26 @@
+schema_version: 1
+id: media-distribution
+soul_source: agents/media-distribution/prompt.md
+agents_source: OS.md
+primary_provider: openai-codex
+fallback_providers:
+  - openai
+discord_enabled: false
+toolsets:
+  - artifact_read
+  - artifact_write
+  - campaign_read
+  - prepare_connector_payload
+work_root: /home/operator/.hermes/profiles/media-os/workspace
+service_target: agentik-media-os
+config:
+  model.provider: openai-codex
+  model.fallbacks:
+    - openai
+  tools.allowed:
+    - artifact_read
+    - artifact_write
+    - campaign_read
+    - prepare_connector_payload
+  workspace.default: /home/operator/.hermes/profiles/media-os/workspace
+  gateway.discord.enabled: false

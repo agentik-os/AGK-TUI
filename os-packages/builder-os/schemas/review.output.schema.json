@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "specification-reviewer output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "gate",
+    "verdict",
+    "findings",
+    "requirement_trace",
+    "unproven_assumptions"
+  ],
+  "properties": {
+    "gate": {
+      "enum": [
+        "plan",
+        "orchestration",
+        "programming",
+        "agentic",
+        "design",
+        "handoff"
+      ]
+    },
+    "verdict": {
+      "enum": [
+        "approve",
+        "request_changes",
+        "block"
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "severity",
+          "detail"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "blocker",
+              "major",
+              "minor",
+              "info"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "requirement_trace": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "requirement",
+          "artifact",
+          "status"
+        ],
+        "properties": {
+          "requirement": {
+            "type": "string"
+          },
+          "artifact": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "covered",
+              "partial",
+              "missing"
+            ]
+          }
+        }
+      }
+    },
+    "unproven_assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "summary": {
+      "type": "string"
+    }
+  }
+}

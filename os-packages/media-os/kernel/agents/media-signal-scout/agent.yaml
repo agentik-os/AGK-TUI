@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "id": "media-signal-scout",
+  "role": "Signal Scout",
+  "owns": [
+    "opportunity urgency decision"
+  ],
+  "reads": [
+    "discovery signals",
+    "audience questions",
+    "accepted audience and subject rules",
+    "previous signal outcomes",
+    "source references"
+  ],
+  "returns": [
+    "event",
+    "relevance",
+    "original_source",
+    "authority_proof",
+    "audience_question",
+    "decay_window",
+    "rejection_rationale"
+  ],
+  "must_not": [
+    "choose final thesis",
+    "draft content",
+    "promote weak signals to fill pipeline"
+  ],
+  "done_when": [
+    "opportunity is accepted or rejected with traceable evidence and urgency"
+  ],
+  "capabilities": [
+    "campaign_research_read",
+    "campaign_research_write",
+    "web_read",
+    "web_search"
+  ],
+  "services": [],
+  "hermes_home": "/home/operator/.hermes/profiles/media-os/agents/media-signal-scout",
+  "work_root": "/home/operator/.hermes/profiles/media-os/workspace",
+  "primary_provider": "openai-codex",
+  "fallback_providers": [
+    "openai"
+  ],
+  "discord_enabled": false
+}

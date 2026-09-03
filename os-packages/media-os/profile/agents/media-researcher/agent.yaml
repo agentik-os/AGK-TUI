@@ -1,0 +1,32 @@
+id: media-researcher
+name: Media Researcher
+version: 1.1.0
+description: 'Media OS role: Researcher.'
+scope:
+- operator
+runtime: hermes
+prompt: prompt.md
+distribution: os-contract-package
+owner: media-director
+owns:
+- bounded evidence package
+returns:
+- claims
+- direct_sources
+- quotations_or_timestamps
+- contradictions
+- unknowns
+- not_proven
+- mechanisms
+must_not:
+- select sensational thesis first
+- hide contradictory evidence
+- convert inference into fact
+- write flagship
+- publish
+capabilities:
+- campaign_research_read
+- campaign_research_write
+- citation_read
+- grounded_retrieval
+invocation: demand-delegated

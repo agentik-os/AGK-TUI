@@ -1,0 +1,231 @@
+{
+  "os_id": "builder-os",
+  "rows": [
+    {
+      "artifacts": [
+        "agents/nanoteam.yaml",
+        "profile/agents",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-01",
+      "requirement": "**Bibliographic identity:** Erich Gamma, Richard Helm, Ralph Johnson, and John Vlissides, *Design Patterns: Elements of Reusable Object-Oriented Software*, Addison-Wesley, 1994.",
+      "section_sha256": "ec80f06bdc1e28a80cc74f5ba5863364692e01ebf805ee6bba0f42ec58e7d799",
+      "source_urls": [
+        "https://www.pearson.com/en-us/subject-catalog/p/design-patterns-elements-of-reusable-object-oriented-software/P200000007395/9780201633610"
+      ]
+    },
+    {
+      "artifacts": [
+        "skills/order.yaml",
+        "workflow.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-02",
+      "requirement": "**Bibliographic identity:** Martin Fowler, *Refactoring: Improving the Design of Existing Code*, 2nd ed., Addison-Wesley, 2018.",
+      "section_sha256": "d9660df09c77fef9649e291f51421c3590c3c02a39e76992e91523df7ff718b3",
+      "source_urls": [
+        "https://martinfowler.com/books/refactoring.html"
+      ]
+    },
+    {
+      "artifacts": [
+        "programs/os_program.py",
+        "automations/automations.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-03",
+      "requirement": "**Bibliographic identity:** Kent Beck, *Test-Driven Development: By Example*, Addison-Wesley, 2002.",
+      "section_sha256": "a5d28a5261d8da498320d4347be61e219bd3d211d68a0795f310f5717a381640",
+      "source_urls": [
+        "https://www.pearson.com/en-us/subject-catalog/p/Beck-Test-Driven-Development-By-Example/P200000009421/9780321146533"
+      ]
+    },
+    {
+      "artifacts": [
+        "contracts/tools.yaml",
+        "contracts/scopes.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-04",
+      "requirement": "**Bibliographic identity:** Jez Humble and David Farley, *Continuous Delivery: Reliable Software Releases through Build, Test, and Deployment Automation*, Addison-Wesley, 2010.",
+      "section_sha256": "b61e970c6498d6cab29bf7cc28f0c5c34cc9bc1d0f5b7a9bd69fe3b4cbf88584",
+      "source_urls": [
+        "https://www.pearson.com/en-us/subject-catalog/p/continuous-delivery-reliable-software-releases-through-build-test-and-deployment-automation/P200000009113/9780321670229"
+      ]
+    },
+    {
+      "artifacts": [
+        "contracts/providers.yaml",
+        "commands/discord.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-05",
+      "requirement": "**Bibliographic identity:** Michael C. Feathers, *Working Effectively with Legacy Code*, Prentice Hall, 2004.",
+      "section_sha256": "b52596db9a8b0e1c92f9083ded09a59550745d221cf9e22a6db5c2d320968365",
+      "source_urls": [
+        "https://www.pearson.com/en-us/subject-catalog/p/working-effectively-with-legacy-code/P200000008984/9780131177055"
+      ]
+    },
+    {
+      "artifacts": [
+        "agents/nanoteam.yaml",
+        "profile/agents",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-06",
+      "requirement": "**Bibliographic identity:** John Ousterhout, *A Philosophy of Software Design*, 2nd ed., Yaknyam Press, 2021.",
+      "section_sha256": "fb0c9f1a9c6daad34ac9c05026a9700d7dd1b209c9f3f13e9fcdb818c0fdad3a",
+      "source_urls": [
+        "https://web.stanford.edu/~ouster/cgi-bin/aposd.php"
+      ]
+    },
+    {
+      "artifacts": [
+        "skills/order.yaml",
+        "workflow.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-07",
+      "requirement": "**Bibliographic identity:** Nicole Forsgren, Jez Humble, and Gene Kim, *Accelerate: The Science of Lean Software and DevOps*, IT Revolution Press, 2018.",
+      "section_sha256": "4cea6d22f92077901e505c484f4c6177a89067618669eb18bac80dd6f09d5e79",
+      "source_urls": [
+        "https://www.oreilly.com/library/view/accelerate/9781457191435/"
+      ]
+    },
+    {
+      "artifacts": [
+        "programs/os_program.py",
+        "automations/automations.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-08",
+      "requirement": "**Bibliographic identity:** Betsy Beyer, Chris Jones, Jennifer Petoff, and Niall Richard Murphy, eds., *Site Reliability Engineering: How Google Runs Production Systems*, O’Reilly, 2016.",
+      "section_sha256": "28bba5110f2993edc067ed3c8539e748fe461c4815e0d1794fbe7e48d3fc39a7",
+      "source_urls": [
+        "https://sre.google/books/sre-book/table-of-contents/"
+      ]
+    },
+    {
+      "artifacts": [
+        "contracts/tools.yaml",
+        "contracts/scopes.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-09",
+      "requirement": "**Bibliographic identity:** IEEE Computer Society, *Guide to the Software Engineering Body of Knowledge (SWEBOK Guide)*, Version 4.0a, current official release.",
+      "section_sha256": "39c4ce51a83d288c55233c4d36b961710ec71034343d674122d994b8d57936df",
+      "source_urls": [
+        "https://www.computer.org/education/bodies-of-knowledge/software-engineering/v4"
+      ]
+    },
+    {
+      "artifacts": [
+        "contracts/providers.yaml",
+        "commands/discord.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-10",
+      "requirement": "**Bibliographic identity:** Murugiah Souppaya, Karen Scarfone, and Donna Dodson, *Secure Software Development Framework (SSDF) Version 1.1*, NIST SP 800-218, February 2022, DOI 10.6028/NIST.SP.800-218.",
+      "section_sha256": "39f477b4e274d006ceb9831f0078b5317a70f48ae9dacaae6d8afea23c8588e6",
+      "source_urls": [
+        "https://csrc.nist.gov/pubs/sp/800/218/final"
+      ]
+    },
+    {
+      "artifacts": [
+        "agents/nanoteam.yaml",
+        "profile/agents",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-11",
+      "requirement": "**Bibliographic identity:** SLSA Community, *Supply-chain Levels for Software Artifacts (SLSA) Specification*, Version 1.2, current approved specification.",
+      "section_sha256": "91bcd2ea065d50e33e911b91a157e0a944ce6b7217dce523a793656335ce0b86",
+      "source_urls": [
+        "https://slsa.dev/spec/latest/"
+      ]
+    },
+    {
+      "artifacts": [
+        "skills/order.yaml",
+        "workflow.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-12",
+      "requirement": "**Bibliographic identity:** OWASP Foundation, *Application Security Verification Standard (ASVS)*, Version 5.0.0, 2025.",
+      "section_sha256": "6ddc678b7115153a9aa2f7347aebee5f6ebab3b3e3015036a0c64592d163dc6c",
+      "source_urls": [
+        "https://owasp.org/www-project-application-security-verification-standard/"
+      ]
+    },
+    {
+      "artifacts": [
+        "programs/os_program.py",
+        "automations/automations.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-13",
+      "requirement": "**Bibliographic identity:** DORA, *Accelerate State of DevOps Report 2024*, Google Cloud/DORA, 2024.",
+      "section_sha256": "4414fd66497d97d2d8d4cf7da23c37d4fce6254419542c27628a91d8dffab07b",
+      "source_urls": [
+        "https://dora.dev/dora-report-2024"
+      ]
+    },
+    {
+      "artifacts": [
+        "contracts/tools.yaml",
+        "contracts/scopes.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-14",
+      "requirement": "**Bibliographic identity:** Tom Preston-Werner, *Semantic Versioning 2.0.0*, maintained public specification.",
+      "section_sha256": "0b0551c124ba3de8b03601e9397b079fab23ccdeceb9e046c24a2236fd8955f8",
+      "source_urls": [
+        "https://semver.org/"
+      ]
+    },
+    {
+      "artifacts": [
+        "contracts/providers.yaml",
+        "commands/discord.yaml",
+        "evals/cases.json",
+        "doctor.py",
+        "recovery"
+      ],
+      "input_id": "INPUT-15",
+      "requirement": "**Bibliographic identity:** International Organization for Standardization, *ISO/IEC 25010:2023 Systems and software engineering — SQuaRE — Product quality model*, 2nd ed., 2023.",
+      "section_sha256": "b4a455a0c1dcf4dfe00748358c59b5ef2ae0529b1eff3d22cf9b4ce8df141cf2",
+      "source_urls": [
+        "https://www.iso.org/standard/78176.html"
+      ]
+    }
+  ],
+  "schema": "agk.input-trace.v1"
+}

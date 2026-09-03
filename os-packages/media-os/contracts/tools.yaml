@@ -1,0 +1,62 @@
+schema: agk.tool-contracts.v1
+default: deny
+kernel_contract: kernel/connectors/contract.yaml
+tools:
+- id: file-read
+  side_effect: read
+  exact_target_required: true
+- id: file-write
+  side_effect: local-write
+  exact_target_required: true
+  readback_required: true
+- id: web-research
+  side_effect: network-read
+  source_provenance_required: true
+- id: delegation
+  side_effect: bounded-subagent
+  allowed_targets:
+  - media-signal-scout
+  - media-researcher
+  - media-content-strategist
+  - media-long-form-writer
+  - media-distribution
+  - media-editor
+  loop_guard: true
+- id: kanban
+  side_effect: local-state
+  board: media-os
+connectors:
+- id: x
+  class: publication
+  approval: exact-owner
+  status: OWNER_BLOCKED
+- id: linkedin
+  class: publication
+  approval: exact-owner
+  status: OWNER_BLOCKED
+- id: newsletter
+  class: mass-message
+  approval: exact-owner
+  status: OWNER_BLOCKED
+- id: youtube
+  class: publication
+  approval: exact-owner
+  status: OWNER_BLOCKED
+- id: apify
+  class: read-scrape
+  approval: owner-connect
+  status: OWNER_BLOCKED
+- id: gemini
+  class: image-generation
+  approval: owner-connect
+  status: OWNER_BLOCKED
+- id: claude-for-chrome
+  class: browser-read
+  approval: owner-connect
+  status: OWNER_BLOCKED
+forbidden:
+- secret-echo
+- unbounded-loop
+- release-self-approval
+- publish-without-exact-approval
+- bot-to-bot-loop

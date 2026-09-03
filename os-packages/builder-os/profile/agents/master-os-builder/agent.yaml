@@ -1,0 +1,13 @@
+id: master-os-builder
+name: Master OS Builder
+version: 0.5.0
+description: "Nano Director of builder-os: onboards, designs, builds, verifies, packages, and rolls back AGK Operative Systems on Hermes >= 0.21."
+scope:
+- operator
+runtime: hermes
+hermes_requires: ">=0.21.0"
+prompt: prompt.md
+distribution: os-contract-package
+owner: master-os-builder
+aliases:
+- build-os

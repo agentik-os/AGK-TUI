@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentik.local/schemas/media-os/1.0.0/artifact.schema.json",
+  "title": "Media OS Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "version", "sha256", "creator_profile", "lineage", "media_type", "created_at", "approval_state"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "creator_profile": {"type": "string", "enum": ["media-director", "media-signal-scout", "media-researcher", "media-content-strategist", "media-long-form-writer", "media-distribution", "media-editor"]},
+    "lineage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["campaign_id", "source_artifact_ids", "source_refs"],
+      "properties": {
+        "campaign_id": {"type": "string", "minLength": 1},
+        "source_artifact_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "source_refs": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "media_type": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "approval_state": {"type": "string", "enum": ["pending", "approved", "changes_requested", "rejected", "held"]},
+    "path": {"type": "string"},
+    "object_id": {"type": "string"}
+  },
+  "anyOf": [{"required": ["path"]}, {"required": ["object_id"]}]
+}

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentik.local/schemas/media-os/1.0.0/publication.schema.json",
+  "title": "Media OS Publication",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "campaign_id", "approval_id", "artifact_sha256", "platform", "account_id", "publication_mode", "scheduled_at", "connector_version", "operation_key", "requested_at", "response_class", "external_id", "readback_at", "readback", "status", "error_class"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "minLength": 1},
+    "campaign_id": {"type": "string", "minLength": 1},
+    "approval_id": {"type": "string", "minLength": 1},
+    "artifact_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "platform": {"type": "string", "minLength": 1},
+    "account_id": {"type": "string", "minLength": 1},
+    "publication_mode": {"type": "string", "enum": ["immediate", "scheduled", "private_stage", "unlisted"]},
+    "scheduled_at": {"type": ["string", "null"], "format": "date-time"},
+    "connector_version": {"type": "string", "minLength": 1},
+    "operation_key": {"type": "string", "minLength": 1},
+    "requested_at": {"type": "string", "format": "date-time"},
+    "response_class": {"type": ["string", "null"]},
+    "external_id": {"type": ["string", "null"]},
+    "readback_at": {"type": ["string", "null"], "format": "date-time"},
+    "readback": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["material_text_matches", "media_matches", "account_matches", "visibility_matches", "schedule_matches"],
+      "properties": {
+        "material_text_matches": {"type": "boolean"},
+        "media_matches": {"type": "boolean"},
+        "account_matches": {"type": "boolean"},
+        "visibility_matches": {"type": "boolean"},
+        "schedule_matches": {"type": "boolean"}
+      }
+    },
+    "status": {"type": "string", "enum": ["pending", "approved_for_exact_target", "publishing", "published_verified", "publish_unknown", "publish_failed"]},
+    "error_class": {"type": ["string", "null"], "enum": [null, "READBACK_MISMATCH"]}
+  }
+}

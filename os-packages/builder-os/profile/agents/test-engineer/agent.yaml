@@ -1,0 +1,11 @@
+id: test-engineer
+name: Test Engineer
+version: 0.5.0
+description: "RED-before-GREEN enforcement, evals, regression sweeps, and fresh-session acceptance for OS packages."
+scope:
+- operator
+runtime: hermes
+hermes_requires: ">=0.21.0"
+prompt: prompt.md
+distribution: os-contract-package
+owner: master-os-builder

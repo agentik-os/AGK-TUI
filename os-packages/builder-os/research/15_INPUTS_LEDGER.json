@@ -1,0 +1,128 @@
+{
+  "count": 15,
+  "inputs": [
+    {
+      "input_id": "INPUT-01",
+      "section_sha256": "ec80f06bdc1e28a80cc74f5ba5863364692e01ebf805ee6bba0f42ec58e7d799",
+      "title_line": "**Bibliographic identity:** Erich Gamma, Richard Helm, Ralph Johnson, and John Vlissides, *Design Patterns: Elements of Reusable Object-Oriented Software*, Addison-Wesley, 1994.",
+      "urls": [
+        "https://www.pearson.com/en-us/subject-catalog/p/design-patterns-elements-of-reusable-object-oriented-software/P200000007395/9780201633610"
+      ]
+    },
+    {
+      "input_id": "INPUT-02",
+      "section_sha256": "d9660df09c77fef9649e291f51421c3590c3c02a39e76992e91523df7ff718b3",
+      "title_line": "**Bibliographic identity:** Martin Fowler, *Refactoring: Improving the Design of Existing Code*, 2nd ed., Addison-Wesley, 2018.",
+      "urls": [
+        "https://martinfowler.com/books/refactoring.html"
+      ]
+    },
+    {
+      "input_id": "INPUT-03",
+      "section_sha256": "a5d28a5261d8da498320d4347be61e219bd3d211d68a0795f310f5717a381640",
+      "title_line": "**Bibliographic identity:** Kent Beck, *Test-Driven Development: By Example*, Addison-Wesley, 2002.",
+      "urls": [
+        "https://www.pearson.com/en-us/subject-catalog/p/Beck-Test-Driven-Development-By-Example/P200000009421/9780321146533"
+      ]
+    },
+    {
+      "input_id": "INPUT-04",
+      "section_sha256": "b61e970c6498d6cab29bf7cc28f0c5c34cc9bc1d0f5b7a9bd69fe3b4cbf88584",
+      "title_line": "**Bibliographic identity:** Jez Humble and David Farley, *Continuous Delivery: Reliable Software Releases through Build, Test, and Deployment Automation*, Addison-Wesley, 2010.",
+      "urls": [
+        "https://www.pearson.com/en-us/subject-catalog/p/continuous-delivery-reliable-software-releases-through-build-test-and-deployment-automation/P200000009113/9780321670229"
+      ]
+    },
+    {
+      "input_id": "INPUT-05",
+      "section_sha256": "b52596db9a8b0e1c92f9083ded09a59550745d221cf9e22a6db5c2d320968365",
+      "title_line": "**Bibliographic identity:** Michael C. Feathers, *Working Effectively with Legacy Code*, Prentice Hall, 2004.",
+      "urls": [
+        "https://www.pearson.com/en-us/subject-catalog/p/working-effectively-with-legacy-code/P200000008984/9780131177055"
+      ]
+    },
+    {
+      "input_id": "INPUT-06",
+      "section_sha256": "fb0c9f1a9c6daad34ac9c05026a9700d7dd1b209c9f3f13e9fcdb818c0fdad3a",
+      "title_line": "**Bibliographic identity:** John Ousterhout, *A Philosophy of Software Design*, 2nd ed., Yaknyam Press, 2021.",
+      "urls": [
+        "https://web.stanford.edu/~ouster/cgi-bin/aposd.php"
+      ]
+    },
+    {
+      "input_id": "INPUT-07",
+      "section_sha256": "4cea6d22f92077901e505c484f4c6177a89067618669eb18bac80dd6f09d5e79",
+      "title_line": "**Bibliographic identity:** Nicole Forsgren, Jez Humble, and Gene Kim, *Accelerate: The Science of Lean Software and DevOps*, IT Revolution Press, 2018.",
+      "urls": [
+        "https://www.oreilly.com/library/view/accelerate/9781457191435/"
+      ]
+    },
+    {
+      "input_id": "INPUT-08",
+      "section_sha256": "28bba5110f2993edc067ed3c8539e748fe461c4815e0d1794fbe7e48d3fc39a7",
+      "title_line": "**Bibliographic identity:** Betsy Beyer, Chris Jones, Jennifer Petoff, and Niall Richard Murphy, eds., *Site Reliability Engineering: How Google Runs Production Systems*, O’Reilly, 2016.",
+      "urls": [
+        "https://sre.google/books/sre-book/table-of-contents/"
+      ]
+    },
+    {
+      "input_id": "INPUT-09",
+      "section_sha256": "39c4ce51a83d288c55233c4d36b961710ec71034343d674122d994b8d57936df",
+      "title_line": "**Bibliographic identity:** IEEE Computer Society, *Guide to the Software Engineering Body of Knowledge (SWEBOK Guide)*, Version 4.0a, current official release.",
+      "urls": [
+        "https://www.computer.org/education/bodies-of-knowledge/software-engineering/v4"
+      ]
+    },
+    {
+      "input_id": "INPUT-10",
+      "section_sha256": "39f477b4e274d006ceb9831f0078b5317a70f48ae9dacaae6d8afea23c8588e6",
+      "title_line": "**Bibliographic identity:** Murugiah Souppaya, Karen Scarfone, and Donna Dodson, *Secure Software Development Framework (SSDF) Version 1.1*, NIST SP 800-218, February 2022, DOI 10.6028/NIST.SP.800-218.",
+      "urls": [
+        "https://csrc.nist.gov/pubs/sp/800/218/final"
+      ]
+    },
+    {
+      "input_id": "INPUT-11",
+      "section_sha256": "91bcd2ea065d50e33e911b91a157e0a944ce6b7217dce523a793656335ce0b86",
+      "title_line": "**Bibliographic identity:** SLSA Community, *Supply-chain Levels for Software Artifacts (SLSA) Specification*, Version 1.2, current approved specification.",
+      "urls": [
+        "https://slsa.dev/spec/latest/"
+      ]
+    },
+    {
+      "input_id": "INPUT-12",
+      "section_sha256": "6ddc678b7115153a9aa2f7347aebee5f6ebab3b3e3015036a0c64592d163dc6c",
+      "title_line": "**Bibliographic identity:** OWASP Foundation, *Application Security Verification Standard (ASVS)*, Version 5.0.0, 2025.",
+      "urls": [
+        "https://owasp.org/www-project-application-security-verification-standard/"
+      ]
+    },
+    {
+      "input_id": "INPUT-13",
+      "section_sha256": "4414fd66497d97d2d8d4cf7da23c37d4fce6254419542c27628a91d8dffab07b",
+      "title_line": "**Bibliographic identity:** DORA, *Accelerate State of DevOps Report 2024*, Google Cloud/DORA, 2024.",
+      "urls": [
+        "https://dora.dev/dora-report-2024"
+      ]
+    },
+    {
+      "input_id": "INPUT-14",
+      "section_sha256": "0b0551c124ba3de8b03601e9397b079fab23ccdeceb9e046c24a2236fd8955f8",
+      "title_line": "**Bibliographic identity:** Tom Preston-Werner, *Semantic Versioning 2.0.0*, maintained public specification.",
+      "urls": [
+        "https://semver.org/"
+      ]
+    },
+    {
+      "input_id": "INPUT-15",
+      "section_sha256": "b4a455a0c1dcf4dfe00748358c59b5ef2ae0529b1eff3d22cf9b4ce8df141cf2",
+      "title_line": "**Bibliographic identity:** International Organization for Standardization, *ISO/IEC 25010:2023 Systems and software engineering — SQuaRE — Product quality model*, 2nd ed., 2023.",
+      "urls": [
+        "https://www.iso.org/standard/78176.html"
+      ]
+    }
+  ],
+  "schema": "agk.librarian-input-ledger.v1",
+  "source": "/home/operator/workspace/agk-os-contract-handoffs/builder-os/14_BUILDER_HANDOFF.md",
+  "source_sha256": "2dddef51ce3ad86f87740af5b05bbb4922de806cb8e7946ebd4731f89a77eced"
+}

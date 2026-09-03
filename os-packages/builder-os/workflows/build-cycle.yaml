@@ -1,0 +1,35 @@
+id: build-cycle
+version: 0.3.0
+hermes_min_version: 0.21.0
+stages:
+  - id: baseline
+    output: reproducible-red-state
+    hermes: checkpoints enabled; backup with SHA-256 before any mutation
+  - id: design
+    requires: [baseline]
+    output: implementation-contract
+    hermes: /plan artifact; /goal draft completion contract
+  - id: implement
+    requires: [design]
+    output: tested-artifact
+    hermes: test-driven-development; delegate_task(test-engineer, output_schema)
+  - id: review
+    requires: [implement]
+    output: independent-verdict
+    engine: kanban
+    skill: sdlc-review
+    hermes: kanban_request_review; reviewer != implementer; delegate_task(specification-reviewer)
+  - id: deploy
+    requires: [review]
+    output: live-artifact
+    hermes: install immutably; hermes -p <os-id> config set; drain-safe gateway reload
+  - id: verify
+    requires: [deploy]
+    output: runtime-and-rollback-proof
+    hermes: doctor; hermes cron doctor; rollback dry-run; delegate_task(recovery-auditor)
+  - id: os-runtime-delivery
+    requires: [verify]
+    output: profile-agent-provider-discord-proof
+  - id: complete
+    requires: [os-runtime-delivery]
+    output: runtime-accepted-os (RELEASE still a distinct gate)

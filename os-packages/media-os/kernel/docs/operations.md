@@ -1,0 +1,7 @@
+# Operations
+
+Lifecycle order is validate, transactionally install/register as `INACTIVE`, assign, capture a complete typed snapshot, run the coordinator-owned Task 5 mutation, doctor, switch, read back, and smoke. Snapshots are schema-versioned and contain exact canonical values and SHA-256 checksums for package, profiles, assignments, routes, connectors, jobs, board/dispatcher, and knowledge bindings. Incomplete, unknown, unstable, or checksum-mismatched snapshots fail closed.
+
+Updates require a strictly newer semantic version, persisted semantic-diff and migration-dry-run evidence, side-by-side installation, and one atomic switch that demotes the prior active version. Rollback restores and verifies the snapshot before doctor/smoke; failed acceptance compensates to the pre-rollback state or records durable `RECOVERY_REQUIRED` evidence. Install/uninstall journal transaction IDs, phases, before/after checksums, and compensation. Active uninstall requires coordinator ownership, preserves any prior quarantine, and never deletes Discord channels.
+
+`scripts/doctor.py --offline-root ROOT` inspects concrete package, registry, assignment, profile, provider, board, knowledge, Discord, gateway, connector, job, and recovery files and exits nonzero unless all twelve checks pass. Caller-authored status documents are rejected. `scripts/rollback.py` refuses standalone mutation; its `run(coordinator, service)` integration asks the Task 5 coordinator to create and consume authority internally.
