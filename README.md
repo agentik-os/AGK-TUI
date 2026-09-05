@@ -1,8 +1,19 @@
+<p align="center"><a href="https://discord.gg/agentik-os"><img src="https://img.shields.io/badge/Discord-Agentik_OS-c5f277?style=flat-square&amp;labelColor=10161c" alt="Agentik OS community"></a></p>
+
+<p align="center"><img src="docs/assets/readme/ecosystem-hero.svg" width="880" alt="AGK-TUI · Persistent sessions. A focused workspace."></p>
+
 # AGK-TUI
+
+[Install](#guide-8) · [Product boundary](#guide-1) · [Legacy compatibility distribution](#guide-2) · [The interface at a glance](#guide-3)
+
+> Use the installation section for this terminal component. For a full Discord, Hermes and Portal platform, follow Station. Provider authentication stays in your own environment.
+
+<p align="center"><img src="docs/assets/readme/ecosystem-flow.svg" width="880" alt="Interface → Mapping → RMUX → Session. Terminal component. Complete platform deployment belongs to Station."></p>
 
 > **AGK-TUI is the RMUX mapping and terminal-session component of [Station](https://github.com/agentik-os/Station).**
 > For a complete Discord + Hermes + AGK-TUI + Portal installation, use Station.
 
+<a id="guide-1"></a>
 ## Product boundary
 
 AGK-TUI owns the native terminal UI, RMUX session persistence, pane mapping,
@@ -30,6 +41,7 @@ from provider state.
 In practical terms, you can start work on a VPS from a laptop, disconnect,
 reopen AGK from a phone and continue the same live conversation.
 
+<a id="guide-2"></a>
 ## Legacy compatibility distribution
 
 The historical standalone installer still provisions the following integrated
@@ -58,6 +70,7 @@ owns and tests this composition while consuming AGK-TUI as its RMUX component.
 Provider credentials are never stored in this repository and are never copied
 between profiles.
 
+<a id="guide-3"></a>
 ## The interface at a glance
 
 AGK has one horizontal menu, one working board and one permanent footer. There
@@ -114,6 +127,7 @@ more columns. A terminal width around 45 columns is enough for the compact
 layout. Prefer SSH over a private network or VPN and key-based authentication
 instead of exposing password login publicly.
 
+<a id="guide-4"></a>
 ## How the pieces fit together
 
 ```text
@@ -140,6 +154,7 @@ The ownership contract is deliberately simple:
 Closing AGK never stops the work behind it. Starting `agk` again reconnects to
 the current RMUX state and reconciles it with the durable registry.
 
+<a id="guide-5"></a>
 ## Menus
 
 ### 1 Sessions
@@ -263,6 +278,7 @@ Settings contains:
 - Help: the complete keyboard reference inside the Settings submenu.
 - About: the runtime ownership contract and version context.
 
+<a id="guide-6"></a>
 ## Keyboard model
 
 The navigation has no intermediate menu mode:
@@ -299,6 +315,7 @@ support compact paste previews can consequently show a label such as
 `[Pasted Content 13090 chars]`; that label is only a visual summary and the
 complete pasted text is still submitted to the model.
 
+<a id="guide-7"></a>
 ## Footer and resource information
 
 The footer stays visible in Control mode, split session mode and expanded
@@ -315,6 +332,7 @@ also shows cache reads/writes, reasoning tokens and API-call counts. AGK shows
 `—` when it cannot link a provider session to authoritative usage; it never
 invents a token count.
 
+<a id="guide-8"></a>
 ## Install
 
 ### Fresh Debian or Ubuntu VPS
@@ -417,6 +435,7 @@ sudo -u mission -H agk hermes gateway install --force --start-now
 service. Hermes account and Tool Gateway authentication remain on Nous Portal,
 independently for every profile.
 
+<a id="guide-9"></a>
 ## Multi-user VPS architecture
 
 A full VPS keeps four Linux security boundaries behind one product model:
@@ -458,6 +477,7 @@ sudo agk topology apply --yes
 Mission client runtimes can still be local, containerized, remote or external;
 that client topology is deliberately separate from the profile topology.
 
+<a id="guide-10"></a>
 ## Client organizations and CTO gates
 
 Each Mission client is an isolated product organization, not just a folder or
@@ -520,6 +540,7 @@ failed attempt. Client credentials live outside the workspace at
 commands, policies and recovery behavior are documented in
 [Client organizations](docs/CLIENT-ORGANIZATIONS.md).
 
+<a id="guide-11"></a>
 ## Commands
 
 ```bash
@@ -557,6 +578,7 @@ snapshot before launcher or service changes:
 sudo agk-terminal hermes install-shared
 ```
 
+<a id="guide-12"></a>
 ## State and security boundaries
 
 | Path | Owner | Purpose |
@@ -577,6 +599,7 @@ sudo agk-terminal hermes install-shared
 The TUI reads redacted capability and health data. It does not display MCP
 headers, environment secrets, provider tokens or Composio account identifiers.
 
+<a id="guide-13"></a>
 ## Troubleshooting
 
 Start with:
@@ -615,6 +638,7 @@ If `x` or `n` appears inactive, make sure the session list owns focus (`Tab`).
 In current releases those keys are explicitly routed to AGK from the visible
 sidebar even while the right provider pane is live.
 
+<a id="guide-14"></a>
 ## Development
 
 The important repository surfaces are:
@@ -639,6 +663,7 @@ Run the complete quality gate:
 The gate checks Rust formatting and Clippy, runs native and Python tests,
 validates shell scripts, then tests and builds the optional fleet dashboard.
 
+<a id="guide-15"></a>
 ## Design contract
 
 AGK-specific behavior is delivered as plugins, catalog assets and adapters;
@@ -650,3 +675,9 @@ source exists.
 For deeper implementation detail, read
 [Architecture](docs/ARCHITECTURE.md) and
 [shared Hermes runtime](docs/HERMES.md).
+
+---
+
+**Community and licensing** · [Discord](https://discord.gg/agentik-os) · [LICENSE](LICENSE)
+
+Illustrative visuals, not live telemetry. Service access and secrets belong to each installation.
