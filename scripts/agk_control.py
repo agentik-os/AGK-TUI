@@ -26,10 +26,18 @@ CANONICAL_USERS = {
     "mission": ("mission", Path("/home/mission"), Path("/home/mission/workspace/clients")),
     "private": ("private", Path("/home/private"), Path("/home/private/workspace/projects")),
 }
-TYPES = {"hermes", "claude", "codex", "openrouter", "opencode", "shell", "agent", "workflow", "monitor"}
+TYPES = {"hermes", "claude", "codex", "openai-codex", "gemma4-local", "openrouter", "opencode", "shell", "agent", "workflow", "monitor"}
 STATES = {"running", "working", "idle", "waiting", "attention", "failed", "complete", "interrupted", "archived"}
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
+BOT_ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 VIEWS = ("sessions", "projects", "agents", "os", "mcp", "skills", "rules", "settings")
+
+
+def canonical_bot_id(value: str) -> str:
+    bot_id = str(value or "")
+    if not BOT_ID_RE.fullmatch(bot_id):
+        raise ValueError("bot id must use canonical lowercase kebab grammar")
+    return bot_id
 TAB_DOUBLE_MS = 420
 ACTIVE_STATES = {"running", "working", "waiting", "attention"}
 STATUS_GLYPHS = {
@@ -283,8 +291,17 @@ def specialist_command(
 class RmuxRuntime:
     """Typed Agentik adapter over the installed RMUX public CLI contract."""
 
+    @staticmethod
+    def exact(name: str) -> str:
+        """RMUX resout un target de session par prefixe : `=` force l egalite.
+
+        Sans ce prefixe, `has-session -t build` repond OK tant qu il existe un
+        `build-os`, et `kill-session -t build` tue ce voisin.
+        """
+        return name if name.startswith("=") else f"={name}"
+
     def has_session(self, name: str) -> bool:
-        return run("rmux", "has-session", "-t", name, check=False).returncode == 0
+        return run("rmux", "has-session", "-t", self.exact(name), check=False).returncode == 0
 
     def create(self, name: str, kind: str, cwd: Path, environment: str,
                command: list[str]) -> None:
@@ -294,21 +311,21 @@ class RmuxRuntime:
             "-e", f"PATH={os.environ.get('PATH', '')}", *command)
 
     def primary_pane(self, session: str) -> str:
-        result = run("rmux", "list-panes", "-t", session, "-F", "#{pane_id}", check=False)
+        result = run("rmux", "list-panes", "-t", self.exact(session), "-F", "#{pane_id}", check=False)
         pane = next((line.strip() for line in result.stdout.splitlines() if line.strip()), "")
         if result.returncode or not pane:
             raise RuntimeError(f"RMUX session has no live pane: {session}")
         return pane
 
     def rename(self, session: str, name: str) -> None:
-        run("rmux", "rename-session", "-t", session, name)
+        run("rmux", "rename-session", "-t", self.exact(session), name)
 
     def terminate(self, session: str) -> None:
         if not self.has_session(session):
             return
         last_error = ""
         for _ in range(2):
-            result = run("rmux", "kill-session", "-t", session, check=False)
+            result = run("rmux", "kill-session", "-t", self.exact(session), check=False)
             last_error = (result.stderr or result.stdout).strip()
             if not self.has_session(session):
                 return
@@ -334,7 +351,7 @@ class RmuxRuntime:
                    "#{session_name}|#{pane_dead}|#{pane_activity}|#{pane_current_command}", check=False)
 
     def snapshot(self, session: str, lines: int) -> list[str]:
-        result = run("rmux", "capture-pane", "-p", "-t", session,
+        result = run("rmux", "capture-pane", "-p", "-t", self.exact(session),
                      "-S", f"-{max(20, lines * 3)}", check=False)
         if result.returncode:
             return ["Runtime unavailable", "", "Press R to restart the frontend."]
@@ -476,6 +493,8 @@ class RuntimeRegistry:
         return updated
 
     def archive(self, row: sqlite3.Row) -> sqlite3.Row:
+        if self.runtime.has_session(str(row["rmux_session"])):
+            self.runtime.terminate(str(row["rmux_session"]))
         updated = self.update(row, status="archived", archived_at=time.time())
         self.event(updated, "runtime.archived")
         return updated
@@ -625,7 +644,8 @@ def default_command(
     hermes_profile: str | None = None,
 ) -> list[str]:
     executable = lambda name: shutil.which(name) or name
-    openrouter_model = os.environ.get("AGK_OPENROUTER_MODEL", "stealth/ox-alpha")
+    openrouter_model = os.environ.get("AGK_OPENROUTER_MODEL", "openrouter/auto")
+
     claude = [executable("env"), "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1", executable("claude"), "--dangerously-skip-permissions"]
     if native_session:
         claude.extend(["--resume", native_session])
@@ -638,6 +658,8 @@ def default_command(
         "hermes": hermes,
         "claude": claude,
         "codex": [executable("codex"), "resume", native_session] if native_session else [executable("codex")],
+        "openai-codex": [executable("hermes"), "--provider", "openai-codex", "--model", "gpt-5.6-sol"],
+        "gemma4-local": [executable("hermes"), "--provider", "agk-gemma-local", "--model", "gemma4:26b"],
         "openrouter": [executable("hermes"), "--provider", "openrouter", "--model", openrouter_model],
         "opencode": [executable("opencode")],
         "shell": [os.environ.get("SHELL", "/bin/bash"), "-l"],
@@ -950,11 +972,11 @@ def tui(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
         elif key in (10, 13) and rows:
             row = rows[selected]
             if view in {"sessions", "agents"}:
-                curses.endwin(); subprocess.run(["rmux", "attach-session", "-t", str(row["rmux_session"])]); stdscr.refresh()
+                curses.endwin(); subprocess.run(["rmux", "attach-session", "-t", RmuxRuntime.exact(str(row["rmux_session"]))]); stdscr.refresh()
             elif view == "projects":
                 related = [item for item in registry.rows() if item["project"] in {row["id"], row["slug"]}]
                 if related:
-                    curses.endwin(); subprocess.run(["rmux", "attach-session", "-t", related[0]["rmux_session"]]); stdscr.refresh()
+                    curses.endwin(); subprocess.run(["rmux", "attach-session", "-t", RmuxRuntime.exact(str(related[0]["rmux_session"]))]); stdscr.refresh()
         elif key == ord("/"):
             query, selected = _prompt(stdscr, "Search/filter: "), 0
         elif key == 16:  # Ctrl-p command palette / quick switcher
@@ -1153,7 +1175,7 @@ def tui_v2(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
                 selected_ids.add(current["id"])
         elif key in (10, 13) and current is not None and view in {"sessions", "agents"}:
             curses.def_prog_mode(); curses.endwin()
-            subprocess.run(["rmux", "attach-session", "-t", str(current["rmux_session"])])
+            subprocess.run(["rmux", "attach-session", "-t", RmuxRuntime.exact(str(current["rmux_session"]))])
             curses.reset_prog_mode(); stdscr.clear(); stdscr.refresh()
         elif key == ord("/"): query, selected = _prompt(stdscr, "Search/filter: "), 0
         elif key == 16:
@@ -1170,7 +1192,7 @@ def tui_v2(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
         elif view in {"sessions", "agents"} and current is not None and key == ord("R"): registry.restart_frontend(current)
         elif view == "agents" and current is not None and key == ord("f"):
             curses.def_prog_mode(); curses.endwin()
-            subprocess.run(["rmux", "attach-session", "-r", "-t", str(current["rmux_session"])])
+            subprocess.run(["rmux", "attach-session", "-r", "-t", RmuxRuntime.exact(str(current["rmux_session"]))])
             curses.reset_prog_mode(); stdscr.clear(); stdscr.refresh()
         elif view == "sessions" and current is not None and key == ord("f"):
             name = _prompt(stdscr, "Fork name: ")
@@ -1253,6 +1275,13 @@ def main() -> int:
     rename = sub.add_parser("rename"); rename.add_argument("target"); rename.add_argument("name")
     fork = sub.add_parser("fork"); fork.add_argument("target"); fork.add_argument("name")
     sub.add_parser("reconcile")
+    secure = sub.add_parser("secure-input")
+    secure.add_argument("kind", choices=("discord-bot",))
+    secure.add_argument("--target", type=Path)
+    secure.add_argument("--expected-guild", required=True)
+    secure.add_argument("--bot-id", type=canonical_bot_id)
+    secure.add_argument("--ttl", type=int, default=1800)
+    secure.add_argument("--no-serve", action="store_true")
     sub.add_parser("projects"); sub.add_parser("agents"); sub.add_parser("os"); sub.add_parser("mcp"); sub.add_parser("skills"); sub.add_parser("rules"); sub.add_parser("system")
     args = parser.parse_args()
     env = Environment.current(); registry = RuntimeRegistry(env); registry.reconcile()
@@ -1265,6 +1294,25 @@ def main() -> int:
         for row in registry.rows(): print(f"{row['status']:<12} {row['type']:<9} {row['name']}  {row['project'] or '—'}")
         return 0
     if args.command == "doctor": return doctor(env, registry)
+    if args.command == "secure-input":
+        install_root = Path(os.environ.get("AGK_TERMINAL_ROOT", "/usr/local/lib/agk-terminal"))
+        target = (args.target or env.home / ".hermes/.env").resolve()
+        allowed = (env.home / ".hermes").resolve()
+        if target != allowed and allowed not in target.parents:
+            print("Secure Input target escapes this Station vault.", file=sys.stderr); return 2
+        installer = [
+            sys.executable, str(install_root / "scripts/install-discord-token.py"),
+            "--target", str(target), "--allowed-root", str(allowed),
+            "--expected-guild", str(args.expected_guild),
+        ]
+        if args.bot_id is not None:
+            installer.extend(["--bot-id", args.bot_id])
+        command = [
+            sys.executable, str(install_root / "scripts/tailnet_secure_input.py"),
+            "--installer-json", json.dumps(installer), "--ttl", str(max(60, min(7200, args.ttl))),
+        ]
+        if args.no_serve: command.append("--no-serve")
+        os.execv(sys.executable, command)
     if args.command == "new":
         row = registry.create(name=args.name, kind=args.type, cwd=args.cwd or env.home,
                               client=args.client, project=args.project, mission=args.mission,
@@ -1289,7 +1337,7 @@ def main() -> int:
         target = getattr(args, "target", None)
         row = registry.get(target) if target else (registry.rows()[0] if registry.rows() else None)
         if not row: print("No resumable session.", file=sys.stderr); return 1
-        os.execvp("rmux", ["rmux", "attach-session", "-t", row["rmux_session"]])
+        os.execvp("rmux", ["rmux", "attach-session", "-t", RmuxRuntime.exact(str(row["rmux_session"]))])
     if args.command == "info":
         print(json.dumps(dict(require_runtime(registry, args.target)), indent=2, sort_keys=True)); return 0
     if args.command == "archive":

@@ -23,6 +23,17 @@ from .domain import DESCRIPTIONS as DOMAIN_DESCRIPTIONS, DOMAIN_COMMANDS, Domain
 from .os_registry import OSRegistry, resolve_assignments
 
 
+def _plugin_command_invocation() -> dict:
+    try:
+        from hermes_cli.plugins import get_plugin_command_invocation_context
+    except (ImportError, AttributeError):
+        return {}
+    try:
+        return get_plugin_command_invocation_context() or {}
+    except Exception:
+        return {}
+
+
 DESCRIPTIONS = {
     "home": "Return to the current Agentik OS environment home context.",
     "active": "Show active context and work.",
@@ -75,9 +86,7 @@ class AgentikCommandService:
 
     @property
     def context_key(self) -> str:
-        from hermes_cli.plugins import get_plugin_command_invocation_context
-
-        invocation = get_plugin_command_invocation_context()
+        invocation = _plugin_command_invocation()
         if not invocation:
             return f"environment:{self.environment}:surface:local"
         canonical = json.dumps(invocation, sort_keys=True, separators=(",", ":"))
@@ -89,8 +98,7 @@ class AgentikCommandService:
         return self.store.context(self.context_key, self.data_environment)
 
     def invocation(self) -> dict:
-        from hermes_cli.plugins import get_plugin_command_invocation_context
-        return get_plugin_command_invocation_context() or {}
+        return _plugin_command_invocation()
 
     def dispatch(self, command: str, raw_args: str) -> str:
         try:

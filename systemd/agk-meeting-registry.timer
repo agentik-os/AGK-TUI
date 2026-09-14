@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh AGK Meeting Registry every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=agk-meeting-registry.service
+
+[Install]
+WantedBy=timers.target

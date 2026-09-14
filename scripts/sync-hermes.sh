@@ -38,6 +38,16 @@ hermes config set platforms.telegram.gateway_restart_notification false >/dev/nu
 # Keep Discord's stable surface small; evolving actions (including session
 # resume) live inside registry-driven Views and therefore need no slash resync.
 hermes config set platforms.discord.extra.command_ui_mode ui_only >/dev/null
+if [ "$(id -un)" = "operator" ] && [ "$hermes_home" = "/home/operator/.hermes" ]; then
+  hermes config set platforms.discord.extra.account_control_enabled true >/dev/null
+  hermes config set platforms.discord.extra.account_control_category_id 1542505218569150585 >/dev/null
+  hermes config set platforms.discord.extra.account_control_owner_user_id 1441423462492016821 >/dev/null
+  hermes config set platforms.discord.extra.account_control_channel_name account-control >/dev/null
+  hermes config set platforms.discord.extra.account_control_oauth_timeout_seconds 900 >/dev/null
+  hermes config set platforms.discord.extra.usage_monitor_channel_id 1542505218569150585 >/dev/null
+  hermes config set platforms.discord.extra.usage_monitor_openai_channel_id 1542505478679171164 >/dev/null
+  hermes config set platforms.discord.extra.usage_monitor_interval_seconds 300 >/dev/null
+fi
 # Cross-session discovery is intentionally stricter than ordinary bot access:
 # Hermes requires an explicit slash administrator. Promote only numeric IDs
 # already authorized by the profile's own DISCORD_ALLOWED_USERS setting; never

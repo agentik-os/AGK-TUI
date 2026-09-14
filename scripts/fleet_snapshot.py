@@ -1,0 +1,572 @@
+#!/usr/bin/env python3
+"""Build a bounded, redacted AGK Fleet operational snapshot.
+
+Runs as root from a system timer because Linux homes remain mode 0700. The
+result contains operational metadata only — never prompts, message bodies,
+credentials, command payloads, filesystem paths, or private memories.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+import re
+import sqlite3
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Iterable
+from urllib.parse import quote
+
+import yaml
+
+
+def _os_control_module():
+    path = Path(__file__).resolve().parents[1] / "hermes/plugins/platforms/discord/agk_os_control.py"
+    spec = importlib.util.spec_from_file_location("agk_os_control_for_fleet", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("AGK OS control module is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+ORGANISATIONS = ("operator", "agentik", "mission", "private")
+STATUSES = ("triage", "todo", "scheduled", "ready", "running", "review", "blocked", "done")
+_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,119}$")
+TERMINAL_RUNTIME_STATUSES = {"archived", "completed", "failed", "stopped", "cancelled"}
+
+
+def _text(value: Any, limit: int = 240) -> str:
+    return value.strip()[:limit] if isinstance(value, str) else ""
+
+
+def _safe_id(value: Any) -> str:
+    candidate = _text(value, 120).lower()
+    return candidate if _ID.fullmatch(candidate) else ""
+
+
+def _connect(path: Path) -> sqlite3.Connection | None:
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        connection = sqlite3.connect(
+            f"file:{quote(str(path), safe='/')}?mode=ro", uri=True, timeout=1,
+        )
+        connection.row_factory = sqlite3.Row
+        return connection
+    except sqlite3.Error:
+        return None
+
+
+def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    if not re.fullmatch(r"[a-z_]+", table):
+        return set()
+    try:
+        return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.Error:
+        return set()
+
+
+def _select_existing(columns: set[str], requested: Iterable[str]) -> list[str]:
+    return [column for column in requested if column in columns]
+
+
+def _boards(hermes: Path) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    root = hermes / "kanban"
+    try:
+        current = _safe_id((root / "current").read_text(encoding="utf-8")) or "default"
+    except OSError:
+        current = "default"
+    board_dirs: list[tuple[str, Path]] = [("default", root / "boards" / "default")]
+    boards_root = root / "boards"
+    if boards_root.is_dir() and not boards_root.is_symlink():
+        for path in sorted(boards_root.iterdir()):
+            slug = _safe_id(path.name)
+            if slug and slug != "default" and path.is_dir() and not path.is_symlink():
+                board_dirs.append((slug, path))
+
+    board_rows: list[dict[str, Any]] = []
+    tasks: list[dict[str, Any]] = []
+    for slug, directory in board_dirs:
+        metadata_path = directory / "board.json"
+        metadata: dict[str, Any] = {}
+        try:
+            raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata = raw if isinstance(raw, dict) else {}
+        except (OSError, ValueError):
+            if slug != "default":
+                continue
+        db_path = hermes / "kanban.db" if slug == "default" else directory / "kanban.db"
+        connection = _connect(db_path)
+        board_tasks: list[dict[str, Any]] = []
+        if connection is not None:
+            try:
+                columns = _columns(connection, "tasks")
+                selected = _select_existing(columns, (
+                    "id", "title", "assignee", "status", "priority", "created_at",
+                    "started_at", "completed_at", "session_id", "project_id", "block_kind",
+                ))
+                required = {"id", "title", "status"}
+                if required.issubset(selected):
+                    rows = connection.execute(
+                        f"SELECT {', '.join(selected)} FROM tasks ORDER BY created_at DESC LIMIT 300"
+                    ).fetchall()
+                    for row in rows:
+                        status = _text(row["status"], 32).lower()
+                        task_id = _safe_id(row["id"])
+                        title = _text(row["title"], 240)
+                        if not task_id or not title or status not in STATUSES:
+                            continue
+                        item = {
+                            "id": task_id,
+                            "board": slug,
+                            "title": title,
+                            "assignee": _safe_id(row["assignee"]) if "assignee" in row.keys() else "",
+                            "status": status,
+                            "priority": int(row["priority"] or 0) if "priority" in row.keys() else 0,
+                            "created_at": int(row["created_at"] or 0) if "created_at" in row.keys() else 0,
+                            "started_at": int(row["started_at"] or 0) if "started_at" in row.keys() else 0,
+                            "completed_at": int(row["completed_at"] or 0) if "completed_at" in row.keys() else 0,
+                            "session_id": _safe_id(row["session_id"]) if "session_id" in row.keys() else "",
+                            "project_id": _safe_id(row["project_id"]) if "project_id" in row.keys() else "",
+                            "block_kind": _text(row["block_kind"], 40) if "block_kind" in row.keys() else "",
+                        }
+                        board_tasks.append(item)
+                        tasks.append(item)
+            except sqlite3.Error:
+                board_tasks = []
+            finally:
+                connection.close()
+        counts = {status: 0 for status in STATUSES}
+        for task in board_tasks:
+            counts[task["status"]] += 1
+        board_rows.append({
+            "slug": slug,
+            "name": _text(metadata.get("name"), 100) or ("Default" if slug == "default" else slug.replace("-", " ").title()),
+            "description": _text(metadata.get("description"), 300),
+            "icon": _text(metadata.get("icon"), 8),
+            "color": _text(metadata.get("color"), 16),
+            "current": slug == current,
+            "counts": counts,
+            "task_count": len(board_tasks),
+        })
+    tasks.sort(key=lambda item: (item["created_at"], item["id"]), reverse=True)
+    return current, board_rows, tasks[:500]
+
+
+def _sessions(hermes: Path) -> list[dict[str, Any]]:
+    connection = _connect(hermes / "state.db")
+    if connection is None:
+        return []
+    try:
+        columns = _columns(connection, "sessions")
+        wanted = _select_existing(columns, (
+            "id", "title", "source", "model", "started_at", "ended_at",
+            "last_activity_at", "message_count", "tool_call_count", "archived",
+            "hidden", "profile_name",
+        ))
+        if not {"id", "source", "started_at"}.issubset(wanted):
+            return []
+        clauses = []
+        if "archived" in columns:
+            clauses.append("archived = 0")
+        if "hidden" in columns:
+            clauses.append("hidden = 0")
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        order = "last_activity_at" if "last_activity_at" in columns else "started_at"
+        rows = connection.execute(
+            f"SELECT {', '.join(wanted)} FROM sessions{where} ORDER BY {order} DESC LIMIT 80"
+        ).fetchall()
+        result = []
+        for row in rows:
+            session_id = _safe_id(row["id"])
+            if not session_id:
+                continue
+            result.append({
+                "id": session_id,
+                "title": _text(row["title"], 180) if "title" in row.keys() else "",
+                "source": _text(row["source"], 40),
+                "model": _text(row["model"], 100) if "model" in row.keys() else "",
+                "profile": _safe_id(row["profile_name"]) if "profile_name" in row.keys() else "default",
+                "started_at": float(row["started_at"] or 0),
+                "last_activity_at": float(row["last_activity_at"] or 0) if "last_activity_at" in row.keys() else 0,
+                "active": not bool(row["ended_at"]) if "ended_at" in row.keys() else True,
+                "message_count": int(row["message_count"] or 0) if "message_count" in row.keys() else 0,
+                "tool_call_count": int(row["tool_call_count"] or 0) if "tool_call_count" in row.keys() else 0,
+            })
+        return result
+    except sqlite3.Error:
+        return []
+    finally:
+        connection.close()
+
+
+def _runtimes(home: Path, organisation: str) -> list[dict[str, Any]]:
+    connection = _connect(home / ".agentik" / "runtime.db")
+    if connection is None:
+        return []
+    try:
+        columns = _columns(connection, "runtime_sessions")
+        wanted = _select_existing(columns, (
+            "id", "name", "type", "environment", "status", "last_activity",
+            "archived_at", "hermes_profile",
+        ))
+        if not {"id", "name", "type", "environment", "status"}.issubset(wanted):
+            return []
+        where = "environment = ?"
+        if "archived_at" in columns:
+            where += " AND archived_at IS NULL"
+        rows = connection.execute(
+            f"SELECT {', '.join(wanted)} FROM runtime_sessions WHERE {where} ORDER BY last_activity DESC LIMIT 80",
+            (organisation,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            runtime_id = _safe_id(row["id"])
+            name = _text(row["name"], 120)
+            if not runtime_id or not name:
+                continue
+            status = _text(row["status"], 40) or "unknown"
+            result.append({
+                "id": runtime_id, "name": name, "type": _text(row["type"], 40),
+                "status": status, "active": status not in TERMINAL_RUNTIME_STATUSES,
+                "last_activity": float(row["last_activity"] or 0) if "last_activity" in row.keys() else 0,
+                "profile": _safe_id(row["hermes_profile"]) if "hermes_profile" in row.keys() else "",
+            })
+        return result
+    except sqlite3.Error:
+        return []
+    finally:
+        connection.close()
+
+
+def _agents(hermes: Path, organisation: str) -> list[dict[str, Any]]:
+    root = hermes / "agents"
+    if not root.is_dir() or root.is_symlink():
+        return []
+    result = []
+    for path in sorted(root.glob("*/agent.yaml")):
+        if path.is_symlink():
+            continue
+        try:
+            if path.stat().st_size > 1024 * 1024:
+                continue
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, UnicodeError, yaml.YAMLError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        agent_id = _safe_id(raw.get("id"))
+        raw_scopes = raw.get("scope")
+        scopes: list[Any] = raw_scopes if isinstance(raw_scopes, list) else []
+        allowed = "global" in scopes or organisation in scopes
+        if not agent_id or not allowed:
+            continue
+        prompt_name = _text(raw.get("prompt") or "prompt.md", 120)
+        prompt_present = (path.parent / prompt_name).is_file() and "/" not in prompt_name and ".." not in prompt_name
+        raw_os = raw.get("os")
+        os_items: list[Any] = raw_os if isinstance(raw_os, list) else []
+        result.append({
+            "id": agent_id, "name": _text(raw.get("name"), 160) or agent_id,
+            "version": _text(raw.get("version"), 40),
+            "description": _text(raw.get("description"), 320),
+            "scope": [str(scope) for scope in scopes if isinstance(scope, str)][:8],
+            "runtime": _text(raw.get("runtime"), 60),
+            "profile": _safe_id(raw.get("profile")),
+            "os": [_text(item, 120) for item in os_items if isinstance(item, str)][:20],
+            "ready": prompt_present,
+        })
+    known = {item["id"] for item in result}
+    profiles_root = hermes / "profiles"
+    if profiles_root.is_dir() and not profiles_root.is_symlink():
+        for profile_dir in sorted(profiles_root.iterdir()):
+            profile_id = _safe_id(profile_dir.name)
+            if (
+                not profile_id
+                or profile_id in known
+                or not profile_dir.is_dir()
+                or profile_dir.is_symlink()
+                or not (profile_dir / "config.yaml").is_file()
+            ):
+                continue
+            result.append({
+                "id": profile_id,
+                "name": profile_id.replace("-", " ").title(),
+                "version": "profile",
+                "description": "Profil Hermes spécialisé et isolé pour cette station.",
+                "scope": [organisation],
+                "runtime": "hermes-profile",
+                "profile": profile_id,
+                "os": [],
+                "ready": True,
+            })
+    result.sort(key=lambda item: (item["name"].casefold(), item["id"]))
+    return result
+
+
+def _os_packages(registry_root: Path, organisation: str) -> list[dict[str, Any]]:
+    index = registry_root / "state" / "index.json"
+    try:
+        raw = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    packages = raw.get("packages") if isinstance(raw, dict) else []
+    if not isinstance(packages, list):
+        return []
+    result = []
+    for package in packages:
+        if not isinstance(package, dict):
+            continue
+        package_id = _safe_id(package.get("id"))
+        version = _text(package.get("version"), 60)
+        raw_scopes = package.get("scope")
+        scopes: list[Any] = raw_scopes if isinstance(raw_scopes, list) else []
+        if not package_id or not version or not ("global" in scopes or organisation in scopes):
+            continue
+        package_dir = registry_root / "packages" / package_id / version
+        try:
+            installed = package_dir.is_dir() and not package_dir.is_symlink() and package_dir.resolve().is_relative_to((registry_root / "packages").resolve())
+        except (OSError, RuntimeError, ValueError):
+            installed = False
+        raw_agents = package.get("agents")
+        package_agents: list[Any] = raw_agents if isinstance(raw_agents, list) else []
+        result.append({
+            "id": package_id, "name": _text(package.get("name"), 180) or package_id,
+            "version": version, "description": _text(package.get("description"), 320),
+            "scope": [str(scope) for scope in scopes if isinstance(scope, str)][:8],
+            "agents": [_text(item, 120) for item in package_agents if isinstance(item, str)][:40],
+            "skills": len(package.get("skills", [])) if isinstance(package.get("skills"), list) else 0,
+            "workflows": len(package.get("workflows", [])) if isinstance(package.get("workflows"), list) else 0,
+            "tools": len(package.get("tools", [])) if isinstance(package.get("tools"), list) else 0,
+            "installed": installed,
+        })
+    result.sort(key=lambda item: (item["name"].casefold(), item["version"]))
+    return result
+
+
+def _apply_assignments(home: Path, organisation: str, packages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    assignment_paths = [home / ".agentik" / "os-assignments.yaml"]
+    if organisation == "operator":
+        assignment_paths.append(Path("/etc/agentik/operator-os/assignments.yaml"))
+    references: set[str] = set()
+    for path in assignment_paths:
+        try:
+            document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, UnicodeError, yaml.YAMLError):
+            continue
+        rows = document.get("assignments") if isinstance(document, dict) else []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or row.get("target") != organisation:
+                continue
+            reference = _text(row.get("os"), 180)
+            if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}@[0-9][0-9A-Za-z.+-]{0,59}", reference):
+                references.add(reference)
+    by_reference = {f"{item['id']}@{item['version']}": item for item in packages}
+    for reference in references:
+        if reference in by_reference:
+            by_reference[reference]["assigned"] = True
+            continue
+        package_id, version = reference.split("@", 1)
+        packages.append({
+            "id": package_id,
+            "name": package_id.replace("-", " ").title(),
+            "version": version,
+            "description": "Assignment déclarée mais package absent du registre canonique.",
+            "scope": [organisation],
+            "agents": [],
+            "skills": 0,
+            "workflows": 0,
+            "tools": 0,
+            "installed": False,
+            "assigned": True,
+        })
+    for package in packages:
+        package.setdefault("assigned", False)
+    packages.sort(key=lambda item: (item["name"].casefold(), item["version"]))
+    return packages
+
+
+def _global_os_catalog(homes: dict[str, Path], registry_root: Path) -> list[Any]:
+    if not set(ORGANISATIONS).issubset(homes):
+        return []
+    roots = {name: homes[name] / ".hermes" for name in ORGANISATIONS}
+    if not all(root.is_dir() and not root.is_symlink() for root in roots.values()):
+        return []
+    control = _os_control_module()
+    paths = control.CatalogPaths(
+        registry_root / "state" / "index.json",
+        homes["private"] / ".agentik" / "os-registry",
+        roots,
+    )
+    return control.build_os_catalog(paths)
+
+
+def _merge_owned_os(packages: list[dict[str, Any]], records: list[Any], organisation: str) -> list[dict[str, Any]]:
+    by_id = {str(item["id"]): item for item in packages}
+    for record in records:
+        if record.owner_environment != organisation:
+            continue
+        current = by_id.get(record.os_id, {})
+        current.update({
+            "id": record.os_id,
+            "name": record.name,
+            "version": record.version,
+            "description": current.get("description", ""),
+            "scope": current.get("scope", [organisation]),
+            "agents": list(record.agent_ids),
+            "skills": current.get("skills", 0),
+            "workflows": current.get("workflows", 0),
+            "tools": current.get("tools", 0),
+            "installed": True,
+            "assigned": bool(current.get("assigned", False)),
+            "owner_environment": record.owner_environment,
+            "profile_id": record.profile_id,
+            "profile_state": record.profile_state,
+            "agent_state": record.agent_state,
+            "discord_mode": record.discord_mode,
+            "discord_state": record.discord_state,
+            "doctor_state": "ready" if record.profile_state == "ready" else "blocked",
+        })
+        by_id[record.os_id] = current
+    return sorted(by_id.values(), key=lambda item: (str(item["name"]).casefold(), str(item["version"])))
+
+
+def collect_snapshot(*, homes: dict[str, Path], registry_root: Path, now: int | None = None) -> dict[str, Any]:
+    generated_at = int(time.time() if now is None else now)
+    organisations: dict[str, Any] = {}
+    global_catalog = _global_os_catalog(homes, registry_root)
+    for organisation, home in homes.items():
+        hermes = home / ".hermes"
+        current, boards, tasks = _boards(hermes)
+        counts = {status: 0 for status in STATUSES}
+        for task in tasks:
+            counts[task["status"]] += 1
+        sessions = _sessions(hermes)
+        runtimes = _runtimes(home, organisation)
+        agents = _agents(hermes, organisation)
+        packages = _apply_assignments(home, organisation, _os_packages(registry_root, organisation))
+        packages = _merge_owned_os(packages, global_catalog, organisation)
+        profiles_root = hermes / "profiles"
+        profiles = ["default"]
+        if profiles_root.is_dir() and not profiles_root.is_symlink():
+            profiles.extend(sorted(
+                path.name for path in profiles_root.iterdir()
+                if path.is_dir() and not path.is_symlink() and _safe_id(path.name)
+            ))
+        organisations[organisation] = {
+            "id": organisation,
+            "healthy": hermes.is_dir(),
+            "profiles": profiles,
+            "kanban": {"current_board": current, "boards": boards, "tasks": tasks, "counts": counts},
+            "sessions": sessions,
+            "runtimes": runtimes,
+            "agents": agents,
+            "os": packages,
+            "summary": {
+                "active_sessions": sum(1 for item in sessions if item["active"]),
+                "active_runtimes": sum(1 for item in runtimes if item["active"]),
+                "open_tasks": sum(counts[status] for status in STATUSES if status != "done"),
+                "blocked_tasks": counts["blocked"],
+                "agent_count": len(agents),
+                "os_count": sum(1 for item in packages if item["installed"]),
+            },
+        }
+    return {"schema": "agk.fleet.v1", "generated_at": generated_at, "organisations": organisations}
+
+
+def public_os_discord_registry(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project only non-secret Discord topology fields for the Private /os UI."""
+    result: dict[str, Any] = {"schema_version": int(payload.get("schema_version") or 1)}
+    guild_id = str(payload.get("guild_id") or "")
+    if guild_id.isdigit():
+        result["guild_id"] = guild_id
+    category = payload.get("category")
+    if isinstance(category, dict):
+        category_id = str(category.get("id") or "")
+        result["category"] = {
+            "id": category_id if category_id.isdigit() else "",
+            "name": _text(category.get("name"), 100),
+        }
+    result["channels"] = {}
+    channels = payload.get("channels")
+    if isinstance(channels, dict):
+        allowed = ("id", "name", "type", "profile", "state", "gateway_state", "bot_application_id", "os_version")
+        for raw_id, row in channels.items():
+            os_id = _safe_id(raw_id)
+            if not os_id or not isinstance(row, dict):
+                continue
+            projected = {key: _text(row.get(key), 120) for key in allowed}
+            if not projected["id"].isdigit() or not projected["bot_application_id"].isdigit():
+                continue
+            result["channels"][os_id] = projected
+    policy = payload.get("policy")
+    if isinstance(policy, dict):
+        allowed_policy_keys = {
+            "one_channel_per_installed_os",
+            "historical_candidates_do_not_get_channels",
+            "idempotent_reconciliation",
+            "delete_requires_owner_confirmation",
+        }
+        result["policy"] = {
+            str(key): value for key, value in policy.items()
+            if key in allowed_policy_keys and isinstance(value, bool)
+        }
+    return result
+
+
+def atomic_write(target: Path, payload: dict[str, Any]) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, prefix=".fleet-snapshot.", delete=False)
+    temporary = Path(handle.name)
+    try:
+        with handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o640)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def publish_public_os_discord_registry(source: Path, output: Path) -> bool:
+    try:
+        payload = json.loads(Path(source).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("registry is not an object")
+        projected = public_os_discord_registry(payload)
+        if not projected.get("guild_id") or not projected.get("channels"):
+            raise ValueError("registry has no actionable public topology")
+        atomic_write(Path(output), projected)
+        return True
+    except (OSError, ValueError, TypeError):
+        Path(output).unlink(missing_ok=True)
+        return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", default="/var/lib/agk-terminal/fleet/fleet-snapshot.json")
+    parser.add_argument("--registry", default="/opt/agentik/os-registry")
+    parser.add_argument("--discord-registry-source", default="/home/operator/.hermes/os-discord-channels.json")
+    parser.add_argument("--discord-registry-output", default="/var/lib/agk-terminal/fleet/os-discord-channels.json")
+    args = parser.parse_args()
+    homes = {organisation: Path("/home") / organisation for organisation in ORGANISATIONS}
+    snapshot = collect_snapshot(homes=homes, registry_root=Path(args.registry))
+    atomic_write(Path(args.output), snapshot)
+    publish_public_os_discord_registry(
+        Path(args.discord_registry_source), Path(args.discord_registry_output)
+    )
+    print(f"AGK Fleet snapshot: {len(snapshot['organisations'])} station(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

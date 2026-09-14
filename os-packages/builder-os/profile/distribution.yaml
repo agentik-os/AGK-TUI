@@ -1,0 +1,20 @@
+schema_version: "1.0"
+profile_id: builder-os
+owner_environment: operator
+linux_user: operator
+os_id: builder-os
+os_version: 0.2.0
+agent_ids:
+  - master-os-builder
+provider:
+  primary: openai-codex
+  primary_model: gpt-5.6-sol
+  fallback: agk-gemma-local
+  fallback_model: gemma4:26b
+discord:
+  mode: environment
+  token_policy: inherit-environment-route
+doctor:
+  required: true
+rollback:
+  strategy: quarantine-created-profile-and-reactivate-previous-package

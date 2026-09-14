@@ -1,0 +1,26 @@
+id: build-cycle
+version: 0.2.0
+stages:
+  - id: baseline
+    output: reproducible-red-state
+  - id: design
+    requires: [baseline]
+    output: implementation-contract
+  - id: implement
+    requires: [design]
+    output: tested-artifact
+  - id: review
+    requires: [implement]
+    output: independent-verdict
+  - id: deploy
+    requires: [review]
+    output: live-artifact
+  - id: verify
+    requires: [deploy]
+    output: runtime-and-rollback-proof
+  - id: os-runtime-delivery
+    requires: [verify]
+    output: profile-agent-provider-discord-proof
+  - id: complete
+    requires: [os-runtime-delivery]
+    output: runtime-accepted-os

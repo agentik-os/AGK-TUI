@@ -1,0 +1,37 @@
+id: os-runtime-delivery
+version: 0.2.0
+purpose: Reconcile the built OS package with one canonical owner profile, owning agent, provider/fallback, explicit Discord mode, doctor and rollback evidence.
+inputs:
+  - verified-package
+  - canonical-owner-map
+  - live-profile-inventory
+  - live-agent-inventory
+stages:
+  - id: owner
+    output: canonical-owner
+  - id: profile
+    requires: [owner]
+    output: hermes-profile-doctor
+  - id: agent
+    requires: [profile]
+    output: owning-agent-binding
+  - id: provider
+    requires: [agent]
+    output: provider-and-fallback-proof
+  - id: discord
+    requires: [provider]
+    output: explicit-discord-mode
+  - id: rollback
+    requires: [discord]
+    output: rollback-receipt
+  - id: accept
+    requires: [rollback]
+    output: runtime-contract-pass
+failure_policy:
+  missing_owner: blocked
+  missing_profile: blocked
+  missing_agent: blocked
+  missing_fallback: blocked
+  missing_discord_mode: blocked
+  missing_doctor: blocked
+  missing_rollback: blocked

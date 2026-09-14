@@ -1,41 +1,40 @@
 #!/usr/bin/env python3
 """Project AGK's managed global rule block into supported provider files."""
-
 from __future__ import annotations
 
 import os
 from pathlib import Path
-
 import yaml
 
 START = "<!-- AGK MANAGED RULES: START -->"
 END = "<!-- AGK MANAGED RULES: END -->"
 
 
-def rules_path() -> Path:
-    configured = os.environ.get("AGK_RULES_CONFIG")
-    if configured:
-        return Path(configured).expanduser()
-    user_rules = Path.home() / ".agentik" / "rules.yaml"
-    if user_rules.is_file():
-        return user_rules
-    system_rules = Path("/etc/agk-terminal/rules.yaml")
-    if system_rules.is_file():
-        return system_rules
-    root = Path(os.environ.get("AGK_TERMINAL_ROOT", "/usr/local/lib/agk-terminal"))
-    return root / "config" / "rules.yaml"
-
-
 def load_rules(path: Path) -> list[dict]:
     document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     rules = document.get("rules") or []
-    return [
-        rule
-        for rule in rules
-        if isinstance(rule, dict)
-        and rule.get("enabled", True)
-        and str(rule.get("content") or "").strip()
-    ]
+    return [rule for rule in rules if isinstance(rule, dict) and rule.get("enabled", True) and str(rule.get("content") or "").strip()]
+
+
+def _merge_rules(base: list[dict], overrides: list[dict]) -> list[dict]:
+    merged = {str(rule.get("id") or f"anonymous-{index}"): rule for index, rule in enumerate(base)}
+    for index, rule in enumerate(overrides):
+        merged[str(rule.get("id") or f"profile-anonymous-{index}")] = rule
+    return list(merged.values())
+
+
+def load_effective_rules(*, system_path: Path | None = None, user_path: Path | None = None, power_path: Path | None = None) -> list[dict]:
+    configured = os.environ.get("AGK_RULES_CONFIG")
+    if configured:
+        return load_rules(Path(configured).expanduser())
+    root = Path(os.environ.get("AGK_TERMINAL_ROOT", "/usr/local/lib/agk-terminal"))
+    system_path = system_path or (Path("/etc/agk-terminal/rules.yaml") if Path("/etc/agk-terminal/rules.yaml").is_file() else root / "config" / "rules.yaml")
+    user_path = user_path or Path.home() / ".agentik" / "rules.yaml"
+    power_path = power_path or root / "config" / "power-stack.yaml"
+    base = load_rules(system_path) if system_path.is_file() else []
+    power = load_rules(power_path) if power_path.is_file() else []
+    overrides = load_rules(user_path) if user_path.is_file() else []
+    return _merge_rules(_merge_rules(base, power), overrides)
 
 
 def applies(rule: dict, provider: str) -> bool:
@@ -74,8 +73,7 @@ def update(path: Path, block: str) -> None:
 
 
 def main() -> int:
-    source = rules_path()
-    rules = load_rules(source)
+    rules = load_effective_rules()
     targets = {
         "claude": Path.home() / ".claude" / "CLAUDE.md",
         "codex": Path.home() / ".codex" / "AGENTS.md",
