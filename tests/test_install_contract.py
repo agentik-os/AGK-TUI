@@ -24,9 +24,23 @@ def test_fresh_bootstrap_installs_optional_providers_without_blocking_on_login()
 
 def test_system_install_preserves_the_collective_mission_context():
     source = (ROOT / "install.sh").read_text(encoding="utf-8")
+    sync = (ROOT / "scripts" / "sync-hermes.sh").read_text(encoding="utf-8")
 
-    assert "/home/mission/.hermes/profiles/collective" in source
-    assert "HERMES_HOME=/home/mission/.hermes/profiles/collective" in source
+    # Every profile sync uses --all, which walks $HERMES_HOME/profiles/*
+    # (including mission's collective context) inside the same Linux user.
+    assert '"$install_root/scripts/sync-hermes.sh" --all' in source
+    assert '"$hermes_home"/profiles/*/' in sync
+    assert 'HERMES_HOME="${profile_dir%/}"' in sync
+
+
+def test_reinstall_updates_official_hermes_to_latest_and_syncs_all_profiles():
+    provider = (ROOT / "scripts" / "provider.sh").read_text(encoding="utf-8")
+    cli = (ROOT / "bin" / "agk-terminal").read_text(encoding="utf-8")
+
+    assert "hermes update --yes" in provider
+    assert "AGK_HERMES_SKIP_UPDATE" in provider
+    assert "sync-hermes.sh\" --all" in provider
+    assert "hermes update --yes" in cli
 
 
 def test_install_enables_quiet_gateway_health_monitoring_for_every_profile():

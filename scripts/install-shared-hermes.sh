@@ -152,7 +152,7 @@ for user_name in "${users[@]}"; do
     HERMES_HOME="$home_dir/.hermes" \
     AGK_TERMINAL_ROOT="$install_root" \
     PATH="$official_dir/venv/bin:/usr/local/bin:/usr/bin:$home_dir/.local/bin" \
-    "$install_root/scripts/sync-hermes.sh"
+    "$install_root/scripts/sync-hermes.sh" --all
 
   unit_dir=$home_dir/.config/systemd/user
   [ -d "$unit_dir" ] || continue

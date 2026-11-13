@@ -320,7 +320,7 @@ if [ "$system_install" = true ]; then
         HERMES_HOME="$profile_home/.hermes" \
         AGK_TERMINAL_ROOT="$install_root" \
         PATH="$profile_home/.local/bin:$bin_dir:/usr/local/bin:/usr/bin:/bin" \
-        "$install_root/scripts/sync-hermes.sh"
+        "$install_root/scripts/sync-hermes.sh" --all
     fi
     if [ -x "$install_root/bin/composio" ]; then
       sudo -u "$profile_user" env \
@@ -330,22 +330,13 @@ if [ "$system_install" = true ]; then
         "$install_root/scripts/composio_inventory.py" refresh >/dev/null || true
     fi
   done
-  # Mission may host the optional collective gateway as a second Hermes
-  # context while remaining inside the same Linux runtime boundary.
-  if [ -d /home/mission/.hermes/profiles/collective ]; then
-    sudo -u mission env \
-      HOME=/home/mission \
-      HERMES_HOME=/home/mission/.hermes/profiles/collective \
-      AGK_TERMINAL_ROOT="$install_root" \
-      PATH="/home/mission/.local/bin:$bin_dir:/usr/local/bin:/usr/bin:/bin" \
-      "$install_root/scripts/sync-hermes.sh"
-  fi
+  # --all also covers named profiles such as mission's collective gateway.
   if [ "$install_hermes_fleet" = true ]; then
     "$install_root/scripts/install-hermes-fleet-dashboard.sh" \
       --source-root "$repo_root"
   fi
 elif run_for_target hermes --version >/dev/null 2>&1; then
-  run_for_target "$install_root/scripts/sync-hermes.sh"
+  run_for_target "$install_root/scripts/sync-hermes.sh" --all
 else
   echo "Hermes extension sync skipped: Hermes is not installed for $target_user"
 fi

@@ -6,6 +6,18 @@ hermes_home=${HERMES_HOME:-${HOME:?}/.hermes}
 case "$hermes_home" in
   ""|/) echo "refusing unsafe HERMES_HOME: ${hermes_home:-<empty>}" >&2; exit 2 ;;
 esac
+# --all: synchronize the main Hermes home, then every named profile stored
+# below it (hermes profile create ...). Profiles stay inside this Linux user.
+if [ "${1:-}" = --all ]; then
+  self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")
+  HERMES_HOME="$hermes_home" "$self"
+  for profile_dir in "$hermes_home"/profiles/*/; do
+    [ -d "$profile_dir" ] || continue
+    HERMES_HOME="${profile_dir%/}" "$self"
+  done
+  exit 0
+fi
+[ "$#" -eq 0 ] || { echo "usage: sync-hermes.sh [--all]" >&2; exit 2; }
 agent_source=$install_root/agents/master-os-builder
 if [ ! -d "$agent_source" ]; then
   agent_source=$install_root/hermes/agents/master-os-builder
@@ -28,7 +40,7 @@ hermes_bin=$(resolve_executable "$(command -v hermes)")
 mkdir -p "$hermes_home/plugins" "$hermes_home/agents" \
   "$hermes_home/dashboard-themes"
 mkdir -p "$HOME/.local/bin"
-ln -sfn "$hermes_bin" "$HOME/.local/bin/hermes"
+[ "$hermes_bin" = "$HOME/.local/bin/hermes" ] || ln -sfn "$hermes_bin" "$HOME/.local/bin/hermes"
 hermes config migrate >/dev/null
 # AGK owns lifecycle health centrally. Routine stop/start chatter is disabled
 # on every messaging adapter; the external watchdog emits one Discord #general

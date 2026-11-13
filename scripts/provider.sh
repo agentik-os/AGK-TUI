@@ -91,7 +91,14 @@ install_provider() {
   case "$1" in
     hermes)
       if hermes_is_official; then
-        hermes --version
+        # Re-running the installer must converge on the latest official
+        # Hermes release, not keep a stale checkout. Pin or opt out with
+        # HERMES_OFFICIAL_COMMIT / AGK_HERMES_SKIP_UPDATE=1.
+        if [ "${AGK_HERMES_SKIP_UPDATE:-0}" = 1 ] || [ -n "${HERMES_OFFICIAL_COMMIT:-}" ]; then
+          hermes --version
+        else
+          hermes update --yes
+        fi
       else
         download_and_run https://hermes-agent.nousresearch.com/install.sh --skip-setup --non-interactive
         if [ "$install_mode" != "--no-login" ]; then
@@ -154,7 +161,7 @@ case "$action" in
     if { [ "$provider" = hermes ] || [ "$provider" = openrouter ]; } \
       && [ -x "${AGK_TERMINAL_ROOT:-/usr/local/lib/agk-terminal}/scripts/sync-hermes.sh" ]
     then
-      "${AGK_TERMINAL_ROOT:-/usr/local/lib/agk-terminal}/scripts/sync-hermes.sh"
+      "${AGK_TERMINAL_ROOT:-/usr/local/lib/agk-terminal}/scripts/sync-hermes.sh" --all
     fi
     ;;
   *) echo "usage: provider.sh {list|verify|install} [provider]" >&2; exit 2 ;;

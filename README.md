@@ -559,7 +559,8 @@ agk provider install claude
 agk mcp
 agk composio list
 agk rules
-agk hermes sync
+agk hermes sync --all             # extensions + rules in every Hermes profile
+agk hermes update                 # latest official Hermes, then sync --all
 agk topology status
 agk client list
 agk client doctor CLIENT --online
