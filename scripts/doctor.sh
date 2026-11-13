@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ -z "${AGK_TERMINAL_ROOT:-}" ] && [ -d "$HOME/.local/lib/agk-terminal" ]; then
+  AGK_TERMINAL_ROOT=$HOME/.local/lib/agk-terminal
+fi
 install_root=${AGK_TERMINAL_ROOT:-/usr/local/lib/agk-terminal}
 failed=0
+# PyYAML lives in AGK's own environment, not in the system Python.
+python=$install_root/venv/bin/python
+[ -x "$python" ] || python=python3
 hermes_home=${HERMES_HOME:-$HOME/.hermes}
 export PATH="$HOME/.local/bin:$install_root/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
@@ -17,8 +23,20 @@ check() {
   fi
 }
 
+# A provider, account or service the user chose not to set up is reported
+# without failing the health check of everything that is installed.
+note() {
+  local name=$1
+  shift
+  if "$@" >/dev/null 2>&1; then
+    printf '✓ %s\n' "$name"
+  else
+    printf '· %s (not set up)\n' "$name"
+  fi
+}
+
 discord_connected() {
-  python3 - "$hermes_home/gateway_state.json" <<'PY'
+  "$python" - "$hermes_home/gateway_state.json" <<'PY'
 import json
 import sys
 
@@ -36,7 +54,7 @@ PY
 }
 
 composio_authenticated() {
-  python3 - "$HOME/.composio/user_data.json" <<'PY'
+  "$python" - "$HOME/.composio/user_data.json" <<'PY'
 import json
 import sys
 
@@ -54,7 +72,7 @@ portal_authenticated() {
 
 portal_ready_for_selected_provider() {
   local provider
-  provider=$(python3 - "$hermes_home/config.yaml" <<'PY'
+  provider=$("$python" - "$hermes_home/config.yaml" <<'PY'
 import sys
 import yaml
 
@@ -74,24 +92,29 @@ check 'RMUX daemon' rmux list-sessions
 check 'AGK TUI' test -x "$install_root/bin/agk-tui"
 check 'AGK controller' test -x "$install_root/scripts/agk_control.py"
 check 'Global rules registry' test -r "$install_root/config/rules.yaml"
-check 'Claude global rules' grep -Fq '<!-- AGK MANAGED RULES: START -->' "$HOME/.claude/CLAUDE.md"
-check 'Codex global rules' grep -Fq '<!-- AGK MANAGED RULES: START -->' "$HOME/.codex/AGENTS.md"
-check 'OpenCode global rules' grep -Fq '<!-- AGK MANAGED RULES: START -->' "$HOME/.config/opencode/AGENTS.md"
-check 'Hermes plugin' hermes plugins doctor --ci "$hermes_home/plugins/agentik_os"
-check 'AGK Discord plugin' hermes plugins doctor --ci "$hermes_home/plugins/platforms/discord"
-check 'Master OS Builder' test -f "$hermes_home/agents/master-os-builder/agent.yaml"
-check 'Official Hermes' "$install_root/scripts/provider.sh" verify hermes
-check 'Hermes configuration' hermes config check
-check 'Nous Portal authentication (when selected)' portal_ready_for_selected_provider
-check 'Discord gateway' discord_connected
-check 'Agentik OS cloud' curl -fsSIL --max-time 10 https://agentik-os.com
-check 'Chrome browser engine' google-chrome --version
-check 'Claude Code' "$install_root/scripts/provider.sh" verify claude
-check 'Codex' "$install_root/scripts/provider.sh" verify codex
-check 'OpenCode' "$install_root/scripts/provider.sh" verify opencode
-check 'OpenRouter' "$install_root/scripts/provider.sh" verify openrouter
-check 'Composio CLI' composio --version
-check 'Composio authentication' composio_authenticated
+check 'AGK Python environment' "$python" -c 'import yaml'
+check 'AGK launcher on PATH' command -v agk
+
+echo
+echo 'Optional providers, accounts and services:'
+note 'Claude global rules' grep -Fq '<!-- AGK MANAGED RULES: START -->' "$HOME/.claude/CLAUDE.md"
+note 'Codex global rules' grep -Fq '<!-- AGK MANAGED RULES: START -->' "$HOME/.codex/AGENTS.md"
+note 'OpenCode global rules' grep -Fq '<!-- AGK MANAGED RULES: START -->' "$HOME/.config/opencode/AGENTS.md"
+note 'Hermes plugin' hermes plugins doctor --ci "$hermes_home/plugins/agentik_os"
+note 'AGK Discord plugin' hermes plugins doctor --ci "$hermes_home/plugins/platforms/discord"
+note 'Master OS Builder' test -f "$hermes_home/agents/master-os-builder/agent.yaml"
+note 'Official Hermes' "$install_root/scripts/provider.sh" verify hermes
+note 'Hermes configuration' hermes config check
+note 'Nous Portal authentication (when selected)' portal_ready_for_selected_provider
+note 'Discord gateway' discord_connected
+note 'Agentik OS cloud' curl -fsSIL --max-time 10 https://agentik-os.com
+note 'Chrome browser engine' google-chrome --version
+note 'Claude Code' "$install_root/scripts/provider.sh" verify claude
+note 'Codex' "$install_root/scripts/provider.sh" verify codex
+note 'OpenCode' "$install_root/scripts/provider.sh" verify opencode
+note 'OpenRouter' "$install_root/scripts/provider.sh" verify openrouter
+note 'Composio CLI' composio --version
+note 'Composio authentication' composio_authenticated
 
 "$install_root/scripts/provider.sh" list
 exit "$failed"

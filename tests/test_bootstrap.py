@@ -1,4 +1,7 @@
 import subprocess
+import sys
+
+import pytest
 from pathlib import Path
 
 
@@ -6,6 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP = ROOT / "bootstrap-vps.sh"
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="bootstrap-vps.sh provisions a Linux host; macOS uses bootstrap-macos.sh",
+)
 def test_fresh_vps_dry_run_covers_every_runtime_boundary_and_shared_core():
     result = subprocess.run(
         [str(BOOTSTRAP), "--dry-run", "--skip-packages", "--core-only"],

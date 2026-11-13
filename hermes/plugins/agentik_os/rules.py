@@ -18,8 +18,16 @@ def _rules_path() -> Path:
     system_rules = Path("/etc/agk-terminal/rules.yaml")
     if system_rules.is_file():
         return system_rules
-    root = Path(os.environ.get("AGK_TERMINAL_ROOT", "/usr/local/lib/agk-terminal"))
-    return root / "config" / "rules.yaml"
+    configured_root = os.environ.get("AGK_TERMINAL_ROOT")
+    if configured_root:
+        return Path(configured_root) / "config" / "rules.yaml"
+    # A gateway started by launchd or systemd has no AGK environment: look
+    # where the single-user and the system installers put the rules.
+    candidates = [
+        Path.home() / ".local/lib/agk-terminal/config/rules.yaml",
+        Path("/usr/local/lib/agk-terminal/config/rules.yaml"),
+    ]
+    return next((path for path in candidates if path.is_file()), candidates[-1])
 
 
 def active_rules() -> list[dict]:

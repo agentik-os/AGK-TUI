@@ -93,8 +93,10 @@ class Profile:
 
 def user_exists(name: str) -> bool:
     try:
-        pwd.getpwnam(name)
-        return True
+        # macOS directory services resolve a lookup by alias and full name
+        # as well as login, so `agentik` can return the `agentikos` account.
+        # Only an exact login match is the profile's own Linux user.
+        return pwd.getpwnam(name).pw_name == name
     except KeyError:
         return False
 

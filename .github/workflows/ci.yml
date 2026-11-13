@@ -26,5 +26,7 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
-      - run: bash -n bootstrap-macos.sh install bin/agk bin/agk-terminal
-      - run: ./bootstrap-macos.sh --dry-run --core-only
+      # The documented one-liner pipes into the bash that macOS ships (3.2).
+      - run: /bin/bash -n bootstrap-macos.sh install bin/agk bin/agk-terminal
+      - run: /bin/bash ./bootstrap-macos.sh --dry-run --core-only
+      - run: /bin/bash install --help

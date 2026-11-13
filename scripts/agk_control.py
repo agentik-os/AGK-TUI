@@ -155,12 +155,15 @@ class Environment:
     name: str
     home: Path
     projects: Path
+    # Folders whose children are detected as projects.
+    roots: tuple[Path, ...] = ()
 
     @classmethod
     def current(cls) -> "Environment":
         user = os.environ.get("USER") or run("id", "-un").stdout.strip()
         if user in CANONICAL_USERS:
-            return cls(*CANONICAL_USERS[user])
+            name, home, projects = CANONICAL_USERS[user]
+            return cls(name, home, projects, (projects,) if projects.is_dir() else ())
         home = Path.home()
         config_path = Path(os.environ.get(
             "AGK_ENV_CONFIG", home / ".config/agk/environment.yaml"
@@ -177,7 +180,139 @@ class Environment:
             raise SystemExit(f"Unsupported AGK environment: {name}")
         default_projects = home / "workspace" / ("clients" if name == "mission" else "projects")
         projects = Path(str(config.get("projects_root") or default_projects)).expanduser()
-        return cls(name, home, projects)
+        return cls(name, home, projects, project_roots(config, home))
+
+
+# Files that make a folder a project, and the stack each one reveals. Keep in
+# step with PROJECT_MARKERS in apps/agk-tui/src/data.rs.
+PROJECT_MARKERS = (
+    (".git", ""), ("Cargo.toml", "Rust"), ("package.json", "Node"), ("deno.json", "Deno"),
+    ("pyproject.toml", "Python"), ("requirements.txt", "Python"), ("go.mod", "Go"),
+    ("Package.swift", "Swift"), ("pom.xml", "Java"), ("build.gradle", "Java"),
+    ("build.gradle.kts", "Kotlin"), ("Gemfile", "Ruby"), ("composer.json", "PHP"),
+    ("wrangler.toml", "Cloudflare"), ("wrangler.jsonc", "Cloudflare"), ("Dockerfile", "Docker"),
+    ("PROJECT.md", ""), ("AGENTS.md", ""), ("CLAUDE.md", ""),
+)
+PROJECT_SKIP = {"node_modules", "target", "dist", "build", "venv", "vendor", "__pycache__"}
+DEFAULT_PROJECT_ROOTS = (
+    "workspace/projects", "projects", "Projects", "code", "Code", "dev", "src", "repos",
+    "Developer",
+)
+
+
+def project_roots(config: dict[str, object], home: Path) -> tuple[Path, ...]:
+    """Folders to scan for projects.
+
+    `projects_root` and `project_roots` are authoritative when present;
+    otherwise every conventional folder that exists is used.
+    """
+    def expand(value: object) -> Path:
+        text = str(value).strip()
+        if text == "~" or text.startswith("~/"):
+            return home / text[2:]
+        return Path(text)
+
+    configured = [expand(config["projects_root"])] if config.get("projects_root") else []
+    extra = config.get("project_roots")
+    if isinstance(extra, list):
+        configured.extend(expand(item) for item in extra if isinstance(item, str))
+    candidates = configured or [home / name for name in DEFAULT_PROJECT_ROOTS]
+    roots: list[Path] = []
+    seen: set[tuple[int, int]] = set()
+    for root in candidates:
+        try:
+            status = root.stat()
+        except OSError:
+            continue
+        # The inode, not the spelling: a case-insensitive filesystem reports
+        # `projects` and `Projects` as two existing folders.
+        identity = (status.st_dev, status.st_ino)
+        if root.is_dir() and identity not in seen:
+            seen.add(identity)
+            roots.append(root)
+    return tuple(roots)
+
+
+def _project_candidates(folder: Path) -> list[Path]:
+    try:
+        children = sorted(folder.iterdir(), key=lambda child: child.name)
+    except OSError:
+        return []
+    return [
+        child for child in children
+        if not child.name.startswith(".") and child.name not in PROJECT_SKIP and child.is_dir()
+    ]
+
+
+def _project_stack(path: Path) -> list[str] | None:
+    found = False
+    stack: list[str] = []
+    for marker, label in PROJECT_MARKERS:
+        if (path / marker).exists():
+            found = True
+            if label and label not in stack:
+                stack.append(label)
+    return stack if found else None
+
+
+def _git_branch(project: Path) -> str | None:
+    git = project / ".git"
+    try:
+        if git.is_file():
+            pointer = git.read_text(encoding="utf-8").strip()
+            if not pointer.startswith("gitdir:"):
+                return None
+            git = (project / pointer[len("gitdir:"):].strip()).resolve()
+        head = (git / "HEAD").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if head.startswith("ref: refs/heads/"):
+        return head[len("ref: refs/heads/"):]
+    return f"detached {head[:7]}" if len(head) >= 7 else None
+
+
+def discover_projects(roots: tuple[Path, ...] | list[Path]) -> list[dict[str, object]]:
+    """Project folders beneath `roots`, by the same rule as the native TUI.
+
+    A direct child with a marker file is a project and is not descended
+    into; a child without one is a grouping folder whose children are
+    checked once.
+    """
+    projects: list[dict[str, object]] = []
+    seen: set[Path] = set()
+
+    def add(name: str, path: Path, stack: list[str]) -> None:
+        real = path.resolve()
+        if real in seen:
+            return
+        seen.add(real)
+        projects.append({
+            "id": f"detected:{real}", "slug": name, "name": name, "status": "detected",
+            "path": str(path), "parent_id": None, "stack": stack,
+            "branch": _git_branch(path),
+        })
+
+    for root in roots:
+        for child in _project_candidates(root):
+            stack = _project_stack(child)
+            if stack is not None:
+                add(child.name, child, stack)
+                continue
+            for nested in _project_candidates(child):
+                nested_stack = _project_stack(nested)
+                if nested_stack is not None:
+                    add(f"{child.name}/{nested.name}", nested, nested_stack)
+    return sorted(projects, key=lambda project: str(project["name"]).lower())
+
+
+def all_projects(env: "Environment") -> list[dict[str, object]]:
+    """Registered projects first, then detected folders they do not cover."""
+    registered = canonical_projects(env)
+    covered = {Path(str(row["path"])).resolve() for row in registered if row.get("path")}
+    return registered + [
+        project for project in discover_projects(env.roots)
+        if Path(str(project["path"])).resolve() not in covered
+    ]
 
 
 def os_registry_path() -> Path:
@@ -497,11 +632,7 @@ class RuntimeRegistry:
         return name
 
     def restart_frontend(self, row: sqlite3.Row) -> sqlite3.Row:
-        command = json.loads(row["command_json"] or "[]")
-        if not command:
-            command = default_command(
-                row["type"], row["native_session"], row["hermes_profile"]
-            )
+        command = resumable_command(self.env.home, row)
         if self.runtime.has_session(row["rmux_session"]):
             self.runtime.respawn(row["rmux_session"], row["cwd"], command)
         else:
@@ -563,9 +694,16 @@ class RuntimeRegistry:
     def fork(self, row: sqlite3.Row, name: str) -> sqlite3.Row:
         native = row["native_session"]
         if row["type"] == "codex" and native:
-            command = ["codex", "fork", native]
+            # The new thread id is linked from Codex's own store afterwards.
+            command, native = [*default_command("codex"), "fork", native], None
+        elif row["type"] == "opencode" and native:
+            command, native = [*default_command("opencode"), "--session", native, "--fork"], None
         elif row["type"] == "claude" and native:
-            command = ["claude", "--resume", native, "--fork-session"]
+            # The fork owns a new conversation id, so it stays resumable
+            # independently of the session it was forked from.
+            parent_native, native = native, str(uuid.uuid4())
+            command = [*default_command("claude"), "--resume", parent_native,
+                       "--fork-session", "--session-id", native]
         elif row["type"] == "hermes" and native:
             # Hermes has resume but no documented fork flag. Start a new lineage
             # while retaining the parent link in Agentik metadata.
@@ -583,7 +721,134 @@ class RuntimeRegistry:
                            command=command, native_session=native,
                            hermes_profile=row["hermes_profile"])
 
+    def link_hermes_sessions(self) -> int:
+        """Persist the Hermes conversation behind each Hermes terminal.
+
+        Hermes generates its session id after launch, so a new runtime row
+        has none. Once the conversation is identified it is stored, which is
+        what lets a restarted terminal resume the same conversation instead
+        of opening an empty one. Ambiguous matches are left unlinked.
+        """
+        window, margin = 30.0, 1.0
+        pending = [
+            row for row in self.rows()
+            if row["type"] in {"hermes", "openrouter"} and not row["native_session"]
+        ]
+        if not pending:
+            return 0
+        taken = {
+            (row["hermes_profile"], row["native_session"])
+            for row in self.rows(include_archived=True) if row["native_session"]
+        }
+        linked = 0
+        for row in pending:
+            profile = row["hermes_profile"]
+            database = hermes_state_db(self.env.home, profile)
+            if not database.is_file():
+                continue
+            try:
+                store = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=1)
+                try:
+                    columns = {item[1] for item in store.execute("PRAGMA table_info(sessions)")}
+                    title = hermes_launch_title(row["command_json"])
+                    if title and {"id", "title"} <= columns:
+                        # Named at launch: the title identifies it exactly.
+                        named = [str(item[0]) for item in store.execute(
+                            "SELECT id FROM sessions WHERE title=?", (title,))]
+                        if len(named) == 1 and (profile, named[0]) not in taken:
+                            self._link_native(row, named[0])
+                            taken.add((profile, named[0]))
+                            linked += 1
+                        continue
+                    if not {"id", "cwd", "started_at"} <= columns:
+                        continue
+                    provider = "COALESCE(billing_provider,'')" if "billing_provider" in columns else "''"
+                    candidates = store.execute(
+                        f"SELECT id,COALESCE(cwd,''),started_at,{provider} FROM sessions "
+                        "WHERE started_at BETWEEN ? AND ?",
+                        (row["created_at"] - window, row["created_at"] + window),
+                    ).fetchall()
+                finally:
+                    store.close()
+            except sqlite3.Error:
+                continue
+            matches = sorted(
+                (abs(float(started) - float(row["created_at"])), str(session_id))
+                for session_id, cwd, started, session_provider in candidates
+                if (profile, session_id) not in taken
+                and cwd == row["cwd"]
+                and (row["type"] != "openrouter" or str(session_provider).lower() == "openrouter")
+            )
+            if not matches or (len(matches) > 1 and matches[1][0] - matches[0][0] < margin):
+                continue
+            session_id = matches[0][1]
+            self._link_native(row, session_id)
+            taken.add((profile, session_id))
+            linked += 1
+        if linked:
+            self.db.commit()
+        return linked
+
+    def _link_native(self, row: sqlite3.Row, session_id: str) -> None:
+        hermes = session_id if row["type"] in {"hermes", "openrouter"} else None
+        self.db.execute(
+            "UPDATE runtime_sessions SET native_session=?,hermes_session=COALESCE(?,hermes_session) "
+            "WHERE id=?",
+            (session_id, hermes, row["id"]),
+        )
+        self.db.execute(
+            "INSERT INTO runtime_events(runtime_id,event,payload,created_at) VALUES(?,?,?,?)",
+            (row["id"], "runtime.native_session_linked",
+             json.dumps({"native_session": session_id}), time.time()),
+        )
+
+    def link_store_sessions(self) -> int:
+        """Persist the Codex/OpenCode conversation behind each terminal.
+
+        Neither CLI accepts a caller-chosen conversation id, so the id is read
+        back from the CLI's own store: the first conversation started in the
+        terminal's directory after the terminal was created. Two unlinked
+        terminals of one kind in one directory are ambiguous and stay
+        unlinked rather than risk reopening the wrong conversation.
+        """
+        pending: dict[tuple[str, str], list[sqlite3.Row]] = {}
+        for row in self.rows():
+            if row["type"] in PROVIDER_STORES and not row["native_session"]:
+                pending.setdefault((row["type"], row["cwd"]), []).append(row)
+        if not pending:
+            return 0
+        taken = {
+            (row["type"], row["native_session"])
+            for row in self.rows(include_archived=True) if row["native_session"]
+        }
+        stores: dict[str, list[tuple[str, str, float]]] = {}
+        linked = 0
+        for (kind, cwd), rows in pending.items():
+            if len(rows) != 1:
+                continue
+            row = rows[0]
+            if kind not in stores:
+                stores[kind] = provider_store_sessions(self.env.home, kind)
+            started = sorted(
+                (begun, session_id) for session_id, directory, begun in stores[kind]
+                if directory == cwd and begun >= row["created_at"] - 2
+                and (kind, session_id) not in taken
+            )
+            if started:
+                self._link_native(row, started[0][1])
+                taken.add((kind, started[0][1]))
+                linked += 1
+        if linked:
+            self.db.commit()
+        return linked
+
     def reconcile(self) -> tuple[int, list[str]]:
+        for link in (self.link_hermes_sessions, self.link_store_sessions):
+            try:
+                link()
+            except (OSError, sqlite3.Error):
+                # Linking is an enrichment; status reconciliation must still run.
+                pass
         proc = self.runtime.panes()
         live_info: dict[str, list[tuple[bool, float, str]]] = {}
         if proc.returncode == 0:
@@ -619,32 +884,194 @@ class RuntimeRegistry:
         return changed, sorted(live - managed)
 
 
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,119}$")
+MODEL_FLAGS = {"hermes": "--model", "openrouter": "--model", "claude": "--model",
+               "codex": "--model", "opencode": "--model"}
+# Where each CLI records its conversations: (store, query) -> id, cwd, start.
+PROVIDER_STORES = {
+    "codex": "SELECT id,cwd,created_at FROM threads WHERE archived=0",
+    "opencode": "SELECT id,directory,time_created/1000.0 FROM session WHERE parent_id IS NULL",
+}
+
+
+def hermes_state_db(home: Path, profile: str | None) -> Path:
+    root = home / ".hermes"
+    return (root / "profiles" / profile if profile else root) / "state.db"
+
+
+def hermes_launch_title(command_json: str | None) -> str | None:
+    """The session title a Hermes launch created its conversation with."""
+    try:
+        command = [str(item) for item in json.loads(command_json or "[]")]
+    except (TypeError, ValueError):
+        return None
+    if "--create-if-missing" not in command:
+        return None
+    for flag in ("-c", "--continue"):
+        if flag in command[:-1]:
+            return command[command.index(flag) + 1]
+    return None
+
+
+def hermes_session_title(home: Path, profile: str | None, name: str) -> str:
+    """A Hermes title no earlier conversation owns.
+
+    Hermes resumes by title, so reusing the name of an archived session
+    would silently reopen its old conversation.
+    """
+    database = hermes_state_db(home, profile)
+    if not database.is_file():
+        return name
+    try:
+        store = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=1)
+        try:
+            used = {str(item[0]) for item in store.execute(
+                "SELECT title FROM sessions WHERE title=? OR title LIKE ?",
+                (name, f"{name}-%"))}
+        finally:
+            store.close()
+    except sqlite3.Error:
+        return f"{name}-{uuid.uuid4().hex[:6]}"
+    if name not in used:
+        return name
+    return next(f"{name}-{index}" for index in range(2, 10_000) if f"{name}-{index}" not in used)
+
+
+def provider_store_sessions(home: Path, kind: str) -> list[tuple[str, str, float]]:
+    """Conversations a Codex or OpenCode install knows: (id, cwd, started)."""
+    if kind == "codex":
+        versions = sorted(
+            (home / ".codex").glob("state_*.sqlite"),
+            key=lambda path: int(re.sub(r"\D", "", path.stem) or 0),
+        )
+        database = versions[-1] if versions else None
+    else:
+        data_home = Path(os.environ.get("XDG_DATA_HOME") or home / ".local/share")
+        database = data_home / "opencode/opencode.db"
+    if database is None or not database.is_file():
+        return []
+    try:
+        store = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=1)
+        try:
+            return [(str(session_id), str(cwd), float(started))
+                    for session_id, cwd, started in store.execute(PROVIDER_STORES[kind])]
+        finally:
+            store.close()
+    except (sqlite3.Error, TypeError, ValueError):
+        # A CLI release that changed its schema only loses the enrichment.
+        return []
+
+
 def default_command(
     kind: str,
     native_session: str | None = None,
     hermes_profile: str | None = None,
+    model: str | None = None,
+    title: str | None = None,
 ) -> list[str]:
+    if model is not None and not MODEL_RE.fullmatch(model):
+        raise ValueError("model must be a plain model id or alias")
     executable = lambda name: shutil.which(name) or name
-    openrouter_model = os.environ.get("AGK_OPENROUTER_MODEL", "stealth/ox-alpha")
-    claude = [executable("env"), "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1", executable("claude"), "--dangerously-skip-permissions"]
+    openrouter_model = model or os.environ.get("AGK_OPENROUTER_MODEL", "stealth/ox-alpha")
+    chosen = [MODEL_FLAGS[kind], model] if model and kind in MODEL_FLAGS else []
+    claude = [executable("env"), "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1", executable("claude"), "--dangerously-skip-permissions", *chosen]
     if native_session:
         claude.extend(["--resume", native_session])
-    hermes = [executable("hermes")]
-    if hermes_profile:
-        hermes.extend(["--profile", hermes_profile])
-    if native_session:
-        hermes.extend(["--resume", native_session])
+
+    def hermes(*options: str) -> list[str]:
+        command = [executable("hermes")]
+        if hermes_profile:
+            command.extend(["--profile", hermes_profile])
+        if native_session:
+            return [*command, *options, "--resume", native_session]
+        if title:
+            # Naming the conversation at launch makes the launch itself
+            # resumable: the same command reopens the same conversation.
+            return [*command, "chat", *options, "--continue", title, "--create-if-missing"]
+        return [*command, *options]
+
+    codex = [executable("codex"), *chosen]
+    opencode = [executable("opencode"), *chosen]
     commands = {
-        "hermes": hermes,
+        "hermes": hermes(*chosen),
         "claude": claude,
-        "codex": [executable("codex"), "resume", native_session] if native_session else [executable("codex")],
-        "openrouter": [executable("hermes"), "--provider", "openrouter", "--model", openrouter_model],
-        "opencode": [executable("opencode")],
+        "codex": [*codex, "resume", native_session] if native_session else codex,
+        "openrouter": hermes("--provider", "openrouter", "--model", openrouter_model),
+        "opencode": [*opencode, "--session", native_session] if native_session else opencode,
         "shell": [os.environ.get("SHELL", "/bin/bash"), "-l"],
     }
     if kind not in commands:
         raise ValueError(f"{kind} requires an explicit orchestrator command")
     return commands[kind]
+
+
+def claude_transcript_exists(home: Path, session_id: str) -> bool:
+    """True once Claude Code has saved at least one turn for this session."""
+    try:
+        return any((home / ".claude" / "projects").glob(f"*/{session_id}.jsonl"))
+    except OSError:
+        return False
+
+
+def launch_command(
+    kind: str,
+    native_session: str | None = None,
+    hermes_profile: str | None = None,
+    model: str | None = None,
+    title: str | None = None,
+) -> tuple[list[str], str | None]:
+    """Build a provider launch and the conversation identity it will own.
+
+    Claude Code accepts a caller-chosen session id. Assigning one at launch
+    is what lets AGK map a terminal to its conversation and resume exactly
+    that conversation after the RMUX session is gone.
+    """
+    command = default_command(kind, native_session, hermes_profile, model, title)
+    if kind == "claude" and not native_session:
+        native_session = str(uuid.uuid4())
+        command = [*command, "--session-id", native_session]
+    return command, native_session
+
+
+def resumable_command(home: Path, row: sqlite3.Row) -> list[str]:
+    """The command that reopens a runtime on its own provider conversation."""
+    try:
+        command = [str(item) for item in json.loads(row["command_json"] or "[]")]
+    except (TypeError, ValueError):
+        command = []
+    kind, native = row["type"], row["native_session"]
+    if not command:
+        return default_command(kind, native, row["hermes_profile"])
+    if kind in {"hermes", "openrouter"} and "--create-if-missing" in command:
+        # Launched on a named conversation: the launch reopens it by itself.
+        return command
+    if not native:
+        return command
+    if kind == "claude":
+        saved = claude_transcript_exists(home, native)
+        if "--fork-session" in command and not saved:
+            # The fork has not been written yet: fork again from its parent.
+            return command
+        # `--session-id` creates a conversation and is rejected once it
+        # exists; `--resume` is rejected until the first turn was saved.
+        # `--fork-session` would branch a new conversation on every restart.
+        valued = {"--session-id", "--resume"}
+        base = [item for index, item in enumerate(command)
+                if item not in valued | {"--fork-session"}
+                and (index == 0 or command[index - 1] not in valued)]
+        return [*base, "--resume" if saved else "--session-id", native]
+    if kind in {"hermes", "openrouter"} and "--resume" not in command:
+        return [*command, "--resume", native]
+    if kind == "codex":
+        if "resume" in command:
+            return command
+        # A stored `codex fork PARENT` would fork again on every restart.
+        base = command[:command.index("fork")] if "fork" in command else command
+        return [*base, "resume", native]
+    if kind == "opencode" and ("--fork" in command or "--session" not in command):
+        base = command[:command.index("--session")] if "--session" in command else command
+        return [*base, "--session", native]
+    return command
 
 
 def start_specialist(
@@ -809,15 +1236,20 @@ def composio_toolkits(path: Path) -> list[dict[str, object]]:
 def skill_inventory(env: Environment) -> list[dict[str, str]]:
     """List skill identities and sources without reading skill contents."""
     roots = ((env.home / ".hermes/skills", "hermes"), (env.home / ".claude/skills", "claude"),
-             (env.home / ".codex/skills", "codex"))
+             (env.home / ".codex/skills", "codex"), (env.home / ".agents/skills", "shared"))
     found: dict[tuple[str, str], dict[str, str]] = {}
     for root, source in roots:
         if not root.is_dir():
             continue
-        manifests = list(root.glob("*/DESCRIPTION.md")) + list(root.glob("*/SKILL.md"))
-        # Codex system/plugin skills may be namespaced one level deeper.
-        if source == "codex":
-            manifests += list(root.glob("*/*/SKILL.md"))
+        manifests = list(root.glob("*/SKILL.md"))
+        # Hermes categories and Codex system skills sit one level deeper.
+        grouped = list(root.glob("*/*/SKILL.md")) if source in {"hermes", "codex"} else []
+        categories = {manifest.parent.parent for manifest in grouped}
+        manifests += grouped
+        # A folder that only groups skills is a category, not a skill.
+        manifests += [manifest for manifest in root.glob("*/DESCRIPTION.md")
+                      if manifest.parent not in categories
+                      and not (manifest.parent / "SKILL.md").exists()]
         for manifest in manifests[:500]:
             found[(manifest.parent.name, source)] = {
                 "name": manifest.parent.name, "source": source, "status": "installed",
@@ -858,7 +1290,7 @@ def _create_from_tui(stdscr: "curses._CursesWindow", registry: RuntimeRegistry,
     try:
         registry.create(name=name, kind=kind, cwd=cwd or registry.env.home,
                         client=client or None, project=project, mission=mission,
-                        command=default_command(kind))
+                        command=launch_command(kind)[0])
     except Exception as exc:
         _notice(stdscr, f"Error: {exc}")
 
@@ -1189,17 +1621,25 @@ def tui_v2(stdscr: "curses._CursesWindow", registry: RuntimeRegistry) -> None:
 
 def doctor(env: Environment, registry: RuntimeRegistry) -> int:
     checks = []
-    for label, command in (("RMUX", ["rmux", "-V"]), ("RMUX health", ["rmux", "diagnose", "--human"]),
-                           ("Hermes", ["hermes", "--help"]), ("Claude", ["claude", "--version"]),
-                           ("Codex", ["codex", "--version"]), ("Tailscale", ["tailscale", "status"])):
+    for label, command in (("RMUX", ["rmux", "-V"]), ("RMUX health", ["rmux", "diagnose", "--human"])):
         result = run(*command, check=False)
         checks.append((label, result.returncode == 0))
     _, unmanaged = registry.reconcile()
-    checks += [("Runtime registry", True), ("OS Registry", os_registry_path().is_dir()),
-               ("Isolated home", env.home.stat().st_mode & 0o077 == 0)]
+    checks.append(("Runtime registry", True))
+    # Providers and extras are choices, not requirements: report them
+    # without failing the health check of a machine that does not use them.
+    optional = [(label, shutil.which(binary) is not None) for label, binary in (
+        ("Hermes", "hermes"), ("Claude Code", "claude"), ("Codex", "codex"),
+        ("OpenCode", "opencode"), ("Composio", "composio"), ("Tailscale", "tailscale"))]
+    optional.append(("OS Registry", os_registry_path().is_dir()))
+    if env.home.parent == Path("/home") and env.name == env.home.name:
+        # Only the multi-user layout promises homes closed to other users.
+        checks.append(("Isolated home", env.home.stat().st_mode & 0o077 == 0))
     print(f"AGK-TUI DOCTOR · {env.name.upper()}")
     for label, ok in checks:
         print(f"{'✓' if ok else '✗'} {label}")
+    for label, ok in optional:
+        print(f"{'✓' if ok else '·'} {label}{'' if ok else ' (not installed)'}")
     print(f"{'!' if unmanaged else '✓'} Unmanaged RMUX sessions: {', '.join(unmanaged) if unmanaged else 'none'}")
     return 0 if all(ok for _, ok in checks) else 1
 
@@ -1234,6 +1674,7 @@ def main() -> int:
     new = sub.add_parser("new")
     new.add_argument("type", choices=sorted(TYPES)); new.add_argument("name")
     new.add_argument("--cwd", type=Path); new.add_argument("--client"); new.add_argument("--project"); new.add_argument("--mission"); new.add_argument("--native-session"); new.add_argument("--profile")
+    new.add_argument("--model", help="model id or alias passed to the provider CLI")
     resume = sub.add_parser("resume"); resume.add_argument("target", nargs="?")
     open_p = sub.add_parser("open"); open_p.add_argument("target")
     agent = sub.add_parser("agent"); agent.add_argument("type", choices=("hermes", "claude", "codex")); agent.add_argument("name", nargs="?")
@@ -1266,15 +1707,23 @@ def main() -> int:
         return 0
     if args.command == "doctor": return doctor(env, registry)
     if args.command == "new":
+        try:
+            title = (hermes_session_title(env.home, args.profile, args.name)
+                     if args.type in {"hermes", "openrouter"} else None)
+            command, native_session = launch_command(
+                args.type, args.native_session, args.profile, args.model, title)
+        except ValueError as error:
+            print(f"Session creation failed: {error}", file=sys.stderr)
+            return 1
         row = registry.create(name=args.name, kind=args.type, cwd=args.cwd or env.home,
                               client=args.client, project=args.project, mission=args.mission,
-                              command=default_command(args.type, args.native_session, args.profile),
-                              native_session=args.native_session,
+                              command=command, native_session=native_session,
                               hermes_profile=args.profile)
         print(f"Created {row['id']} · {row['name']} · {row['type'].upper()}"); return 0
     if args.command == "agent":
         name = args.name or f"{env.name}-{args.type}-{time.strftime('%Y%m%d-%H%M%S')}"
-        row = registry.create(name=name, kind=args.type, cwd=env.projects if env.projects.exists() else env.home, command=default_command(args.type))
+        command, native_session = launch_command(args.type)
+        row = registry.create(name=name, kind=args.type, cwd=env.projects if env.projects.exists() else env.home, command=command, native_session=native_session)
         print(f"Started {row['id']} · {row['name']}"); return 0
     if args.command == "specialist":
         try:
@@ -1327,11 +1776,12 @@ def main() -> int:
     if args.command == "reconcile":
         changed, unmanaged = registry.reconcile(); print(f"Updated: {changed}\nUnmanaged: {', '.join(unmanaged) if unmanaged else 'none'}"); return 0
     if args.command == "projects":
-        projects = canonical_projects(env)
-        if projects:
-            for row in projects: print(f"{row['status']:<10} {row['name']} · {row['id']} · {row['path'] or '—'}")
-        else:
-            for row in sorted(env.projects.glob("*")) if env.projects.exists() else []: print(row.name)
+        for row in all_projects(env):
+            if row["status"] == "detected":
+                facts = " · ".join(filter(None, ["/".join(row["stack"]), row["branch"]]))
+                print(f"{row['status']:<10} {row['name']} · {facts or '—'} · {row['path']}")
+            else:
+                print(f"{row['status']:<10} {row['name']} · {row['id']} · {row['path'] or '—'}")
         return 0
     if args.command == "agents":
         for row in registry.rows():

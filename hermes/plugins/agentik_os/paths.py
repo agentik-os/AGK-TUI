@@ -2,9 +2,45 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
+
+import yaml
+
+ENVIRONMENTS = ("operator", "agentik", "mission", "private")
+
+
+def agk_executable() -> str:
+    """The `agk` launcher, wherever this install put it.
+
+    A gateway started by launchd or systemd does not have the user's PATH,
+    so the single-user and system locations are checked as well.
+    """
+    found = shutil.which("agk")
+    if found:
+        return found
+    candidates = [Path.home() / ".local/bin/agk", Path("/usr/local/bin/agk")]
+    return str(next((path for path in candidates if path.is_file()), candidates[-1]))
+
+
+def environment_config(home: Path) -> dict:
+    """AGK's single-user environment file, or an empty mapping."""
+    path = Path(os.environ.get("AGK_ENV_CONFIG") or home / ".config/agk/environment.yaml")
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError):
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
+def declared_environment(home: Path) -> str | None:
+    """The environment this home declares outside the Hermes config."""
+    declared = (os.environ.get("AGK_ENVIRONMENT") or os.environ.get("AGENTIK_ENVIRONMENT")
+                or environment_config(home).get("environment"))
+    return str(declared) if declared in ENVIRONMENTS else None
 
 
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -29,10 +65,19 @@ def _contained(root: Path, candidate: Path) -> Path:
 class PathResolver:
     environment: str
     home: Path
+    # Where this install keeps its projects; the canonical workspace layout
+    # applies when the environment file names no folder.
+    projects_root: Path | None = None
 
     @classmethod
     def current(cls, environment: str) -> "PathResolver":
-        return cls(environment=environment, home=Path.home())
+        home = Path.home()
+        configured = environment_config(home).get("projects_root")
+        root = None
+        if isinstance(configured, str) and configured.strip():
+            text = configured.strip()
+            root = home / text[2:] if text.startswith("~/") else Path(text)
+        return cls(environment=environment, home=home, projects_root=root)
 
     def client(self, slug: str) -> Path:
         if self.environment not in {"mission", "collective"}:
@@ -48,10 +93,8 @@ class PathResolver:
             if not client_slug:
                 raise ValueError("open a client before creating a project")
             root = self.client(client_slug) / "projects"
-        elif self.environment == "agentik":
-            root = self.home / "workspace" / "projects"
-        elif self.environment == "private":
-            root = self.home / "workspace" / "projects"
+        elif self.environment in {"agentik", "private"}:
+            root = self.projects_root or self.home / "workspace" / "projects"
         else:
             raise PermissionError("Operator does not own business projects")
         return _contained(root, root / slug)

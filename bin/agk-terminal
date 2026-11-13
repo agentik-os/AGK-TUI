@@ -115,6 +115,10 @@ PY
     esac
     ;;
   topology)
+    # PyYAML lives in AGK's own environment, not in the system Python.
+    if [ -x "$install_root/venv/bin/python" ]; then
+      exec "$install_root/venv/bin/python" "$install_root/scripts/topology.py" "$@"
+    fi
     exec "$install_root/scripts/topology.py" "$@"
     ;;
   doctor)

@@ -32,6 +32,6 @@ rules:
     enabled: true
     providers: ["*"]
     content: >-
-      Keep Operator, Agentik, Mission, and Private state inside their configured runtime and
-      Linux-user boundaries. Route through profile identifiers and never expose credentials or
-      private state across profiles.
+      Keep the state of each profile (an AGK environment, a Hermes profile or an OS user)
+      inside its own boundary. Route through profile identifiers and never copy or expose
+      credentials or private state from one profile to another.

@@ -207,7 +207,9 @@ fn contrast_text(color: RgbColor) -> RgbColor {
 /// Built-in AGK themes. Variant order is the stable order shown in Settings.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum Theme {
+    /// Follows the real colors reported by the host terminal.
     #[default]
+    Auto,
     ClassicDark,
     ClassicLight,
     HermesDark,
@@ -226,7 +228,8 @@ pub enum Theme {
 }
 
 impl Theme {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
+        Self::Auto,
         Self::ClassicDark,
         Self::ClassicLight,
         Self::HermesDark,
@@ -247,6 +250,7 @@ impl Theme {
     /// Stable identifier used in `tui.conf`.
     pub const fn slug(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::ClassicDark => "classic-dark",
             Self::ClassicLight => "classic-light",
             Self::HermesDark => "hermes-dark",
@@ -267,6 +271,7 @@ impl Theme {
 
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Auto => "Auto",
             Self::ClassicDark => "Classic Dark",
             Self::ClassicLight => "Classic Light",
             Self::HermesDark => "Hermes Dark",
@@ -287,6 +292,7 @@ impl Theme {
 
     pub const fn description(self) -> &'static str {
         match self {
+            Self::Auto => "Follows your terminal: its real background, text and light/dark mode.",
             Self::ClassicDark => "Neutral graphite, crisp white type and a restrained blue accent.",
             Self::ClassicLight => "Clean paper white, charcoal type and quiet professional blue.",
             Self::HermesDark => "Official Hermes gold and bronze on deep navy-black.",
@@ -325,6 +331,7 @@ impl Theme {
         let slug = slug.trim();
         // Preserve preferences written by the pre-provider AGK themes.
         match slug.to_ascii_lowercase().as_str() {
+            "terminal" | "system" | "default" => return Some(Self::Auto),
             "gold" | "ares" => return Some(Self::HermesDark),
             "ocean" | "nord" => return Some(Self::CodexDark),
             "mono" | "matrix" => return Some(Self::CodexLight),
@@ -348,17 +355,6 @@ impl Theme {
         ]
     }
 
-    pub fn swatches_with_custom(self, custom: CustomColors) -> [Color; 5] {
-        let palette = self.palette_with_custom(custom);
-        [
-            palette.background,
-            palette.surface_alt,
-            palette.accent,
-            palette.info,
-            palette.text,
-        ]
-    }
-
     pub const fn paints_background(self) -> bool {
         matches!(self, Self::PureBlack | Self::PureWhite | Self::Custom)
     }
@@ -373,6 +369,7 @@ impl Theme {
 
     pub fn palette(self) -> Palette {
         match self {
+            Self::Auto => ansi_native_palette(),
             Self::ClassicDark => Palette {
                 background: Color::Rgb(15, 17, 21),
                 surface: Color::Rgb(22, 25, 30),
@@ -616,6 +613,401 @@ impl Theme {
     }
 }
 
+/// How many colors the host terminal can really display.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ColorDepth {
+    #[default]
+    TrueColor,
+    Ansi256,
+    Ansi16,
+}
+
+/// User override for color-depth detection, persisted as `colors=` in
+/// `tui.conf`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ColorMode {
+    #[default]
+    Auto,
+    TrueColor,
+    Ansi256,
+    Ansi16,
+}
+
+impl ColorMode {
+    pub const ALL: [Self; 4] = [Self::Auto, Self::TrueColor, Self::Ansi256, Self::Ansi16];
+
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::TrueColor => "truecolor",
+            Self::Ansi256 => "256",
+            Self::Ansi16 => "16",
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto-detect",
+            Self::TrueColor => "24-bit truecolor",
+            Self::Ansi256 => "256 colors",
+            Self::Ansi16 => "16 ANSI colors",
+        }
+    }
+
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        match slug.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "truecolor" | "24bit" | "rgb" => Some(Self::TrueColor),
+            "256" | "ansi256" => Some(Self::Ansi256),
+            "16" | "ansi" | "ansi16" => Some(Self::Ansi16),
+            _ => None,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let index = Self::ALL.iter().position(|mode| *mode == self).unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+
+    pub const fn depth(self, detected: ColorDepth) -> ColorDepth {
+        match self {
+            Self::Auto => detected,
+            Self::TrueColor => ColorDepth::TrueColor,
+            Self::Ansi256 => ColorDepth::Ansi256,
+            Self::Ansi16 => ColorDepth::Ansi16,
+        }
+    }
+}
+
+/// Facts about the host terminal gathered once at startup.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TerminalProfile {
+    /// Real default background, when the terminal answered OSC 11.
+    pub background: Option<RgbColor>,
+    /// Real default foreground, when the terminal answered OSC 10.
+    pub foreground: Option<RgbColor>,
+    pub depth: ColorDepth,
+}
+
+/// A palette that is ready to draw on one specific terminal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResolvedPalette {
+    pub palette: Palette,
+    /// True when AGK fills the canvas instead of inheriting the terminal's.
+    pub paints_background: bool,
+    /// True when a light/dark mismatch forced the canvas to be painted.
+    pub adapted: bool,
+}
+
+const DARK_INK: RgbColor = RgbColor(12, 14, 18);
+const LIGHT_INK: RgbColor = RgbColor(250, 250, 250);
+
+impl RgbColor {
+    pub const fn from_color(color: Color) -> Option<Self> {
+        match color {
+            Color::Rgb(red, green, blue) => Some(Self(red, green, blue)),
+            _ => None,
+        }
+    }
+
+    /// WCAG relative luminance in `0.0..=1.0`.
+    pub fn luminance(self) -> f32 {
+        let channel = |value: u8| {
+            let value = f32::from(value) / 255.0;
+            if value <= 0.039_28 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(self.0) + 0.7152 * channel(self.1) + 0.0722 * channel(self.2)
+    }
+
+    pub fn is_light(self) -> bool {
+        self.luminance() > 0.35
+    }
+
+    /// WCAG contrast ratio in `1.0..=21.0`.
+    pub fn contrast(self, other: Self) -> f32 {
+        let (left, right) = (self.luminance(), other.luminance());
+        (left.max(right) + 0.05) / (left.min(right) + 0.05)
+    }
+
+    /// Moves this color away from `background` until it is readable, keeping
+    /// as much of its hue as the requested ratio allows.
+    pub fn readable_on(self, background: Self, ratio: f32) -> Self {
+        if self.contrast(background) >= ratio {
+            return self;
+        }
+        let ink = if background.is_light() {
+            RgbColor(0, 0, 0)
+        } else {
+            RgbColor(255, 255, 255)
+        };
+        for percent in (10..=100).step_by(10) {
+            let candidate = blend(self, ink, percent);
+            if candidate.contrast(background) >= ratio {
+                return candidate;
+            }
+        }
+        ink
+    }
+}
+
+impl CustomColors {
+    /// Seeds the custom editor from any RGB palette so "customize this
+    /// theme" starts from what is on screen instead of a fixed default.
+    pub fn from_palette(palette: Palette) -> Option<Self> {
+        Some(Self {
+            background: RgbColor::from_color(palette.background)?,
+            surface: RgbColor::from_color(palette.surface)?,
+            text: RgbColor::from_color(palette.text)?,
+            muted: RgbColor::from_color(palette.text_muted)?,
+            accent: RgbColor::from_color(palette.accent)?,
+            border: RgbColor::from_color(palette.border)?,
+            success: RgbColor::from_color(palette.success)?,
+            warning: RgbColor::from_color(palette.warning)?,
+            error: RgbColor::from_color(palette.error)?,
+            info: RgbColor::from_color(palette.info)?,
+        })
+    }
+
+    /// Derives a complete palette from the terminal's own background and
+    /// foreground, so AGK looks native in any terminal theme.
+    pub fn from_terminal(background: RgbColor, foreground: Option<RgbColor>) -> Self {
+        let light = background.is_light();
+        let text = foreground
+            .filter(|foreground| foreground.contrast(background) >= 4.5)
+            .unwrap_or(if light { DARK_INK } else { LIGHT_INK });
+        let (accent, success, warning, error, info) = if light {
+            (
+                RgbColor(91, 70, 214),
+                RgbColor(30, 125, 75),
+                RgbColor(150, 98, 20),
+                RgbColor(185, 50, 60),
+                RgbColor(35, 100, 175),
+            )
+        } else {
+            (
+                RgbColor(139, 124, 246),
+                RgbColor(68, 190, 133),
+                RgbColor(226, 175, 88),
+                RgbColor(231, 96, 112),
+                RgbColor(91, 169, 244),
+            )
+        };
+        Self {
+            background,
+            surface: blend(background, text, 5),
+            text,
+            muted: blend(text, background, 42),
+            accent,
+            border: blend(background, text, 26),
+            success,
+            warning,
+            error,
+            info,
+        }
+    }
+}
+
+/// Used by Auto when the terminal did not report its colors: only the
+/// terminal's own ANSI palette is used, so text is readable on any theme.
+fn ansi_native_palette() -> Palette {
+    Palette {
+        background: Color::Reset,
+        surface: Color::Reset,
+        surface_alt: Color::Reset,
+        text: Color::Reset,
+        text_muted: Color::DarkGray,
+        accent: Color::Cyan,
+        accent_alt: Color::LightCyan,
+        selection_bg: Color::Blue,
+        selection_text: Color::White,
+        border: Color::DarkGray,
+        border_focused: Color::Cyan,
+        success: Color::Green,
+        warning: Color::Yellow,
+        error: Color::Red,
+        info: Color::Blue,
+    }
+}
+
+impl Palette {
+    /// Guarantees readable text, accents and status colors on the canvas
+    /// that will really be behind them.
+    fn harmonized(mut self, canvas: RgbColor) -> Self {
+        let fix = |color: &mut Color, ratio: f32| {
+            if let Some(rgb) = RgbColor::from_color(*color) {
+                *color = rgb.readable_on(canvas, ratio).color();
+            }
+        };
+        fix(&mut self.text, 7.0);
+        fix(&mut self.text_muted, 4.0);
+        fix(&mut self.accent, 3.2);
+        fix(&mut self.accent_alt, 3.2);
+        fix(&mut self.border_focused, 3.0);
+        fix(&mut self.border, 1.6);
+        fix(&mut self.success, 3.2);
+        fix(&mut self.warning, 3.2);
+        fix(&mut self.error, 3.2);
+        fix(&mut self.info, 3.2);
+        if let (Some(selection), Some(text)) = (
+            RgbColor::from_color(self.selection_bg),
+            RgbColor::from_color(self.selection_text),
+        ) {
+            self.selection_text = text.readable_on(selection, 4.5).color();
+        }
+        self
+    }
+
+    fn mapped(mut self, map: impl Fn(Color) -> Color) -> Self {
+        for color in [
+            &mut self.background,
+            &mut self.surface,
+            &mut self.surface_alt,
+            &mut self.text,
+            &mut self.text_muted,
+            &mut self.accent,
+            &mut self.accent_alt,
+            &mut self.selection_bg,
+            &mut self.selection_text,
+            &mut self.border,
+            &mut self.border_focused,
+            &mut self.success,
+            &mut self.warning,
+            &mut self.error,
+            &mut self.info,
+        ] {
+            *color = map(*color);
+        }
+        self
+    }
+}
+
+/// Reduces one color to what the terminal can display.
+pub fn downgrade(color: Color, depth: ColorDepth) -> Color {
+    let Some(RgbColor(red, green, blue)) = RgbColor::from_color(color) else {
+        return color;
+    };
+    match depth {
+        ColorDepth::TrueColor => color,
+        ColorDepth::Ansi256 => Color::Indexed(nearest_256(red, green, blue)),
+        ColorDepth::Ansi16 => nearest_ansi16(red, green, blue),
+    }
+}
+
+fn nearest_256(red: u8, green: u8, blue: u8) -> u8 {
+    const STEPS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    let nearest_step = |value: u8| {
+        (0..6usize)
+            .min_by_key(|index| (i32::from(STEPS[*index]) - i32::from(value)).abs())
+            .unwrap_or(0)
+    };
+    let distance = |r: u8, g: u8, b: u8| {
+        let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).pow(2);
+        d(r, red) + d(g, green) + d(b, blue)
+    };
+    let (ri, gi, bi) = (nearest_step(red), nearest_step(green), nearest_step(blue));
+    let cube = (16 + 36 * ri + 6 * gi + bi) as u8;
+    let cube_distance = distance(STEPS[ri], STEPS[gi], STEPS[bi]);
+    let average = (u16::from(red) + u16::from(green) + u16::from(blue)) / 3;
+    let gray_index = ((average.saturating_sub(8) + 5) / 10).min(23) as u8;
+    let gray_level = 8 + 10 * gray_index;
+    if distance(gray_level, gray_level, gray_level) < cube_distance {
+        232 + gray_index
+    } else {
+        cube
+    }
+}
+
+fn nearest_ansi16(red: u8, green: u8, blue: u8) -> Color {
+    const TABLE: [(Color, (u8, u8, u8)); 16] = [
+        (Color::Black, (0, 0, 0)),
+        (Color::Red, (205, 49, 49)),
+        (Color::Green, (13, 188, 121)),
+        (Color::Yellow, (229, 229, 16)),
+        (Color::Blue, (36, 114, 200)),
+        (Color::Magenta, (188, 63, 188)),
+        (Color::Cyan, (17, 168, 205)),
+        (Color::Gray, (204, 204, 204)),
+        (Color::DarkGray, (102, 102, 102)),
+        (Color::LightRed, (241, 76, 76)),
+        (Color::LightGreen, (35, 209, 139)),
+        (Color::LightYellow, (245, 245, 67)),
+        (Color::LightBlue, (59, 142, 234)),
+        (Color::LightMagenta, (214, 112, 214)),
+        (Color::LightCyan, (41, 184, 219)),
+        (Color::White, (255, 255, 255)),
+    ];
+    TABLE
+        .iter()
+        .min_by_key(|(_, (r, g, b))| {
+            let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).pow(2);
+            d(*r, red) + d(*g, green) + d(*b, blue)
+        })
+        .map(|(color, _)| *color)
+        .unwrap_or(Color::Reset)
+}
+
+impl Theme {
+    /// The palette before terminal adaptation; Auto is derived from the
+    /// terminal's reported colors when they are known.
+    pub fn base_palette(self, custom: CustomColors, terminal: TerminalProfile) -> Palette {
+        match (self, terminal.background) {
+            (Self::Auto, Some(background)) => {
+                CustomColors::from_terminal(background, terminal.foreground).palette()
+            }
+            _ => self.palette_with_custom(custom),
+        }
+    }
+
+    /// Adapts this theme to the terminal it will be drawn on:
+    ///
+    /// * a light theme on a dark terminal (or the reverse) paints its own
+    ///   canvas instead of leaving unreadable text on the wrong background;
+    /// * every text, accent and status color is nudged to a readable contrast
+    ///   against the canvas that is really behind it;
+    /// * RGB colors are reduced for terminals without truecolor.
+    pub fn resolve(
+        self,
+        custom: CustomColors,
+        terminal: TerminalProfile,
+        mode: ColorMode,
+    ) -> ResolvedPalette {
+        let mut palette = self.base_palette(custom, terminal);
+        let own_canvas = RgbColor::from_color(palette.background);
+        let mismatch = self != Self::Auto
+            && !self.paints_background()
+            && matches!(
+                (own_canvas, terminal.background),
+                (Some(own), Some(real)) if own.is_light() != real.is_light()
+            );
+        let paints_background = self.paints_background() || mismatch;
+        let canvas = if paints_background {
+            own_canvas
+        } else {
+            terminal.background.or(own_canvas)
+        };
+        if let Some(canvas) = canvas {
+            palette = palette.harmonized(canvas);
+        }
+        if !paints_background {
+            // AGK is an overlay on the user's terminal, not a second painted
+            // desktop: large surfaces inherit the native background.
+            palette.background = Color::Reset;
+            palette.surface = Color::Reset;
+            palette.surface_alt = Color::Reset;
+        }
+        let depth = mode.depth(terminal.depth);
+        ResolvedPalette {
+            palette: palette.mapped(|color| downgrade(color, depth)),
+            paints_background,
+            adapted: mismatch,
+        }
+    }
+}
+
 pub const DEFAULT_REFRESH_MS: u64 = 1_000;
 
 /// Preferences persisted outside the Agentik registries because they only
@@ -624,6 +1016,7 @@ pub const DEFAULT_REFRESH_MS: u64 = 1_000;
 pub struct Preferences {
     pub theme: Theme,
     pub custom_colors: CustomColors,
+    pub color_mode: ColorMode,
     pub split_preview: bool,
     pub refresh_ms: u64,
 }
@@ -633,6 +1026,7 @@ impl Default for Preferences {
         Self {
             theme: Theme::default(),
             custom_colors: CustomColors::default(),
+            color_mode: ColorMode::default(),
             split_preview: true,
             refresh_ms: DEFAULT_REFRESH_MS,
         }
@@ -671,8 +1065,9 @@ impl Preferences {
             self.refresh_ms
         };
         let mut contents = format!(
-            "# AGK native TUI preferences\ntheme={}\nsplit_preview={}\nrefresh_ms={}\n",
+            "# AGK native TUI preferences\ntheme={}\ncolors={}\nsplit_preview={}\nrefresh_ms={}\n",
             self.theme.slug(),
+            self.color_mode.slug(),
             self.split_preview,
             refresh_ms
         );
@@ -702,6 +1097,11 @@ impl Preferences {
                 "theme" => {
                     if let Some(theme) = Theme::from_slug(value) {
                         preferences.theme = theme;
+                    }
+                }
+                "colors" => {
+                    if let Some(mode) = ColorMode::from_slug(value) {
+                        preferences.color_mode = mode;
                     }
                 }
                 "split_preview" => match value.to_ascii_lowercase().as_str() {
@@ -983,13 +1383,15 @@ mod tests {
             assert_eq!(theme.previous().next(), theme);
             assert_eq!(theme.next(), Theme::ALL[(index + 1) % Theme::ALL.len()]);
         }
-        assert_eq!(Theme::Custom.next(), Theme::ClassicDark);
-        assert_eq!(Theme::ClassicDark.previous(), Theme::Custom);
+        assert_eq!(Theme::Custom.next(), Theme::Auto);
+        assert_eq!(Theme::Auto.previous(), Theme::Custom);
     }
 
     #[test]
     fn every_theme_has_a_distinct_semantic_palette() {
-        for (index, theme) in Theme::ALL.into_iter().enumerate() {
+        // Auto is terminal-derived; its static fallback is ANSI-only.
+        let fixed = Theme::ALL.into_iter().filter(|theme| *theme != Theme::Auto);
+        for (index, theme) in fixed.clone().enumerate() {
             let palette = theme.palette();
             assert_ne!(
                 palette.background,
@@ -1027,9 +1429,167 @@ mod tests {
                     palette.text,
                 ]
             );
-            for other in Theme::ALL.into_iter().skip(index + 1) {
+            for other in fixed.clone().skip(index + 1) {
                 assert_ne!(palette, other.palette(), "duplicate palette: {theme:?}");
             }
+        }
+    }
+
+    fn terminal(background: (u8, u8, u8)) -> TerminalProfile {
+        TerminalProfile {
+            background: Some(RgbColor(background.0, background.1, background.2)),
+            foreground: None,
+            depth: ColorDepth::TrueColor,
+        }
+    }
+
+    fn rgb(color: Color) -> RgbColor {
+        RgbColor::from_color(color).expect("truecolor palette entry")
+    }
+
+    #[test]
+    fn auto_theme_follows_dark_and_light_terminals_without_painting() {
+        for background in [(13, 17, 23), (253, 246, 227), (40, 44, 52), (255, 255, 255)] {
+            let profile = terminal(background);
+            let resolved = Theme::Auto.resolve(CustomColors::default(), profile, ColorMode::Auto);
+            let canvas = profile.background.unwrap();
+            assert!(!resolved.paints_background);
+            assert_eq!(resolved.palette.background, Color::Reset);
+            assert!(rgb(resolved.palette.text).contrast(canvas) >= 7.0);
+            assert!(rgb(resolved.palette.text_muted).contrast(canvas) >= 4.0);
+            assert!(rgb(resolved.palette.accent).contrast(canvas) >= 3.2);
+            assert!(rgb(resolved.palette.error).contrast(canvas) >= 3.2);
+        }
+    }
+
+    #[test]
+    fn auto_theme_without_terminal_colors_uses_only_the_native_ansi_palette() {
+        let resolved = Theme::Auto.resolve(
+            CustomColors::default(),
+            TerminalProfile::default(),
+            ColorMode::Auto,
+        );
+        assert!(!resolved.paints_background);
+        assert_eq!(resolved.palette.text, Color::Reset);
+        assert_eq!(resolved.palette.accent, Color::Cyan);
+    }
+
+    #[test]
+    fn mismatched_light_and_dark_themes_paint_their_own_canvas() {
+        let dark_terminal = terminal((16, 16, 20));
+        let light =
+            Theme::ClaudeLight.resolve(CustomColors::default(), dark_terminal, ColorMode::Auto);
+        assert!(light.paints_background && light.adapted);
+        assert_eq!(
+            light.palette.background,
+            Theme::ClaudeLight.palette().background
+        );
+
+        let dark =
+            Theme::ClaudeDark.resolve(CustomColors::default(), dark_terminal, ColorMode::Auto);
+        assert!(!dark.paints_background && !dark.adapted);
+        assert_eq!(dark.palette.background, Color::Reset);
+
+        let on_light = Theme::HermesDark.resolve(
+            CustomColors::default(),
+            terminal((250, 250, 250)),
+            ColorMode::Auto,
+        );
+        assert!(on_light.paints_background);
+    }
+
+    #[test]
+    fn every_theme_is_readable_on_every_terminal_background() {
+        for background in [
+            (0, 0, 0),
+            (30, 30, 46),
+            (60, 60, 60),
+            (253, 246, 227),
+            (255, 255, 255),
+        ] {
+            let profile = terminal(background);
+            for theme in Theme::ALL {
+                let resolved = theme.resolve(CustomColors::default(), profile, ColorMode::Auto);
+                let canvas = if resolved.paints_background {
+                    rgb(resolved.palette.background)
+                } else {
+                    profile.background.unwrap()
+                };
+                for (label, color, ratio) in [
+                    ("text", resolved.palette.text, 7.0),
+                    ("muted", resolved.palette.text_muted, 4.0),
+                    ("accent", resolved.palette.accent, 3.2),
+                    ("success", resolved.palette.success, 3.2),
+                    ("warning", resolved.palette.warning, 3.2),
+                    ("error", resolved.palette.error, 3.2),
+                ] {
+                    assert!(
+                        rgb(color).contrast(canvas) >= ratio - 0.01,
+                        "{} {label} on {background:?}",
+                        theme.slug()
+                    );
+                }
+                assert!(
+                    rgb(resolved.palette.selection_text)
+                        .contrast(rgb(resolved.palette.selection_bg))
+                        >= 4.49,
+                    "{} selection",
+                    theme.slug()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn limited_terminals_never_receive_truecolor_escapes() {
+        let mut profile = terminal((16, 16, 20));
+        profile.depth = ColorDepth::Ansi256;
+        let palette = Theme::Midnight
+            .resolve(CustomColors::default(), profile, ColorMode::Auto)
+            .palette;
+        assert!(matches!(palette.accent, Color::Indexed(_)));
+        assert!(matches!(palette.text, Color::Indexed(_)));
+
+        let forced = Theme::Midnight
+            .resolve(CustomColors::default(), profile, ColorMode::Ansi16)
+            .palette;
+        assert!(!matches!(forced.accent, Color::Rgb(..) | Color::Indexed(_)));
+        let truecolor = Theme::Midnight
+            .resolve(CustomColors::default(), profile, ColorMode::TrueColor)
+            .palette;
+        assert!(matches!(truecolor.accent, Color::Rgb(..)));
+
+        assert_eq!(
+            downgrade(Color::Rgb(255, 255, 255), ColorDepth::Ansi256),
+            Color::Indexed(231)
+        );
+        assert_eq!(
+            downgrade(Color::Rgb(128, 128, 128), ColorDepth::Ansi256),
+            Color::Indexed(244)
+        );
+        assert_eq!(
+            downgrade(Color::Rgb(0, 0, 0), ColorDepth::Ansi16),
+            Color::Black
+        );
+    }
+
+    #[test]
+    fn custom_colors_can_be_seeded_from_any_rgb_theme_and_color_mode_round_trips() {
+        let seeded = CustomColors::from_palette(Theme::ClaudeDark.palette()).unwrap();
+        assert_eq!(seeded.accent.color(), Theme::ClaudeDark.palette().accent);
+        assert!(CustomColors::from_palette(Theme::Auto.palette()).is_none());
+
+        let directory = TestDirectory::new();
+        let path = directory.config();
+        let expected = Preferences {
+            color_mode: ColorMode::Ansi256,
+            ..Preferences::default()
+        };
+        expected.save_to(&path).unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("colors=256"));
+        assert_eq!(Preferences::load_from(path).unwrap(), expected);
+        for mode in ColorMode::ALL {
+            assert_eq!(ColorMode::from_slug(mode.slug()), Some(mode));
         }
     }
 }

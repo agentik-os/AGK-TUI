@@ -172,7 +172,12 @@ pub fn handle_key_for_layout(
     }
 
     match key.code {
-        KeyCode::Char('q') => Action::Quit,
+        KeyCode::Char('q') => {
+            // A stray `q` typed toward a provider must not drop the user out
+            // of AGK; a second `q` (or Enter) confirms.
+            app.overlay = Overlay::ConfirmQuit;
+            Action::None
+        }
         KeyCode::Char('1') if !compact && app.view == View::Sessions && app.focus != Focus::Nav => {
             new_session_name(app, SessionKind::Hermes)
         }
@@ -233,6 +238,11 @@ pub fn handle_key_for_layout(
             Action::None
         }
         KeyCode::Char('n') => {
+            // Opened on a project, the session starts in that project.
+            app.session_origin = app.project_origin();
+            if let Some(origin) = &app.session_origin {
+                app.status = Some(format!("New session in {}", origin.project));
+            }
             app.overlay = Overlay::NewKind { selected: 0 };
             Action::None
         }
@@ -372,6 +382,25 @@ pub fn handle_key_for_layout(
         {
             open_custom_theme_editor(app)
         }
+        KeyCode::Char('c')
+            if app.view == View::Settings
+                && app.focus == Focus::Detail
+                && app.settings_section() == SettingsSection::Appearance =>
+        {
+            customize_current_theme(app)
+        }
+        KeyCode::Char('d')
+            if app.view == View::Settings
+                && app.focus == Focus::Detail
+                && app.settings_section() == SettingsSection::Appearance =>
+        {
+            app.preferences.color_mode = app.preferences.color_mode.next();
+            app.status = Some(format!(
+                "Color depth: {}",
+                app.preferences.color_mode.name()
+            ));
+            Action::PersistPreferences
+        }
         KeyCode::Char(' ') if app.view == View::Settings && app.focus == Focus::Detail => {
             activate_settings(app)
         }
@@ -494,7 +523,10 @@ pub fn handle_paste(app: &mut App, text: &str) -> Action {
                 }
             }
         }
-        Overlay::NewKind { .. } | Overlay::None => {}
+        Overlay::NewKind { .. }
+        | Overlay::ConfirmClose { .. }
+        | Overlay::ConfirmQuit
+        | Overlay::None => {}
     }
     Action::None
 }
@@ -543,7 +575,15 @@ fn close_conversation_target(app: &mut App, target: Option<SessionTarget>) -> Ac
         app.status = Some("No conversation selected".into());
         return Action::None;
     };
-    if !target.managed {
+    let live = app
+        .snapshot
+        .runtimes
+        .iter()
+        .find(|runtime| runtime.id == target.id)
+        .is_some_and(|runtime| runtime.live);
+    // A synced messaging conversation is read-only history. A live RMUX
+    // session started outside AGK is a real process and can be closed.
+    if !target.managed && !live {
         app.status = Some(
             "Synced Hermes history is preserved; resume it or archive it from Hermes Sessions"
                 .into(),
@@ -554,7 +594,8 @@ fn close_conversation_target(app: &mut App, target: Option<SessionTarget>) -> Ac
         app.status = Some("AGK cannot close the conversation running this interface".into());
         return Action::None;
     }
-    Action::CloseSession { target }
+    app.overlay = Overlay::ConfirmClose { target };
+    Action::None
 }
 
 fn rename_selected_session(app: &mut App) -> Action {
@@ -662,7 +703,7 @@ fn handle_overlay_key(app: &mut App, key: KeyEvent, compact: bool) -> Action {
                 let index = choice as usize - '1' as usize;
                 app.overlay = Overlay::NewName {
                     kind: SessionKind::ALL[index],
-                    value: String::new(),
+                    value: app.suggested_session_name(),
                 };
                 Action::None
             }
@@ -679,7 +720,7 @@ fn handle_overlay_key(app: &mut App, key: KeyEvent, compact: bool) -> Action {
             KeyCode::Enter => {
                 app.overlay = Overlay::NewName {
                     kind: SessionKind::ALL[selected],
-                    value: String::new(),
+                    value: app.suggested_session_name(),
                 };
                 Action::None
             }
@@ -773,6 +814,17 @@ fn handle_overlay_key(app: &mut App, key: KeyEvent, compact: bool) -> Action {
                 };
                 Action::None
             }
+        },
+        Overlay::ConfirmClose { target } => match key.code {
+            KeyCode::Enter | KeyCode::Char('y' | 'Y') => Action::CloseSession { target },
+            _ => {
+                app.status = Some(format!("Kept {} running", target.name));
+                Action::None
+            }
+        },
+        Overlay::ConfirmQuit => match key.code {
+            KeyCode::Enter | KeyCode::Char('q' | 'y' | 'Y') => Action::Quit,
+            _ => Action::None,
         },
         Overlay::RenameSession { target, mut value } => match key.code {
             KeyCode::Esc => Action::None,
@@ -920,6 +972,7 @@ fn execute_palette(app: &mut App, command: PaletteCommand) -> Action {
         PaletteCommand::Open(view) => set_view(app, view),
         PaletteCommand::OpenSettings(section) => open_settings(app, section),
         PaletteCommand::NewSession => {
+            app.session_origin = None;
             app.overlay = Overlay::NewKind { selected: 0 };
             Action::None
         }
@@ -1011,6 +1064,30 @@ fn settings_right(app: &mut App) -> Action {
         }
         _ => Action::None,
     }
+}
+
+/// Copies the theme on screen into Custom and opens the editor, so tuning
+/// starts from a palette the user already likes.
+fn customize_current_theme(app: &mut App) -> Action {
+    let base = app
+        .theme
+        .base_palette(app.preferences.custom_colors, app.terminal);
+    let Some(seed) = CustomColors::from_palette(base) else {
+        app.status =
+            Some("This terminal did not report its colors; pick a fixed theme to customize".into());
+        return Action::None;
+    };
+    let original = app.preferences.custom_colors;
+    app.preferences.custom_colors = seed;
+    app.theme = Theme::Custom;
+    app.overlay = Overlay::CustomTheme {
+        original,
+        working: seed,
+        selected: 0,
+        value: seed.get(0).hex(),
+        fresh: true,
+    };
+    Action::None
 }
 
 fn open_custom_theme_editor(app: &mut App) -> Action {
@@ -1456,13 +1533,31 @@ mod tests {
     }
 
     #[test]
-    fn close_is_immediate_and_rename_still_uses_a_validated_dialog() {
+    fn close_asks_first_and_rename_still_uses_a_validated_dialog() {
         let mut app = app();
         add_session(&mut app);
         let target = app.current_session_target().unwrap();
 
+        // Closing stops a live agent: it asks first, and any other key
+        // (such as text typed toward the provider) keeps the session.
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Char('x')), true),
+            Action::None
+        );
+        assert_eq!(
+            app.overlay,
+            Overlay::ConfirmClose {
+                target: target.clone()
+            }
+        );
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('a')), true),
+            Action::None
+        );
+        assert_eq!(app.overlay, Overlay::None);
+        handle_key(&mut app, key(KeyCode::Char('x')), true);
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter), true),
             Action::CloseSession {
                 target: target.clone()
             }
@@ -1573,8 +1668,9 @@ mod tests {
         let target = app
             .current_os_conversation_target()
             .expect("OS conversation");
+        handle_key(&mut app, key(KeyCode::Char('x')), true);
         assert_eq!(
-            handle_key(&mut app, key(KeyCode::Char('x')), true),
+            handle_key(&mut app, key(KeyCode::Char('y')), true),
             Action::CloseSession { target }
         );
 
@@ -1597,5 +1693,77 @@ mod tests {
             Action::PersistPreferences
         );
         assert_ne!(app.preferences.refresh_ms, initial);
+    }
+
+    #[test]
+    fn quitting_needs_a_second_key_so_stray_typing_cannot_drop_agk() {
+        let mut app = app();
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('q')), true),
+            Action::None
+        );
+        assert_eq!(app.overlay, Overlay::ConfirmQuit);
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('u')), true),
+            Action::None
+        );
+        assert_eq!(app.overlay, Overlay::None);
+
+        handle_key(&mut app, key(KeyCode::Char('q')), true);
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('q')), true),
+            Action::Quit
+        );
+    }
+
+    #[test]
+    fn appearance_can_customize_the_theme_on_screen_and_cycle_color_depth() {
+        let mut app = app();
+        app.set_view(View::Settings);
+        app.settings_section = 0;
+        app.focus = Focus::Detail;
+        app.theme = Theme::ClaudeDark;
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('c')), true),
+            Action::None
+        );
+        assert_eq!(app.theme, Theme::Custom);
+        assert!(matches!(app.overlay, Overlay::CustomTheme { .. }));
+        assert_eq!(
+            app.preferences.custom_colors.accent.color(),
+            Theme::ClaudeDark.palette().accent
+        );
+
+        app.overlay = Overlay::None;
+        let before = app.preferences.color_mode;
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('d')), true),
+            Action::PersistPreferences
+        );
+        assert_ne!(app.preferences.color_mode, before);
+    }
+
+    #[test]
+    fn live_sessions_started_outside_agk_can_be_closed_but_synced_history_cannot() {
+        let mut app = app();
+        add_session(&mut app);
+        app.snapshot.runtimes[0].managed = false;
+        let target = app.current_session_target().unwrap();
+        handle_key(&mut app, key(KeyCode::Char('x')), true);
+        assert_eq!(app.overlay, Overlay::ConfirmClose { target });
+
+        app.overlay = Overlay::None;
+        app.snapshot.runtimes[0].live = false;
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('x')), true),
+            Action::None
+        );
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|status| status.contains("preserved"))
+        );
     }
 }

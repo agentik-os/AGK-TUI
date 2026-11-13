@@ -10,9 +10,10 @@ use ratatui::{
 use ratatui_rmux::{PaneState, PaneWidget};
 
 use crate::{
-    data::RuntimeRecord,
+    data::{ControlObject, DETECTED_STATUS, RuntimeRecord},
     input::palette_items,
     model::{App, Density, Focus, Mode, Overlay, SessionKind, SettingsSection, View, density},
+    selection::PreviewGrid,
     system_info::{UNKNOWN, format_optional_token_total, format_percent, format_token_total},
     theme::{CustomColors, Palette, Theme},
 };
@@ -30,15 +31,10 @@ pub enum SessionPreview<'a> {
 
 pub fn draw(frame: &mut Frame, app: &mut App, preview: SessionPreview<'_>) {
     let area = frame.area();
-    let mut colors = app.palette();
-    // AGK is an overlay on the user's terminal, not a second painted desktop.
-    // Reset the large surfaces so the native terminal background remains
-    // visible; semantic text, borders and selection colors stay themed.
-    if !app.theme.paints_background() {
-        colors.background = Color::Reset;
-        colors.surface = Color::Reset;
-        colors.surface_alt = Color::Reset;
-    }
+    // The resolved palette already inherits the terminal background unless
+    // the theme paints its own canvas (by design or to stay readable).
+    let colors = app.palette();
+    app.preview_rect = None;
     frame.render_widget(
         Block::default().style(Style::default().bg(colors.background)),
         area,
@@ -58,6 +54,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, preview: SessionPreview<'_>) {
         draw_terminal_workspace(frame, app, preview, rows[2], size, colors);
         draw_footer_separator(frame, rows[3], colors);
         draw_footer(frame, app, rows[4], colors);
+        draw_selection(frame, app, colors);
+        draw_overlay(frame, app, area, colors);
         return;
     }
 
@@ -74,7 +72,56 @@ pub fn draw(frame: &mut Frame, app: &mut App, preview: SessionPreview<'_>) {
     draw_body(frame, app, preview, rows[2], size, colors);
     draw_footer_separator(frame, rows[3], colors);
     draw_footer(frame, app, rows[4], colors);
+    draw_selection(frame, app, colors);
     draw_overlay(frame, app, area, colors);
+}
+
+/// Highlights the cells covered by the mouse selection.
+fn draw_selection(frame: &mut Frame, app: &App, colors: Palette) {
+    let (Some(selection), Some(rect)) = (app.selection, app.preview_rect) else {
+        return;
+    };
+    if !selection.moved {
+        return;
+    }
+    let rect = rect.intersection(frame.area());
+    let buffer = frame.buffer_mut();
+    for row in rect.y..rect.y + rect.height {
+        for column in rect.x..rect.x + rect.width {
+            if selection.contains(column, row) {
+                buffer[(column, row)].set_style(
+                    Style::default()
+                        .fg(colors.selection_text)
+                        .bg(colors.selection_bg),
+                );
+            }
+        }
+    }
+}
+
+/// Reads back the characters rendered inside the pane for copy.
+pub fn capture_preview_grid(buffer: &ratatui::buffer::Buffer, rect: Rect) -> PreviewGrid {
+    let rect = rect.intersection(buffer.area);
+    let rows = (rect.y..rect.y + rect.height)
+        .map(|row| {
+            // A double-width glyph occupies two cells and the renderer
+            // leaves a blank in the second one. Copying that blank would
+            // put a space after every CJK character or emoji.
+            let mut covered = 0usize;
+            (rect.x..rect.x + rect.width)
+                .map(|column| {
+                    if covered > 0 {
+                        covered -= 1;
+                        return String::new();
+                    }
+                    let symbol = buffer[(column, row)].symbol();
+                    covered = Span::raw(symbol).width().saturating_sub(1);
+                    symbol.to_owned()
+                })
+                .collect()
+        })
+        .collect();
+    PreviewGrid { rect, rows }
 }
 
 fn draw_terminal_workspace(
@@ -122,6 +169,7 @@ fn draw_terminal_workspace(
     frame.render_widget(block, pane_area);
     app.preview_width = inner.width;
     app.preview_height = inner.height;
+    app.preview_rect = Some(inner);
     match preview {
         SessionPreview::Live(pane) => frame.render_widget(PaneWidget::new(pane), inner),
         SessionPreview::History(lines) => {
@@ -508,6 +556,7 @@ fn draw_sessions(
         frame.render_widget(block, preview_area);
         app.preview_width = inner.width;
         app.preview_height = inner.height;
+        app.preview_rect = Some(inner);
         match preview {
             SessionPreview::Live(pane) => frame.render_widget(PaneWidget::new(pane), inner),
             SessionPreview::History(_) => {
@@ -546,6 +595,18 @@ fn draw_sessions(
     }
 }
 
+/// Shortens the user's home to `~` so the meaningful end of a path fits.
+fn home_relative(path: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && home != "/" => match path.strip_prefix(&home) {
+            Some("") => "~".into(),
+            Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+            _ => path.to_owned(),
+        },
+        _ => path.to_owned(),
+    }
+}
+
 fn session_list_item(runtime: &RuntimeRecord, colors: Palette) -> ListItem<'static> {
     let scope = [
         runtime.client.as_deref(),
@@ -581,9 +642,9 @@ fn session_list_item(runtime: &RuntimeRecord, colors: Palette) -> ListItem<'stat
             format!(
                 "  {}",
                 if scope.is_empty() {
-                    runtime.cwd.as_str()
+                    home_relative(&runtime.cwd)
                 } else {
-                    scope.as_str()
+                    scope
                 }
             ),
             Style::default().fg(colors.text_muted),
@@ -619,7 +680,7 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect, size: Density, colors
                         Span::styled(object.name.clone(), Style::default().fg(colors.text)),
                     ]),
                     Line::styled(
-                        format!("  {} · {}", object.slug, object.status),
+                        format!("  {}", project_summary(object, &app.snapshot.runtimes)),
                         Style::default().fg(colors.text_muted),
                     ),
                 ])
@@ -637,26 +698,121 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect, size: Density, colors
     }
     if detail_area.width > 0 {
         let text = app.current_object().map_or_else(
-            || Text::from("No canonical Agentik control objects found."),
+            || {
+                Text::from(
+                    "No project found.\n\nFolders with a .git, package.json, Cargo.toml, \
+                     pyproject.toml… inside your projects folder appear here on their own. \
+                     Set `projects_root` or `project_roots` in ~/.config/agk/environment.yaml \
+                     to choose where AGK looks.",
+                )
+            },
             |object| {
-                Text::from(vec![
+                let detected = object.status == DETECTED_STATUS;
+                let sessions = project_sessions(object, &app.snapshot.runtimes);
+                let mut lines = vec![
                     field("Name", &object.name, colors),
                     field("Kind", &object.kind, colors),
                     field("Status", &object.status, colors),
-                    field("Slug", &object.slug, colors),
-                    field("ID", &object.id, colors),
-                    field("Parent", object.parent_id.as_deref().unwrap_or("—"), colors),
-                    field("Path", object.path.as_deref().unwrap_or("—"), colors),
-                    Line::raw(""),
-                    Line::styled(
-                        "Source  ~/.agentik/control.db",
-                        Style::default().fg(colors.text_muted),
+                    field(
+                        "Path",
+                        &object.path.as_deref().map_or("—".into(), home_relative),
+                        colors,
                     ),
-                ])
+                ];
+                if detected {
+                    let stack = project_stack(object).join(" · ");
+                    lines.push(field(
+                        "Stack",
+                        if stack.is_empty() { "—" } else { &stack },
+                        colors,
+                    ));
+                    lines.push(field(
+                        "Branch",
+                        object.metadata["branch"].as_str().unwrap_or("—"),
+                        colors,
+                    ));
+                } else {
+                    lines.push(field("Slug", &object.slug, colors));
+                    lines.push(field("ID", &object.id, colors));
+                    lines.push(field(
+                        "Parent",
+                        object.parent_id.as_deref().unwrap_or("—"),
+                        colors,
+                    ));
+                }
+                lines.push(field(
+                    "Sessions",
+                    &if sessions.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        sessions.join(", ")
+                    },
+                    colors,
+                ));
+                lines.push(Line::raw(""));
+                if object.kind.eq_ignore_ascii_case("project") && object.path.is_some() {
+                    lines.push(Line::styled(
+                        "n  new session in this project",
+                        Style::default().fg(colors.accent),
+                    ));
+                }
+                lines.push(Line::styled(
+                    if detected {
+                        "Source  detected on disk"
+                    } else {
+                        "Source  ~/.agentik/control.db"
+                    },
+                    Style::default().fg(colors.text_muted),
+                ));
+                Text::from(lines)
             },
         );
         detail(frame, detail_area, text, " AGENTIK OBJECT ", app, colors);
     }
+}
+
+fn project_stack(object: &ControlObject) -> Vec<&str> {
+    object.metadata["stack"]
+        .as_array()
+        .map(|stack| stack.iter().filter_map(|item| item.as_str()).collect())
+        .unwrap_or_default()
+}
+
+/// Names of the live sessions working in a project.
+fn project_sessions<'a>(object: &ControlObject, runtimes: &'a [RuntimeRecord]) -> Vec<&'a str> {
+    runtimes
+        .iter()
+        .filter(|runtime| runtime.live)
+        .filter(|runtime| {
+            runtime
+                .project
+                .as_deref()
+                .is_some_and(|project| project == object.slug || project == object.id)
+        })
+        .map(|runtime| runtime.name.as_str())
+        .collect()
+}
+
+/// The one-line description of a project in the list.
+fn project_summary(object: &ControlObject, runtimes: &[RuntimeRecord]) -> String {
+    let live = project_sessions(object, runtimes).len();
+    let mut parts = Vec::new();
+    if object.status == DETECTED_STATUS {
+        let stack = project_stack(object).join("/");
+        if !stack.is_empty() {
+            parts.push(stack);
+        }
+        if let Some(branch) = object.metadata["branch"].as_str() {
+            parts.push(branch.to_owned());
+        }
+    } else {
+        parts.push(object.slug.clone());
+        parts.push(object.status.clone());
+    }
+    if live > 0 {
+        parts.push(format!("{live} live"));
+    }
+    parts.join(" · ")
 }
 
 fn draw_agents(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Palette) {
@@ -1515,15 +1671,16 @@ fn draw_providers(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
 }
 
 fn draw_appearance(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
+    let resolved = app.resolved_palette();
     let mut lines = vec![
         heading("Theme", colors),
         Line::styled(
-            "↑/↓ live preview · Enter save · E edit Custom · Esc revert",
+            "↑/↓ live preview · Enter save · C customize this theme · D color depth · Esc revert",
             Style::default().fg(colors.text_muted),
         ),
         Line::raw(""),
     ];
-    // Fifteen choices stay visible without turning Appearance into a tall,
+    // Every choice stays visible without turning Appearance into a tall,
     // scrolling list. Narrow panes retain the simple one-column layout.
     let column_count = usize::from(area.width >= 58) + 1;
     let column_width = usize::from(area.width.saturating_sub(4)) / column_count;
@@ -1540,7 +1697,9 @@ fn draw_appearance(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
             }
             let selected = *theme == app.theme;
             row.push(Span::styled(
-                if selected { "▶ " } else { "  " },
+                // A braille blank keeps the column aligned: the wrapping
+                // paragraph trims ordinary leading spaces.
+                if selected { "▶ " } else { "\u{2800} " },
                 Style::default().fg(colors.accent),
             ));
             let label_width = column_width.saturating_sub(11).clamp(8, 16);
@@ -1554,11 +1713,16 @@ fn draw_appearance(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
                         Modifier::empty()
                     }),
             ));
-            for swatch in theme
-                .swatches_with_custom(app.preferences.custom_colors)
-                .into_iter()
-                .take(3)
-            {
+            let preview = theme.base_palette(app.preferences.custom_colors, app.terminal);
+            let canvas = match (preview.background, app.terminal.background) {
+                (Color::Reset, Some(real)) => real.color(),
+                (own, _) => own,
+            };
+            for swatch in [canvas, preview.accent, preview.info] {
+                let swatch = crate::theme::downgrade(
+                    swatch,
+                    app.preferences.color_mode.depth(app.terminal.depth),
+                );
                 row.push(Span::styled("  ", Style::default().bg(swatch)));
                 row.push(Span::raw(" "));
             }
@@ -1571,11 +1735,42 @@ fn draw_appearance(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
         Line::styled(
             if app.theme == Theme::Custom {
                 "E opens the RGB editor · 10 semantic colors · live preview"
-            } else if app.theme.paints_background() {
+            } else if app.theme == Theme::Auto && app.terminal.background.is_none() {
+                "Terminal colors were not reported: using its own ANSI palette."
+            } else if app.theme == Theme::Auto {
+                "Derived from your terminal's real background and text colors."
+            } else if resolved.adapted {
+                "Painted on its own canvas: your terminal is the opposite light/dark mode."
+            } else if resolved.paints_background {
                 "This theme deliberately paints the full terminal canvas."
             } else {
                 "Uses your terminal background with themed content and controls."
             },
+            Style::default().fg(colors.text_muted),
+        ),
+        Line::styled(
+            format!(
+                "Terminal · background {} · {} · color depth {}",
+                app.terminal
+                    .background
+                    .map_or_else(|| "not reported".into(), |color| color.hex()),
+                match app.terminal.background {
+                    Some(color) if color.is_light() => "light",
+                    Some(_) => "dark",
+                    None => "unknown mode",
+                },
+                match app.preferences.color_mode {
+                    crate::theme::ColorMode::Auto => format!(
+                        "auto ({})",
+                        match app.terminal.depth {
+                            crate::theme::ColorDepth::TrueColor => "24-bit",
+                            crate::theme::ColorDepth::Ansi256 => "256",
+                            crate::theme::ColorDepth::Ansi16 => "16",
+                        }
+                    ),
+                    mode => mode.name().to_owned(),
+                },
+            ),
             Style::default().fg(colors.text_muted),
         ),
         Line::styled(
@@ -1622,6 +1817,26 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Pa
             colors,
         ),
         help_key("Click pane", "Focus provider input immediately", colors),
+        help_key(
+            "Drag in pane",
+            "Select text; releasing copies it to your clipboard",
+            colors,
+        ),
+        help_key(
+            "Double-click",
+            "Copy the word, path or URL under it",
+            colors,
+        ),
+        help_key(
+            "Paste (Cmd/Ctrl-V)",
+            "Paste into the provider exactly as a terminal would",
+            colors,
+        ),
+        help_key(
+            "Shift-Enter",
+            "New line in the provider prompt without sending",
+            colors,
+        ),
         help_key("Tab Tab", "Rapid double Tab hides the left panel", colors),
         help_key("Ctrl-g", "Return to the main AGK menu", colors),
         help_key(
@@ -1644,7 +1859,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Pa
         ));
     }
     lines.extend([
-        help_key("x / r", "Close immediately / rename session", colors),
+        help_key("x / r", "Close (asks first) / rename session", colors),
         Line::raw(""),
         heading("COMMANDS", colors),
         help_key("/", "Search; Enter accepts, Esc restores", colors),
@@ -1665,7 +1880,12 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, size: Density, colors: Pa
         help_key("↑/↓", "Live theme preview / refresh cadence", colors),
         help_key("Enter", "Persist selected setting", colors),
         help_key("Esc", "Revert preview, collapse, or clear filter", colors),
-        help_key("q", "Detach AGK; work sessions keep running", colors),
+        help_key("C / D", "Customize the current theme / color depth", colors),
+        help_key(
+            "q q",
+            "Quit AGK (asks first); sessions keep running",
+            colors,
+        ),
     ]);
     let help = Text::from(lines);
     frame.render_widget(
@@ -1851,6 +2071,38 @@ fn draw_overlay(frame: &mut Frame, app: &App, area: Rect, colors: Palette) {
                 Line::styled(format!("> {value}▌"), Style::default().fg(colors.text)),
                 Line::styled(
                     "3+ lowercase letters, numbers or - · Enter create · Esc cancel",
+                    Style::default().fg(colors.text_muted),
+                ),
+            ],
+        ),
+        Overlay::ConfirmClose { target } => (
+            centered(area, 60, 6),
+            " CLOSE SESSION ",
+            vec![
+                Line::styled(
+                    format!("Stop and archive {}?", target.name),
+                    Style::default().fg(colors.text),
+                ),
+                Line::styled(
+                    "The running agent is terminated; its history is kept.",
+                    Style::default().fg(colors.text_muted),
+                ),
+                Line::styled(
+                    "Enter / y close · Esc / any other key cancel",
+                    Style::default().fg(colors.warning),
+                ),
+            ],
+        ),
+        Overlay::ConfirmQuit => (
+            centered(area, 60, 5),
+            " QUIT AGK ",
+            vec![
+                Line::styled(
+                    "Leave AGK? Every session keeps running.",
+                    Style::default().fg(colors.text),
+                ),
+                Line::styled(
+                    "Enter / q quit · Esc / any other key stay",
                     Style::default().fg(colors.text_muted),
                 ),
             ],
@@ -2144,6 +2396,17 @@ mod tests {
     };
     use crate::theme::Preferences;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn copied_text_has_no_padding_after_double_width_glyphs() {
+        let rect = Rect::new(2, 1, 12, 1);
+        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 20, 3));
+        buffer.set_string(2, 1, "東京 ok 🚀x", Style::default());
+        let grid = capture_preview_grid(&buffer, rect);
+        let mut selection = crate::selection::Selection::at(2, 1);
+        selection.drag_to(13, 1, rect);
+        assert_eq!(crate::selection::extract(&grid, &selection), "東京 ok 🚀x");
+    }
 
     fn test_app() -> App {
         let mut app = App::new(Preferences::default());

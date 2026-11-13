@@ -100,7 +100,8 @@ elif [ "$dry_run" = true ]; then
 else
   temporary=$(mktemp -d -t agk-macos-rust.XXXXXX)
   curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o "$temporary/rustup.sh"
-  sh "$temporary/rustup.sh" -y --profile minimal
+  # Cargo only builds AGK: do not rewrite the user's shell profiles for it.
+  sh "$temporary/rustup.sh" -y --profile minimal --no-modify-path
   cleanup
   temporary=
 fi
@@ -124,7 +125,9 @@ else
 fi
 run mkdir -p "$bin_dir" "$install_root" "$cache_root"
 run uv python install 3.12
-run uv venv --python 3.12 "$install_root/venv"
+# `--allow-existing` keeps a rerun (every update) from failing on the venv
+# the first run created.
+run uv venv --allow-existing --python 3.12 "$install_root/venv"
 run uv pip install --python "$install_root/venv/bin/python" \
   --disable-pip-version-check -r "$repo_root/requirements.txt"
 
@@ -135,7 +138,7 @@ if command -v rmux >/dev/null 2>&1 \
 then
   echo "  = preserve compatible RMUX: $(rmux -V 2>/dev/null || true)"
 elif [ "$dry_run" = true ]; then
-  echo "  + RMUX $rmux_version signed release for macOS -> $prefix"
+  echo "  + RMUX $rmux_version checksummed release for macOS -> $prefix"
 else
   machine=$(uname -m)
   case "$machine" in
@@ -180,11 +183,33 @@ for script in agk_control.py provider.sh doctor.sh sync-hermes.sh sync-rules.py 
 done
 run mkdir -p "$install_root/hermes/dashboard-themes"
 run install -m 0644 "$repo_root"/hermes/dashboard-themes/*.yaml "$install_root/hermes/dashboard-themes/"
-for config in topology.yaml providers.yaml rules.yaml hermes.env.example; do
+for config in topology.yaml rules.yaml hermes.env.example; do
   run install -m 0644 "$repo_root/config/$config" "$install_root/config/$config"
 done
+# Removed from AGK: nothing ever read it.
+run rm -f -- "$install_root/config/providers.yaml"
+# Record what was installed, so `agk --version` and updaters can tell.
+if [ "$dry_run" = true ]; then
+  echo "  + record the installed AGK-TUI commit"
+else
+  agk_commit=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || true)
+  if [ -n "$agk_commit" ]; then
+    if [ -n "$(git -C "$repo_root" status --porcelain 2>/dev/null)" ]; then
+      agk_commit="$agk_commit-modified"
+    fi
+    printf '%s\n' "$agk_commit" >"$install_root/.agk-commit"
+  fi
+fi
 run rm -rf -- "$install_root/client"
 run cp -R "$repo_root/client" "$install_root/client"
+# The user's RMUX configuration is upgraded only while it is still the file
+# AGK shipped; a customized copy is never overwritten.
+user_rmux_conf=$HOME/.config/rmux/rmux.conf
+rmux_conf_is_stock=false
+if [ ! -e "$user_rmux_conf" ] ||
+  { [ -f "$install_root/rmux/rmux.conf" ] && cmp -s "$user_rmux_conf" "$install_root/rmux/rmux.conf"; }; then
+  rmux_conf_is_stock=true
+fi
 run install -m 0644 "$repo_root/rmux/rmux.conf" "$install_root/rmux/rmux.conf"
 run install -m 0755 "$repo_root/bin/agk" "$bin_dir/agk"
 run install -m 0755 "$repo_root/bin/agk-terminal" "$bin_dir/agk-terminal"
@@ -202,8 +227,13 @@ else
     "$install_root/hermes/plugins/platforms/"
   cp -R "$repo_root/hermes/agents/master-os-builder" "$install_root/agents/"
   mkdir -p "$HOME/.config/rmux"
-  if [ ! -e "$HOME/.config/rmux/rmux.conf" ]; then
-    install -m 0644 "$repo_root/rmux/rmux.conf" "$HOME/.config/rmux/rmux.conf"
+  if [ "$rmux_conf_is_stock" = true ]; then
+    install -m 0644 "$repo_root/rmux/rmux.conf" "$user_rmux_conf"
+    # Running sessions pick up the new bindings without a restart.
+    rmux source-file "$user_rmux_conf" >/dev/null 2>&1 || true
+  else
+    install -m 0644 "$repo_root/rmux/rmux.conf" "$user_rmux_conf.agk-new"
+    echo "  = kept your customized $user_rmux_conf (new defaults: $user_rmux_conf.agk-new)"
   fi
 fi
 

@@ -48,6 +48,11 @@ case "${1:-}" in
   provider|composio|hermes|topology|doctor)
     exec agk-terminal "$@"
     ;;
+  version|-V|--version)
+    commit=$(cat "$install_root/.agk-commit" 2>/dev/null || true)
+    echo "AGK-TUI ${commit:-unknown commit} · $install_root"
+    exit 0
+    ;;
   help|-h|--help)
     cat <<'EOF'
 AGK-TUI · RMUX control plane
@@ -68,6 +73,7 @@ Sessions:
   agk reconcile
 
 Setup and health:
+  agk --version
   agk doctor
   agk client {bootstrap|init|list|show|doctor|integrations|linear|discord|work|run}
   agk provider {list|verify|install} [PROVIDER]
@@ -80,7 +86,32 @@ EOF
 esac
 
 if [ "$#" -eq 0 ] && [ -x "$install_root/bin/agk-tui" ]; then
-  exec "$install_root/bin/agk-tui"
+  if [ ! -t 0 ] || [ ! -t 1 ]; then
+    exec "$install_root/bin/agk-tui"
+  fi
+  # Supervise the interactive TUI: a crash must not strand the user in a
+  # bare shell with every session still running behind it. A normal quit or
+  # a deliberate signal ends the loop; repeated fast crashes stop retrying.
+  crashes=0
+  while :; do
+    started=$SECONDS
+    status=0
+    "$install_root/bin/agk-tui" || status=$?
+    case "$status" in
+      0|129|130|143) exit "$status" ;;
+    esac
+    if [ $((SECONDS - started)) -ge 60 ]; then
+      crashes=0
+    fi
+    crashes=$((crashes + 1))
+    if [ "$crashes" -ge 3 ]; then
+      echo "AGK stopped unexpectedly (exit $status) and keeps failing." >&2
+      echo "Sessions are still running in RMUX. Details: ~/.agentik/logs/agk-tui.log" >&2
+      exit "$status"
+    fi
+    echo "AGK stopped unexpectedly (exit $status); reopening…" >&2
+    sleep 1
+  done
 fi
 if [ -x "$install_root/venv/bin/python" ]; then
   exec "$install_root/venv/bin/python" "$install_root/scripts/agk_control.py" "$@"
