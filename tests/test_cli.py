@@ -147,16 +147,28 @@ def test_agk_launcher_exports_current_linux_identity_as_environment(tmp_path: Pa
     env.pop("USER", None)
     env.pop("AGK_ENVIRONMENT", None)
     env["AGK_TERMINAL_ROOT"] = str(install)
+    env["AGK_ENV_CONFIG"] = str(tmp_path / "missing-environment.yaml")
 
     result = subprocess.run(
         [str(AGK)], env=env, text=True, capture_output=True, check=False
     )
 
-    expected = subprocess.run(
+    identity = subprocess.run(
         ["id", "-un"], text=True, capture_output=True, check=True
     ).stdout.strip()
+    profiles = {"operator", "agentik", "mission", "private"}
+    expected = identity if identity in profiles else "agentik"
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == expected
+
+    config = tmp_path / "environment.yaml"
+    config.write_text("environment: private\n", encoding="utf-8")
+    env["AGK_ENV_CONFIG"] = str(config)
+    result = subprocess.run(
+        [str(AGK)], env=env, text=True, capture_output=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == (identity if identity in profiles else "private")
 
 
 def test_agk_help_documents_interactive_session_and_setup_surfaces():

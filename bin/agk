@@ -20,7 +20,20 @@ install_root=${AGK_TERMINAL_ROOT:-$prefix_root/lib/agk-terminal}
 # USER is not guaranteed to exist in SSH, systemd, gateway, or exec-based
 # launches. The native TUI uses AGK_ENVIRONMENT to select control.db rows, so
 # derive it from the effective Linux identity unless explicitly overridden.
-export AGK_ENVIRONMENT=${AGK_ENVIRONMENT:-$(id -un)}
+if [ -z "${AGK_ENVIRONMENT:-}" ]; then
+  case "$(id -un)" in
+    operator|agentik|mission|private) AGK_ENVIRONMENT=$(id -un) ;;
+    *)
+      # Single-user installs (macOS, existing Linux profiles) declare their
+      # scope in environment.yaml; mirror agk_control.Environment.current().
+      agk_env_config=${AGK_ENV_CONFIG:-$HOME/.config/agk/environment.yaml}
+      AGK_ENVIRONMENT=$(sed -n 's/^environment:[[:space:]]*\([a-z]*\).*/\1/p' \
+        "$agk_env_config" 2>/dev/null | head -n 1 || true)
+      AGK_ENVIRONMENT=${AGK_ENVIRONMENT:-agentik}
+      ;;
+  esac
+fi
+export AGK_ENVIRONMENT
 export AGK_TERMINAL_ROOT=$install_root
 export PATH="$install_root/bin:$HOME/.local/bin:$PATH"
 
@@ -59,7 +72,7 @@ Setup and health:
   agk client {bootstrap|init|list|show|doctor|integrations|linear|discord|work|run}
   agk provider {list|verify|install} [PROVIDER]
   agk composio {login|connect|connections|list|search|status} ...
-  agk hermes {sync|install-shared|gateway}
+  agk hermes {sync [--all]|update|install-shared|gateway}
   agk topology {detect|status|resolve|apply|refresh}
 EOF
     exit 0

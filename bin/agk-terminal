@@ -105,9 +105,13 @@ PY
     shift || true
     case "$subcommand" in
       sync) exec "$install_root/scripts/sync-hermes.sh" "$@" ;;
+      update)
+        hermes update --yes "$@"
+        exec "$install_root/scripts/sync-hermes.sh" --all
+        ;;
       install-shared) exec "$install_root/scripts/install-shared-hermes.sh" "$@" ;;
       gateway) exec hermes gateway "$@" ;;
-      *) echo "usage: agk-terminal hermes {sync|install-shared|gateway}" >&2; exit 2 ;;
+      *) echo "usage: agk-terminal hermes {sync [--all]|update|install-shared|gateway}" >&2; exit 2 ;;
     esac
     ;;
   topology)
@@ -121,7 +125,7 @@ PY
     echo "  agk-terminal doctor"
     echo "  agk-terminal provider {list|verify|install} [provider]"
     echo "  agk-terminal composio {login|connect|connections|list|search|status} ..."
-    echo "  agk-terminal hermes {sync|install-shared|gateway}"
+    echo "  agk-terminal hermes {sync [--all]|update|install-shared|gateway}"
     echo "  agk-terminal topology {detect|status|resolve|apply|refresh}"
     ;;
   *)

@@ -175,9 +175,11 @@ run mkdir -p \
   "$install_root/agents" "$bin_dir"
 run install -m 0755 "$repo_root/apps/agk-tui/target/release/agk-tui" \
   "$install_root/bin/agk-tui"
-for script in agk_control.py provider.sh doctor.sh sync-hermes.sh topology.py composio_inventory.py client_control.py; do
+for script in agk_control.py provider.sh doctor.sh sync-hermes.sh sync-rules.py install-shared-hermes.sh topology.py composio_inventory.py client_control.py; do
   run install -m 0755 "$repo_root/scripts/$script" "$install_root/scripts/$script"
 done
+run mkdir -p "$install_root/hermes/dashboard-themes"
+run install -m 0644 "$repo_root"/hermes/dashboard-themes/*.yaml "$install_root/hermes/dashboard-themes/"
 for config in topology.yaml providers.yaml rules.yaml hermes.env.example; do
   run install -m 0644 "$repo_root/config/$config" "$install_root/config/$config"
 done
