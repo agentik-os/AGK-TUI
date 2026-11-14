@@ -1,11 +1,15 @@
+use std::collections::HashMap;
+
 use crate::{
     data::{
-        AgentRecord, CapabilityRecord, ControlObject, OsPackage, ProviderRecord, RegistrySnapshot,
-        RuleRecord, RuntimeRecord, SkillRecord,
+        AgentRecord, CapabilityRecord, ControlObject, OsPackage, PaneFacts, ProviderRecord,
+        RegistrySnapshot, RuleRecord, RuntimeRecord, SkillRecord,
     },
+    selection::{PreviewGrid, Selection},
     system_info::FooterSnapshot,
-    theme::{CustomColors, Palette, Preferences, Theme},
+    theme::{CustomColors, Palette, Preferences, ResolvedPalette, TerminalProfile, Theme},
 };
+use ratatui::layout::Rect;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum View {
@@ -133,6 +137,13 @@ pub enum SessionKind {
     Shell,
 }
 
+/// The project a new session is being created in.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionOrigin {
+    pub project: String,
+    pub cwd: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionTarget {
     pub id: String,
@@ -232,6 +243,11 @@ pub enum Overlay {
         target: SessionTarget,
         value: String,
     },
+    /// Closing stops a live agent, so it is never a single stray keypress.
+    ConfirmClose {
+        target: SessionTarget,
+    },
+    ConfirmQuit,
     CustomTheme {
         original: CustomColors,
         working: CustomColors,
@@ -280,6 +296,18 @@ pub struct App {
     pub agent_conversations: Option<AgentConversationContext>,
     /// Active OS conversation browser. `None` means the normal OS registry.
     pub os_conversations: Option<OsConversationContext>,
+    /// Real colors and capabilities of the host terminal.
+    pub terminal: TerminalProfile,
+    /// Screen cells of the mirrored pane, published by the renderer.
+    pub preview_rect: Option<Rect>,
+    /// In-progress or just-finished mouse selection inside the pane.
+    pub selection: Option<Selection>,
+    /// Characters of the last rendered pane, captured while selecting.
+    pub preview_grid: Option<PreviewGrid>,
+    /// What RMUX reports for each live session's primary pane.
+    pub pane_facts: HashMap<String, PaneFacts>,
+    /// Set while the new-session dialog was opened from a project.
+    pub session_origin: Option<SessionOrigin>,
     last_session: Option<String>,
 }
 
@@ -310,6 +338,12 @@ impl App {
             preview_max_scroll: 0,
             agent_conversations: None,
             os_conversations: None,
+            terminal: TerminalProfile::default(),
+            preview_rect: None,
+            selection: None,
+            preview_grid: None,
+            pane_facts: HashMap::new(),
+            session_origin: None,
             last_session: None,
         }
     }
@@ -846,9 +880,22 @@ impl App {
         self.theme = self.theme.previous();
     }
 
+    /// The active theme adapted to the real terminal behind AGK.
+    pub fn resolved_palette(&self) -> ResolvedPalette {
+        self.theme.resolve(
+            self.preferences.custom_colors,
+            self.terminal,
+            self.preferences.color_mode,
+        )
+    }
+
     pub fn palette(&self) -> Palette {
-        self.theme
-            .palette_with_custom(self.preferences.custom_colors)
+        self.resolved_palette().palette
+    }
+
+    /// True while the pointer is held down over the mirrored pane.
+    pub fn selecting(&self) -> bool {
+        self.selection.is_some()
     }
 
     pub fn commit_theme(&mut self) {
@@ -859,6 +906,48 @@ impl App {
 
     pub fn cancel_theme_preview(&mut self) {
         self.theme = self.committed_theme;
+    }
+
+    /// The selected project, when a new session should start inside it.
+    pub fn project_origin(&self) -> Option<SessionOrigin> {
+        if self.view != View::Projects {
+            return None;
+        }
+        let object = self
+            .current_object()
+            .filter(|object| object.kind.eq_ignore_ascii_case("project"))?;
+        Some(SessionOrigin {
+            project: object.slug.clone(),
+            cwd: object.path.clone().filter(|path| !path.is_empty())?,
+        })
+    }
+
+    /// A free session name derived from the project being opened.
+    pub fn suggested_session_name(&self) -> String {
+        let Some(origin) = &self.session_origin else {
+            return String::new();
+        };
+        let mut base = String::new();
+        for character in origin.project.chars() {
+            if character.is_ascii_alphanumeric() {
+                base.push(character.to_ascii_lowercase());
+            } else if !base.is_empty() && !base.ends_with('-') {
+                base.push('-');
+            }
+        }
+        let base = base.trim_end_matches('-');
+        if base.len() < 3 {
+            return String::new();
+        }
+        let base = &base[..base.len().min(70)];
+        let taken = |name: &str| self.snapshot.runtimes.iter().any(|item| item.name == name);
+        if !taken(base) {
+            return base.to_owned();
+        }
+        (2..100)
+            .map(|index| format!("{base}-{index}"))
+            .find(|name| !taken(name))
+            .unwrap_or_default()
     }
 
     pub fn select_session_by_name(&mut self, name: &str) -> bool {

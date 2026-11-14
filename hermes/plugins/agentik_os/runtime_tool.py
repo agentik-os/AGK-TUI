@@ -12,6 +12,8 @@ from pathlib import Path
 
 from tools.registry import tool_error, tool_result
 
+from .paths import agk_executable
+
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
 _TYPES = {"hermes", "claude", "codex"}
@@ -86,7 +88,7 @@ def handle_runtime(args: dict, **_kwargs) -> str:
             home = _home()
             if cwd != home and home not in cwd.parents:
                 return tool_error("cwd escapes the current Linux environment")
-            result = _bounded_run(["/usr/local/bin/agk", "new", kind, name, "--cwd", str(cwd)], timeout=30)
+            result = _bounded_run([agk_executable(), "new", kind, name, "--cwd", str(cwd)], timeout=30)
             if result.returncode:
                 return tool_error((result.stderr or result.stdout or "AGK spawn failed").strip()[:2000])
             return tool_result({"success": True, "action": "spawn", "session": name, "agent_type": kind})

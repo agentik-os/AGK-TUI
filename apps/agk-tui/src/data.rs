@@ -15,6 +15,57 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, UNIX_EPOCH};
+
+const PROJECT_SCAN_TTL: Duration = Duration::from_secs(15);
+const MAX_DETECTED_PROJECTS: usize = 500;
+/// Status of a project found on disk rather than registered in control.db.
+pub const DETECTED_STATUS: &str = "detected";
+/// Files that make a folder a project, and the stack each one reveals.
+const PROJECT_MARKERS: &[(&str, &str)] = &[
+    (".git", ""),
+    ("Cargo.toml", "Rust"),
+    ("package.json", "Node"),
+    ("deno.json", "Deno"),
+    ("pyproject.toml", "Python"),
+    ("requirements.txt", "Python"),
+    ("go.mod", "Go"),
+    ("Package.swift", "Swift"),
+    ("pom.xml", "Java"),
+    ("build.gradle", "Java"),
+    ("build.gradle.kts", "Kotlin"),
+    ("Gemfile", "Ruby"),
+    ("composer.json", "PHP"),
+    ("wrangler.toml", "Cloudflare"),
+    ("wrangler.jsonc", "Cloudflare"),
+    ("Dockerfile", "Docker"),
+    ("PROJECT.md", ""),
+    ("AGENTS.md", ""),
+    ("CLAUDE.md", ""),
+];
+/// Folders that are never projects themselves and are never descended into.
+const PROJECT_SKIP: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "venv",
+    "vendor",
+    "__pycache__",
+];
+/// Where projects usually live when environment.yaml names no root.
+const DEFAULT_PROJECT_ROOTS: &[&str] = &[
+    "workspace/projects",
+    "projects",
+    "Projects",
+    "code",
+    "Code",
+    "dev",
+    "src",
+    "repos",
+    "Developer",
+];
 
 const TERMINAL_RUNTIME_STATES: &[&str] = &["complete", "failed", "archived"];
 const MAX_SKILLS_PER_SOURCE: usize = 500;
@@ -246,11 +297,15 @@ pub struct RegistryPaths {
     pub hermes_skills: PathBuf,
     pub claude_skills: PathBuf,
     pub codex_skills: PathBuf,
+    /// Skills shared by every agent CLI that follows the `~/.agents` layout.
+    pub shared_skills: PathBuf,
     pub rules_config: PathBuf,
     pub composio_auth: PathBuf,
     pub composio_inventory: PathBuf,
     pub topology_status: PathBuf,
     pub executable_paths: Vec<PathBuf>,
+    /// Folders whose children are detected as projects.
+    pub project_roots: Vec<PathBuf>,
 }
 
 impl RegistryPaths {
@@ -282,11 +337,13 @@ impl RegistryPaths {
             hermes_skills: hermes.join("skills"),
             claude_skills: home.join(".claude/skills"),
             codex_skills: home.join(".codex/skills"),
+            shared_skills: home.join(".agents/skills"),
             rules_config: agentik.join("rules.yaml"),
             composio_auth: home.join(".composio/user_data.json"),
             composio_inventory: agentik.join("composio-connections.json"),
             topology_status: home.join(".agentik/topology-status.json"),
             executable_paths: Vec::new(),
+            project_roots: Vec::new(),
         }
     }
 
@@ -337,6 +394,13 @@ impl RegistryPaths {
         paths.topology_status = env::var_os("AGK_TOPOLOGY_STATUS")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/var/lib/agk-terminal/topology-status.json"));
+        let environment_config = env::var_os("AGK_ENV_CONFIG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".config/agk/environment.yaml"));
+        paths.project_roots = project_roots(
+            fs::read_to_string(environment_config).ok().as_deref(),
+            &home,
+        );
         paths
     }
 }
@@ -346,7 +410,13 @@ impl RegistryPaths {
 pub struct RegistryClient {
     pub environment: String,
     pub paths: RegistryPaths,
+    /// Detected projects and when they were scanned; folders rarely change,
+    /// so the scan does not run on every registry refresh.
+    detected_projects: Arc<Mutex<ProjectScan>>,
 }
+
+/// The last project scan and when it ran.
+type ProjectScan = Option<(Instant, Vec<ControlObject>)>;
 
 impl RegistryClient {
     /// Discover the current user's canonical registry locations.
@@ -359,6 +429,32 @@ impl RegistryClient {
         Self {
             environment: environment.into(),
             paths,
+            detected_projects: Arc::default(),
+        }
+    }
+
+    /// Makes the next load scan the project folders again.
+    pub fn forget_detected_projects(&self) {
+        if let Ok(mut cache) = self.detected_projects.lock() {
+            *cache = None;
+        }
+    }
+
+    fn detected_projects(&self) -> Vec<ControlObject> {
+        if self.paths.project_roots.is_empty() {
+            return Vec::new();
+        }
+        let Ok(mut cache) = self.detected_projects.lock() else {
+            return discover_projects(&self.paths.project_roots, &self.data_environment());
+        };
+        match cache.as_ref() {
+            Some((scanned, projects)) if scanned.elapsed() < PROJECT_SCAN_TTL => projects.clone(),
+            _ => {
+                let projects =
+                    discover_projects(&self.paths.project_roots, &self.data_environment());
+                *cache = Some((Instant::now(), projects.clone()));
+                projects
+            }
         }
     }
 
@@ -415,6 +511,7 @@ impl RegistryClient {
                 Vec::new()
             }
         };
+        merge_detected_projects(&mut snapshot.objects, self.detected_projects());
         snapshot.agents = match self.load_agents(&snapshot.runtimes, &mut snapshot.warnings) {
             Ok(records) => records,
             Err(error) => {
@@ -1204,10 +1301,14 @@ impl RegistryClient {
         let codex = executable_in_paths(&self.paths.executable_paths, "codex");
         let openrouter = configured_env_key(&self.paths.hermes_env, "OPENROUTER_API_KEY")
             || env::var_os("OPENROUTER_API_KEY").is_some_and(|value| !value.is_empty());
-        let claude_ready = configured_json_path(
-            &self.paths.claude_credentials,
-            &["claudeAiOauth", "accessToken"],
-        );
+        // Linux keeps the Claude Code login in a credentials file; macOS
+        // keeps it in the Keychain and records the signed-in account in the
+        // main config instead.
+        let claude_ready =
+            configured_json_path(
+                &self.paths.claude_credentials,
+                &["claudeAiOauth", "accessToken"],
+            ) || configured_json_path(&self.paths.claude_config, &["oauthAccount", "accountUuid"]);
         let codex_ready = configured_json_path(&self.paths.codex_auth, &["OPENAI_API_KEY"])
             || configured_json_path(&self.paths.codex_auth, &["tokens", "access_token"]);
         [
@@ -1278,9 +1379,11 @@ impl RegistryClient {
 
     fn load_skills(&self, warnings: &mut Vec<String>) -> Result<Vec<SkillRecord>> {
         let roots = [
-            (&self.paths.hermes_skills, "hermes", false),
+            // Hermes groups its skills in category folders.
+            (&self.paths.hermes_skills, "hermes", true),
             (&self.paths.claude_skills, "claude", false),
             (&self.paths.codex_skills, "codex", true),
+            (&self.paths.shared_skills, "shared", false),
         ];
         let mut found = BTreeMap::new();
         for (root, source, nested) in roots {
@@ -1744,12 +1847,189 @@ fn unmanaged_runtime(name: String, environment: &str) -> RuntimeRecord {
     }
 }
 
+/// Live process facts for one RMUX session, read from its primary pane.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PaneFacts {
+    /// True when every pane's process has exited.
+    pub dead: bool,
+    /// Unix time of the last output in the session.
+    pub activity: f64,
+    pub created: f64,
+    pub path: String,
+    pub command: String,
+    /// The program owns the whole screen (a full-screen TUI, a pager): RMUX
+    /// keeps no scrollback for it, so scrolling belongs to the program.
+    pub alternate: bool,
+    /// The program asked for mouse events.
+    pub mouse: bool,
+    /// The program asked for SGR mouse coordinates rather than legacy ones.
+    pub mouse_sgr: bool,
+    pub start_command: String,
+}
+
+impl PaneFacts {
+    /// True when a plain shell owns the prompt instead of an agent CLI.
+    pub fn runs_shell(&self) -> bool {
+        const SHELLS: [&str; 9] = [
+            "zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh", "nu", "pwsh",
+        ];
+        SHELLS.contains(&self.command.trim_start_matches('-'))
+    }
+}
+
+/// `rmux list-panes -a -F` template understood by [`parse_pane_facts`].
+/// The start command stays last because it is the only free-form field.
+pub const PANE_FACTS_FORMAT: &str = "#{session_name}\t#{pane_dead}\t#{pane_activity}\t#{session_created}\t#{pane_current_path}\t#{pane_current_command}\t#{alternate_on}\t#{mouse_any_flag}\t#{mouse_sgr_flag}\t#{pane_start_command}";
+
+pub fn parse_pane_facts(listing: &str) -> HashMap<String, PaneFacts> {
+    let mut facts: HashMap<String, PaneFacts> = HashMap::new();
+    for line in listing.lines() {
+        let fields = line.splitn(10, '\t').collect::<Vec<_>>();
+        if fields.len() != 10 || fields[0].is_empty() {
+            continue;
+        }
+        let dead = fields[1] == "1";
+        let activity = fields[2].parse::<f64>().unwrap_or(0.0);
+        match facts.get_mut(fields[0]) {
+            // Additional panes only refine liveness and recency; identity
+            // comes from the primary pane that launched the provider.
+            Some(existing) => {
+                existing.dead &= dead;
+                existing.activity = existing.activity.max(activity);
+            }
+            None => {
+                facts.insert(
+                    fields[0].to_owned(),
+                    PaneFacts {
+                        dead,
+                        activity,
+                        created: fields[3].parse::<f64>().unwrap_or(0.0),
+                        path: fields[4].to_owned(),
+                        command: fields[5].to_owned(),
+                        alternate: fields[6] == "1",
+                        mouse: fields[7] == "1",
+                        mouse_sgr: fields[8] == "1",
+                        start_command: fields[9].trim_matches('"').to_owned(),
+                    },
+                );
+            }
+        }
+    }
+    facts
+}
+
+/// Names what is really running in a pane, for sessions AGK did not create.
+pub fn infer_session_kind(start_command: &str, current_command: &str) -> String {
+    let words = start_command
+        .split_whitespace()
+        .map(|word| {
+            word.trim_matches(|character| character == '"' || character == '\'')
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches('-')
+                .to_ascii_lowercase()
+        })
+        .collect::<Vec<_>>();
+    let has = |name: &str| words.iter().any(|word| word == name);
+    if has("hermes") {
+        return if has("openrouter") {
+            "openrouter".into()
+        } else {
+            "hermes".into()
+        };
+    }
+    for provider in ["claude", "codex", "opencode"] {
+        if has(provider) {
+            return provider.into();
+        }
+    }
+    let current = current_command
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches('-')
+        .to_ascii_lowercase();
+    const SHELLS: [&str; 7] = ["zsh", "bash", "fish", "sh", "dash", "nu", "login"];
+    for provider in ["hermes", "claude", "codex", "opencode"] {
+        if current == provider {
+            return provider.into();
+        }
+    }
+    if SHELLS.contains(&current.as_str())
+        || words.is_empty()
+        || words.iter().any(|word| SHELLS.contains(&word.as_str()))
+    {
+        return "shell".into();
+    }
+    if current.is_empty() || !current.chars().any(char::is_alphabetic) {
+        "terminal".into()
+    } else {
+        current
+    }
+}
+
+/// Replaces stored guesses with what RMUX reports right now.
+///
+/// The registry only learns a session's status when a CLI command happens to
+/// reconcile it, so a mirrored agent could read "idle" while streaming.
+/// Sessions started outside AGK additionally get their real provider,
+/// working directory and age instead of an opaque "unmanaged" row.
+pub fn apply_pane_facts(
+    snapshot: &mut RegistrySnapshot,
+    facts: &HashMap<String, PaneFacts>,
+    now: f64,
+) {
+    for runtime in snapshot.runtimes.iter_mut().filter(|runtime| runtime.live) {
+        let Some(pane) = facts.get(&runtime.rmux_session) else {
+            continue;
+        };
+        // Where the program is now, not where the session was launched.
+        if !pane.path.is_empty() {
+            runtime.cwd.clone_from(&pane.path);
+        }
+        if !runtime.managed {
+            if runtime.kind == "unmanaged" {
+                runtime.kind = infer_session_kind(&pane.start_command, &pane.command);
+            }
+            if runtime.created_at <= 0.0 {
+                runtime.created_at = pane.created;
+                // A stable sort key: creation never changes, so the list
+                // does not reshuffle while agents produce output.
+                runtime.last_activity = pane.created;
+            }
+        }
+        if pane.dead {
+            runtime.status = "exited".into();
+        } else if !TERMINAL_RUNTIME_STATES.contains(&runtime.status.as_str()) && pane.activity > 0.0
+        {
+            let quiet = now - pane.activity;
+            runtime.status = if quiet < 15.0 {
+                "working"
+            } else if quiet < 300.0 {
+                "running"
+            } else {
+                "idle"
+            }
+            .into();
+        }
+    }
+    snapshot.runtimes.sort_by(|left, right| {
+        right
+            .last_activity
+            .total_cmp(&left.last_activity)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    attach_projects(snapshot);
+}
+
 #[derive(Debug)]
 struct HermesSessionCandidate {
     id: String,
     cwd: String,
     started_at: f64,
     provider: String,
+    title: String,
 }
 
 /// Join new Hermes terminals read-only when their durable runtime row predates
@@ -1807,8 +2087,13 @@ fn resolve_hermes_session_links(
     } else {
         "''"
     };
+    let title_column = if columns.contains("title") {
+        "COALESCE(title,'')"
+    } else {
+        "''"
+    };
     let sql = format!(
-        "SELECT id,COALESCE(cwd,''),started_at,{provider_column} \
+        "SELECT id,COALESCE(cwd,''),started_at,{provider_column},{title_column} \
          FROM sessions WHERE started_at BETWEEN ?1 AND ?2"
     );
     let mut statement = connection.prepare(&sql)?;
@@ -1818,12 +2103,24 @@ fn resolve_hermes_session_links(
             cwd: row.get(1)?,
             started_at: row.get(2)?,
             provider: row.get(3)?,
+            title: row.get(4)?,
         })
     })?;
     let candidates = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut reserved = links.iter().flatten().cloned().collect::<HashSet<_>>();
 
     for (index, runtime) in candidates_for_runtime {
+        // AGK names the Hermes conversation after the terminal at launch,
+        // which identifies it exactly and before it records a directory.
+        if let Some(named) = candidates.iter().find(|candidate| {
+            candidate.title == runtime.name
+                && !reserved.contains(&candidate.id)
+                && (candidate.started_at - runtime.created_at).abs() <= MATCH_WINDOW_SECONDS
+        }) {
+            links[index] = Some(named.id.clone());
+            reserved.insert(named.id.clone());
+            continue;
+        }
         let mut matches = candidates
             .iter()
             .filter(|candidate| {
@@ -2376,28 +2673,34 @@ fn scan_skill_root(root: &Path, source: &str, nested: bool) -> Result<Vec<SkillR
         .collect::<std::io::Result<Vec<_>>>()?;
     children.sort_by_key(|entry| entry.file_name());
     for child in children {
-        if !child.file_type()?.is_dir() {
+        // `is_dir` follows symlinks: linked skills are skills too.
+        let child_path = child.path();
+        if !child_path.is_dir() {
             continue;
         }
-        let child_path = child.path();
-        for filename in ["DESCRIPTION.md", "SKILL.md"] {
-            let manifest = child_path.join(filename);
-            if manifest.is_file() {
-                manifests.insert(manifest);
-            }
+        let skill = child_path.join("SKILL.md");
+        if skill.is_file() {
+            manifests.insert(skill);
+            continue;
         }
+        let mut grouped = false;
         if nested {
             let mut grandchildren =
                 fs::read_dir(&child_path)?.collect::<std::io::Result<Vec<_>>>()?;
             grandchildren.sort_by_key(|entry| entry.file_name());
             for grandchild in grandchildren {
-                if grandchild.file_type()?.is_dir() {
-                    let manifest = grandchild.path().join("SKILL.md");
-                    if manifest.is_file() {
-                        manifests.insert(manifest);
-                    }
+                let manifest = grandchild.path().join("SKILL.md");
+                if manifest.is_file() {
+                    manifests.insert(manifest);
+                    grouped = true;
                 }
             }
+        }
+        // A folder that only groups skills is a category, not a skill; its
+        // DESCRIPTION.md describes the category.
+        let description = child_path.join("DESCRIPTION.md");
+        if !grouped && description.is_file() {
+            manifests.insert(description);
         }
     }
     let mut records = BTreeMap::new();
@@ -2413,6 +2716,234 @@ fn scan_skill_root(root: &Path, source: &str, nested: bool) -> Result<Vec<SkillR
         });
     }
     Ok(records.into_values().collect())
+}
+
+/// Resolves the folders to scan for projects.
+///
+/// `projects_root` and `project_roots` in environment.yaml are authoritative
+/// when present; otherwise every conventional folder that exists is used, so
+/// a fresh install lists the user's repositories without any setup.
+pub fn project_roots(environment_config: Option<&str>, home: &Path) -> Vec<PathBuf> {
+    let expand = |value: &str| match value.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None if value == "~" => home.to_path_buf(),
+        None => PathBuf::from(value),
+    };
+    let config = environment_config
+        .and_then(|text| serde_yaml::from_str::<YamlValue>(text).ok())
+        .unwrap_or(YamlValue::Null);
+    let mut configured = Vec::new();
+    if let Some(root) = config.get("projects_root").and_then(YamlValue::as_str) {
+        configured.push(expand(root.trim()));
+    }
+    if let Some(roots) = config.get("project_roots").and_then(YamlValue::as_sequence) {
+        configured.extend(
+            roots
+                .iter()
+                .filter_map(YamlValue::as_str)
+                .map(|root| expand(root.trim())),
+        );
+    }
+    let candidates = if configured.is_empty() {
+        DEFAULT_PROJECT_ROOTS
+            .iter()
+            .map(|name| home.join(name))
+            .collect()
+    } else {
+        configured
+    };
+    // Case-insensitive filesystems report `projects` and `Projects` as two
+    // existing folders; the canonical path keeps one of them.
+    let mut seen = HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|root| root.is_dir())
+        .filter(|root| seen.insert(fs::canonicalize(root).unwrap_or_else(|_| root.clone())))
+        .collect()
+}
+
+/// Lists the project folders beneath `roots`.
+///
+/// A direct child with a marker file is a project and is not descended
+/// into, so a monorepo is one project. A child without any marker is treated
+/// as a grouping folder and its own children are checked once.
+pub fn discover_projects(roots: &[PathBuf], environment: &str) -> Vec<ControlObject> {
+    let mut projects = Vec::new();
+    let mut seen = HashSet::new();
+    for root in roots {
+        for (name, path) in project_candidates(root) {
+            if let Some(stack) = project_stack(&path) {
+                push_project(&mut projects, &mut seen, environment, name, &path, stack);
+                continue;
+            }
+            for (child, nested) in project_candidates(&path) {
+                if let Some(stack) = project_stack(&nested) {
+                    let name = format!("{name}/{child}");
+                    push_project(&mut projects, &mut seen, environment, name, &nested, stack);
+                }
+            }
+        }
+    }
+    projects.sort_by(|left, right| {
+        right
+            .updated_at
+            .total_cmp(&left.updated_at)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    projects.truncate(MAX_DETECTED_PROJECTS);
+    projects
+}
+
+/// Visible sub-folders of `folder`, by name. Symlinked folders count.
+fn project_candidates(folder: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut candidates = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_owned();
+            (!name.starts_with('.') && !PROJECT_SKIP.contains(&name.as_str()))
+                .then(|| (name, entry.path()))
+        })
+        .filter(|(_, path)| path.is_dir())
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates
+}
+
+/// The stacks revealed by a folder's marker files, or `None` when the
+/// folder has no marker and is therefore not a project.
+fn project_stack(path: &Path) -> Option<Vec<&'static str>> {
+    let mut found = false;
+    let mut stack = Vec::new();
+    for (marker, label) in PROJECT_MARKERS {
+        if path.join(marker).exists() {
+            found = true;
+            if !label.is_empty() && !stack.contains(label) {
+                stack.push(*label);
+            }
+        }
+    }
+    found.then_some(stack)
+}
+
+fn push_project(
+    projects: &mut Vec<ControlObject>,
+    seen: &mut HashSet<PathBuf>,
+    environment: &str,
+    name: String,
+    path: &Path,
+    stack: Vec<&'static str>,
+) {
+    let real = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if !seen.insert(real.clone()) {
+        return;
+    }
+    let git = git_directory(path);
+    let modified = [
+        git.as_ref().map(|git| git.join("index")),
+        git.as_ref().map(|git| git.join("HEAD")),
+        Some(path.to_path_buf()),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|candidate| fs::metadata(candidate).ok()?.modified().ok())
+    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+    .map_or(0.0, |elapsed| elapsed.as_secs_f64());
+    projects.push(ControlObject {
+        id: format!("detected:{}", real.display()),
+        environment: environment.to_owned(),
+        kind: "project".into(),
+        slug: name.clone(),
+        name,
+        parent_id: None,
+        status: DETECTED_STATUS.into(),
+        path: Some(path.display().to_string()),
+        metadata: serde_json::json!({
+            "detected": true,
+            "real_path": real.display().to_string(),
+            "stack": stack,
+            "git": git.is_some(),
+            "branch": git.as_deref().and_then(git_branch),
+        }),
+        created_at: modified,
+        updated_at: modified,
+    });
+}
+
+/// The repository's git directory; a worktree's `.git` is a pointer file.
+fn git_directory(project: &Path) -> Option<PathBuf> {
+    let dot_git = project.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let pointer = fs::read_to_string(&dot_git).ok()?;
+    let target = Path::new(pointer.trim().strip_prefix("gitdir:")?.trim());
+    let target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        project.join(target)
+    };
+    target.is_dir().then_some(target)
+}
+
+/// The checked-out branch, read from `HEAD` without starting git.
+fn git_branch(git: &Path) -> Option<String> {
+    let head = fs::read_to_string(git.join("HEAD")).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(branch) => Some(branch.to_owned()),
+        None => Some(format!("detached {}", head.get(..7)?)),
+    }
+}
+
+/// Adds detected projects that the control registry does not already own.
+pub fn merge_detected_projects(objects: &mut Vec<ControlObject>, detected: Vec<ControlObject>) {
+    let registered = objects
+        .iter()
+        .filter_map(|object| object.path.as_deref())
+        .map(|path| fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path)))
+        .collect::<HashSet<_>>();
+    objects.extend(detected.into_iter().filter(|project| {
+        let real = project.metadata["real_path"].as_str().unwrap_or_default();
+        !registered.contains(Path::new(real))
+    }));
+}
+
+/// Links every session that has no project to the project it works in.
+///
+/// The deepest project folder containing the session's directory wins, so
+/// sessions started with plain `rmux` or by `cd` are attributed as well.
+pub fn attach_projects(snapshot: &mut RegistrySnapshot) {
+    let projects = snapshot
+        .objects
+        .iter()
+        .filter(|object| object.kind == "project")
+        .flat_map(|object| {
+            let real = object.metadata["real_path"].as_str();
+            [object.path.as_deref(), real]
+                .into_iter()
+                .flatten()
+                .filter(|path| !path.is_empty())
+                .map(|path| (PathBuf::from(path), object.slug.as_str()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    if projects.is_empty() {
+        return;
+    }
+    for runtime in &mut snapshot.runtimes {
+        if runtime.project.is_some() || runtime.cwd.is_empty() {
+            continue;
+        }
+        let cwd = Path::new(&runtime.cwd);
+        runtime.project = projects
+            .iter()
+            .filter(|(path, _)| cwd.starts_with(path))
+            .max_by_key(|(path, _)| path.components().count())
+            .map(|(_, slug)| (*slug).to_owned());
+    }
 }
 
 fn warn(warnings: &mut Vec<String>, source: &str, error: anyhow::Error) {

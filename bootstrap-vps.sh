@@ -49,8 +49,8 @@ if [ "$skip_packages" = false ]; then
   }
   run apt-get update
   run env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    build-essential ca-certificates curl git jq nodejs npm pkg-config \
-    python3 python3-pip python3-venv sudo unzip libssl-dev
+    build-essential ca-certificates curl git nodejs npm \
+    python3 python3-venv sudo unzip
 fi
 
 phase "Create or preserve the four Linux runtime boundaries"
@@ -146,7 +146,7 @@ phase "Apply profile topology and stable Hermes runtime identities"
 if [ "$dry_run" = true ]; then
   echo "  + TopologyManager apply: operator agentik mission private"
 else
-  "$install_root/scripts/topology.py" apply --yes
+  "$install_root/venv/bin/python" "$install_root/scripts/topology.py" apply --yes
   systemctl daemon-reload
   systemctl enable --now agk-topology-refresh.timer
   for profile in "${profiles[@]}"; do
@@ -198,8 +198,10 @@ if [ "$dry_run" = true ]; then
   echo "  + agk topology status"
   echo "  + HTTPS https://agentik-os.com"
 else
-  "$install_root/scripts/topology.py" status
-  curl -fsSIL --max-time 15 https://agentik-os.com >/dev/null
+  "$install_root/venv/bin/python" "$install_root/scripts/topology.py" status
+  # Reachability is information: a finished installation must not fail on it.
+  curl -fsSIL --max-time 15 https://agentik-os.com >/dev/null ||
+    echo "  ! https://agentik-os.com is not reachable from this host" >&2
   sudo -u operator env \
     HOME=/home/operator \
     HERMES_HOME=/home/operator/.hermes \

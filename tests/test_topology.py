@@ -92,3 +92,15 @@ def test_cached_status_round_trip(tmp_path, monkeypatch):
 
     manager = MODULE.TopologyManager(ROOT / "config/topology.yaml")
     assert manager.cached_status() == expected
+
+
+def test_profile_users_require_an_exact_login_match(monkeypatch):
+    """macOS resolves `agentik` to an `agentikos` account by alias."""
+    import types
+
+    monkeypatch.setattr(
+        MODULE.pwd, "getpwnam",
+        lambda name: types.SimpleNamespace(pw_name="agentikos", pw_dir="/Users/agentikos"),
+    )
+    assert MODULE.user_exists("agentik") is False
+    assert MODULE.user_exists("agentikos") is True

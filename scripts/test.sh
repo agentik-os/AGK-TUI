@@ -17,6 +17,9 @@ else
   exit 1
 fi
 bash -n \
+  "$repo_root/install" \
+  "$repo_root/bootstrap-macos.sh" \
+  "$repo_root/scripts/repair-rmux-daemon.sh" \
   "$repo_root/bootstrap-vps.sh" \
   "$repo_root/install.sh" \
   "$repo_root/bin/agk" \

@@ -28,6 +28,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+if [ "$(uname -s)" = Darwin ]; then
+  echo "install.sh is the Linux installer. On macOS run ./bootstrap-macos.sh instead." >&2
+  exit 1
+fi
 if [ "$system_install" = true ] && [ "$(id -u)" -ne 0 ]; then
   echo "--system must be run as root (use sudo ./install.sh --system)" >&2
   exit 1
@@ -210,7 +214,7 @@ install -m 0755 "$repo_root/scripts/client_control.py" \
 install -m 0755 "$repo_root/scripts/install-hermes-fleet-dashboard.sh" \
   "$install_root/scripts/install-hermes-fleet-dashboard.sh"
 install -m 0644 "$repo_root/config/topology.yaml" "$install_root/config/topology.yaml"
-install -m 0644 "$repo_root/config/providers.yaml" "$install_root/config/providers.yaml"
+rm -f -- "$install_root/config/providers.yaml"
 install -m 0644 "$repo_root/config/rules.yaml" "$install_root/config/rules.yaml"
 install -m 0644 "$repo_root/config/hermes.env.example" "$install_root/config/hermes.env.example"
 rm -rf "$install_root/hermes/plugins/agentik_os" \
@@ -253,7 +257,7 @@ if [ "$system_install" = true ]; then
   install -m 0644 "$repo_root/rmux/rmux.conf" /etc/rmux.conf
   install -d -m 0755 /etc/agk-terminal
   install -m 0644 "$repo_root/config/topology.yaml" /etc/agk-terminal/topology.yaml
-  install -m 0644 "$repo_root/config/providers.yaml" /etc/agk-terminal/providers.yaml
+  rm -f -- /etc/agk-terminal/providers.yaml
   install -m 0644 "$repo_root/config/rules.yaml" /etc/agk-terminal/rules.yaml
   install -m 0644 "$repo_root/systemd/agk-topology-refresh.service" \
     /etc/systemd/system/agk-topology-refresh.service
@@ -271,7 +275,7 @@ if [ "$system_install" = true ]; then
   systemctl daemon-reload
   systemctl enable --now agk-gateway-watchdog.timer
   if [ "$defer_topology" = false ]; then
-    "$install_root/scripts/topology.py" apply --yes
+    "$install_root/venv/bin/python" "$install_root/scripts/topology.py" apply --yes
     systemctl enable --now agk-topology-refresh.timer
   else
     echo "Topology activation deferred until shared Hermes is installed"

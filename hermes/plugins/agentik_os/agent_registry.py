@@ -14,6 +14,8 @@ import yaml
 
 from tools.registry import tool_error, tool_result
 
+from .paths import agk_executable, declared_environment
+
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
 AGENT_TOOL_SCHEMA = {
@@ -75,7 +77,9 @@ def agent_router_prompt(_session_info: dict | None = None) -> str:
 
 
 def _environment() -> str:
-    return os.environ.get("AGENTIK_ENVIRONMENT") or os.environ.get("USER") or "agentik"
+    # The login name is the environment only on the multi-user layout; a
+    # single-user install declares its environment in AGK's own config.
+    return (declared_environment(Path.home()) or os.environ.get("USER") or "agentik")
 
 
 def _runtime_row(name: str) -> dict | None:
@@ -150,7 +154,7 @@ def handle_agent(args: dict, **_kwargs) -> str:
         if action == "start":
             if not row:
                 workspace = _prepare_workspace(definition)
-                result = _run(["/usr/local/bin/agk", "new", "hermes", session, "--cwd", str(workspace)])
+                result = _run([agk_executable(), "new", "hermes", session, "--cwd", str(workspace)])
                 if result.returncode:
                     return tool_error((result.stderr or result.stdout or "agent launch failed")[:2000])
             if instruction:

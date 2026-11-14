@@ -61,7 +61,8 @@ def test_install_enables_quiet_gateway_health_monitoring_for_every_profile():
     assert "DISCORD_ALLOWED_USERS=" in sync
     assert "platforms.discord.extra.allow_admin_from" in sync
     assert "platforms.discord.extra.group_allow_admin_from" in sync
-    assert "ReadWritePaths=/var/lib/agk-terminal" in service
+    # systemd creates the state directory before the first run.
+    assert "StateDirectory=agk-terminal" in service
     assert "OnUnitActiveSec=60s" in timer
 
 

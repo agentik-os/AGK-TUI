@@ -103,7 +103,7 @@ sudo -u operator "$official_dir/venv/bin/python" --version >/dev/null
 # The non-interactive official bootstrap deliberately skips messaging setup.
 # Install the exact Discord versions pinned by Hermes so existing gateway units
 # can reconnect immediately after their configuration is remapped.
-/usr/local/bin/uv pip install \
+"$(command -v uv || echo /usr/local/bin/uv)" pip install \
   --python "$official_dir/venv/bin/python" \
   --overrides <(printf '%s\n' 'pynacl>=1.6,<1.7') \
   'anthropic==0.87.0' \

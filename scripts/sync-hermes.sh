@@ -78,6 +78,16 @@ if [ "$discord_admin_json" != "[]" ]; then
   hermes config set platforms.discord.extra.allow_admin_from "$discord_admin_json" >/dev/null
   hermes config set platforms.discord.extra.group_allow_admin_from "$discord_admin_json" >/dev/null
 fi
+# Content identity of the installed plugins, to tell whether this run
+# changed code that a running gateway has already loaded.
+plugins_fingerprint() {
+  for plugin_path in agentik_os platforms/discord; do
+    [ -d "$hermes_home/plugins/$plugin_path" ] || continue
+    (cd "$hermes_home/plugins/$plugin_path" &&
+      find . -type f ! -name '*.pyc' -exec cksum {} + | sort)
+  done | cksum
+}
+plugins_before=$(plugins_fingerprint)
 for plugin_path in agentik_os platforms/discord; do
   plugin_target=$hermes_home/plugins/$plugin_path
   mkdir -p "$(dirname "$plugin_target")"
@@ -111,3 +121,10 @@ if ! python3 -c 'import yaml' >/dev/null 2>&1; then
 fi
 "$rules_python" "$install_root/scripts/sync-rules.py" >/dev/null
 echo "Hermes extensions synchronized in $hermes_home"
+# A gateway keeps the plugin code it started with, and slash commands typed
+# in a terminal are served by it too. How it is supervised (launchd, systemd,
+# by hand) is the owner's choice, so say what is needed instead of guessing.
+if [ "$plugins_before" != "$(plugins_fingerprint)" ] &&
+  hermes gateway status 2>/dev/null | grep -q 'is running'; then
+  echo "  ! AGK plugins changed: restart the Hermes gateway of $hermes_home to load them"
+fi

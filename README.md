@@ -56,8 +56,6 @@ owns and tests this composition while consuming AGK-TUI as its RMUX component.
 - Agentik OS packages and specialized catalog agents;
 - a profile-local MCP inventory, including redacted Composio connections;
 - global Rules synchronized to every supported provider;
-- the pinned Superpowers workflow plugin, Caveman efficiency skills and a searchable
-  273-specialist Agency Agents library in every Hermes profile;
 - proactive capability routing so agents load matching tools, plugins, skills and
   bounded specialist briefs without waiting for an explicit extension name;
 - local bilingual Discord voice transcription with Whisper Large v3 on CPU, plus
@@ -180,16 +178,64 @@ On desktop, `1` through `5` are optional direct provider shortcuts only while
 the Sessions content panel owns focus. On compact/mobile layouts, numbers are
 reserved exclusively for the main menu.
 
-`x` closes the selected session immediately without a confirmation dialog. It
-stops its RMUX process and archives the AGK record so history remains
-recoverable. AGK refuses only the unsafe case where the selected RMUX session
-is the one currently hosting AGK itself. `r` opens the rename field.
+`x` asks before closing the selected session: `Enter` or `y` confirms, any
+other key keeps it running. Closing stops its RMUX process and archives the
+AGK record so history remains recoverable. Live RMUX sessions started outside
+AGK can be closed the same way; AGK refuses only the unsafe case where the
+selected RMUX session is the one currently hosting AGK itself. `r` opens the
+rename field.
+
+Every row shows what RMUX reports right now: the provider that is really
+running (also for sessions started with plain `rmux`), its working directory,
+and whether it is `working`, `running`, `idle` or `exited`.
+
+`agk restart SESSION` reopens the same conversation instead of an empty one,
+for every provider:
+
+- Claude Code sessions are created with their own conversation id;
+- Hermes sessions are launched on a conversation named after the session
+  (`hermes chat --continue NAME --create-if-missing`), so the launch itself
+  is what resumes it, whenever the first message is sent;
+- Codex and OpenCode cannot be given an id at launch: AGK reads it back from
+  the CLI's own store, as the first conversation started in the session's
+  directory. Two unlinked sessions of the same provider in one directory are
+  ambiguous and are left unlinked rather than resumed on the wrong
+  conversation.
+
+`agk fork SESSION NAME` branches Claude Code, Codex and OpenCode conversations
+once; the fork then resumes as itself.
 
 ### 2 Projects
 
-Projects displays the current profile's canonical control objects and their
-paths, parent relationships and status. Selecting a project also gives the
-footer the correct Git repository and branch context.
+Projects are detected automatically. Every folder that holds a project
+marker (`.git`, `package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`,
+`Package.swift`, `wrangler.toml`, `AGENTS.md`, …) directly inside a projects
+folder is listed with its stack and current branch, most recently changed
+first. A folder without any marker is treated as a group and its own children
+are checked once, so `clients/acme` works; a repository is never descended
+into, so a monorepo is one project.
+
+Without configuration AGK looks in the conventional folders that exist
+(`~/projects`, `~/workspace/projects`, `~/code`, `~/dev`, `~/src`, `~/repos`,
+`~/Developer`). To choose the folders, set them in
+`~/.config/agk/environment.yaml`:
+
+```yaml
+environment: agentik
+projects_root: ~/projects        # also where `/project new` creates folders
+project_roots:                   # additional folders to scan
+  - ~/ai
+```
+
+Sessions are attached to their project by the directory they are really
+working in, including sessions started with plain `rmux`. `n` on a project
+starts a new session inside it, with a name proposed from the project. `F5`
+rescans immediately; `agk projects` prints the same list.
+
+Clients, projects and missions registered in the control registry
+(`/project new` in Hermes) are listed first with their relationships, and a
+registered project is never listed a second time as a detected one. Selecting
+a project also gives the footer the correct Git repository and branch context.
 
 ### 3 Agents
 
@@ -254,7 +300,8 @@ inventory with `agk composio list` or `F5` after changing a connection.
 
 ### 6 Skills
 
-Skills combines the installed Hermes, Claude and Codex skill identities while
+Skills combines the installed Hermes (including its category folders),
+Claude, Codex and shared `~/.agents/skills` skill identities while
 preserving their source. AGK reads identity and status for presentation; the
 provider remains responsible for loading and executing the actual skill.
 
@@ -269,8 +316,14 @@ provider's native instruction location during installation and updates.
 
 Settings contains:
 
-- Appearance: built-in dark/light themes, full black, full white and custom
-  RGB colors. Selection previews live; `Enter` persists and `Esc` reverts.
+- Appearance: `Auto` (the default) follows the host terminal's real
+  background, text color and light/dark mode; built-in dark/light themes, full
+  black, full white and custom RGB colors remain available. Selection previews
+  live; `Enter` persists and `Esc` reverts. `C` copies the theme on screen into
+  Custom and opens the editor; `D` cycles the color depth
+  (auto, 24-bit, 256, 16). A light theme on a dark terminal (or the reverse)
+  paints its own canvas, and every theme is contrast-checked against the
+  background that is really behind it.
 - Providers: installed/configured status and foreground install or repair.
 - Sessions: persistent split-preview preference.
 - Runtime: registry refresh cadence.
@@ -293,7 +346,7 @@ The navigation has no intermediate menu mode:
 | rapid `Tab Tab` | Hide the session list and expand the provider |
 | `Ctrl-g` | Return from provider input to the Sessions list |
 | `n` | New session picker |
-| `x` | Close selected session immediately |
+| `x` | Close selected session (asks first) |
 | `r` | Rename selected session; refresh elsewhere |
 | `/` | Search the current registry |
 | `Ctrl-p` | Command palette |
@@ -301,7 +354,11 @@ The navigation has no intermediate menu mode:
 | `F5` | Refresh registries and live state |
 | `PgUp` / `PgDn` | Browse RMUX history in a focused session pane |
 | `Home` / `End`, `g` / `G` | Oldest available history / live tail |
-| `q` | Leave AGK; provider sessions continue in RMUX |
+| wheel in the pane | Scroll history; in a full-screen program, scroll that program |
+| `q` `q` | Leave AGK (asks first); provider sessions continue in RMUX |
+| drag in the pane | Select text; releasing copies it to the clipboard |
+| double-click in the pane | Copy the word, path or URL under the pointer |
+| `Shift-Enter` | New line in the provider prompt without sending |
 
 When the provider pane has focus, ordinary text, cursor, editing and provider
 shortcuts go directly to that real terminal. When the session list has focus,
@@ -309,11 +366,36 @@ shortcuts go directly to that real terminal. When the session list has focus,
 by terminal forwarding. Mouse click and wheel focus/scroll the panel under the
 pointer.
 
-Clipboard pastes are forwarded as a single bracketed-paste block and split into
-UTF-8-safe transport chunks, so long prompts are not truncated. Providers that
-support compact paste previews can consequently show a label such as
-`[Pasted Content 13090 chars]`; that label is only a visual summary and the
-complete pasted text is still submitted to the model.
+Copy and paste behave like a normal terminal even though AGK mirrors the pane:
+
+- dragging inside the pane selects text and releasing copies it; a
+  double-click copies one word, path or URL;
+- anything a provider copies itself (OSC 52, RMUX copy-mode) is relayed to the
+  real clipboard within a second;
+- copies use the local clipboard program (`pbcopy`, `wl-copy`, `xclip`) and
+  the OSC 52 escape, which also reaches your own computer over SSH;
+- pastes go through RMUX's paste path, so a program that enabled bracketed
+  paste receives one atomic paste while a plain shell receives the text
+  itself. Long prompts are not truncated; a provider may summarize them as
+  `[Pasted Content 13090 chars]` while still submitting the complete text.
+
+A program that takes over the whole screen (OpenCode, Codex, a pager, an
+editor) has no RMUX history. There the wheel, `PgUp`/`PgDn` and `Home`/`End`
+go to the program itself: as mouse reports when it asked for the mouse, as
+arrow keys otherwise.
+
+`Shift-Enter` (and `Alt-Enter`) sends `Ctrl-J`, the one "new line without
+sending" key that Hermes, Claude Code, Codex and OpenCode all accept; in a
+plain shell it continues the command line with a backslash. `Shift-Enter` and
+`Ctrl-Space` need a terminal with the kitty keyboard protocol (Ghostty, kitty,
+WezTerm, foot); AGK enables it automatically. Terminals without it, such as
+Terminal.app, cannot tell `Shift-Enter` from `Enter`: use `Alt-Enter` there
+(enable "Use Option as Meta key") or type `Ctrl-J` directly.
+
+Over SSH only your own terminal can reach your clipboard, through OSC 52, and
+it does not confirm; AGK then says the text was *sent* to the terminal.
+Terminal.app does not implement OSC 52, so copying from a remote AGK needs
+iTerm2, Ghostty, kitty or WezTerm on your side.
 
 <a id="guide-7"></a>
 ## Footer and resource information
@@ -396,9 +478,10 @@ agk
 ```
 
 Use `--core-only` to omit optional providers, or run
-`./bootstrap-macos.sh` from a clone.
+`./bootstrap-macos.sh` from a clone. The bootstrap can be run again at any
+time to update an installation; `agk --version` shows the installed commit.
 
-### Existing Linux/macOS profile
+### Existing Linux profile
 
 ```bash
 git clone https://github.com/agentik-os/AGK-TUI.git
@@ -549,6 +632,10 @@ agk status                       # concise runtime status
 agk doctor                       # local readiness report
 agk sessions                     # durable session registry
 agk new hermes research-chat     # create a named provider session
+agk new claude fix-login --cwd ~/projects/app --project app
+agk new hermes local --model local-gpt   # model id or alias for that provider
+agk projects                     # registered and detected projects
+agk --version                    # installed commit and location
 agk specialist start AGENT_ID    # start/resume a catalog agent conversation
 agk open SESSION                 # attach from the CLI
 agk close SESSION --yes          # stop and archive
@@ -602,6 +689,10 @@ headers, environment secrets, provider tokens or Composio account identifiers.
 
 <a id="guide-13"></a>
 ## Troubleshooting
+
+AGK recovers on its own from a dropped RMUX connection and the `agk` launcher
+reopens the interface after an unexpected exit; sessions are never affected.
+Recoveries and crashes are recorded in `~/.agentik/logs/agk-tui.log`.
 
 Start with:
 
@@ -670,8 +761,9 @@ validates shell scripts, then tests and builds the optional fleet dashboard.
 AGK-specific behavior is delivered as plugins, catalog assets and adapters;
 the official Hermes core remains replaceable and updateable. Installations and
 topology refreshes preserve existing user homes. The registry never fabricates
-projects, OS packages, model usage or provider readiness when no authoritative
-source exists.
+OS packages, model usage or provider readiness when no authoritative source
+exists; a project is listed only when the control registry or a marker file
+on disk says the folder is one.
 
 For deeper implementation detail, read
 [Architecture](docs/ARCHITECTURE.md) and

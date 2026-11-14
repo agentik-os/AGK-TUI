@@ -513,3 +513,306 @@ def test_rmux_adapter_uses_stable_pane_id_for_respawn(monkeypatch):
     runtime.send_input("mission-moonbase", "continue safely")
     assert calls[-2][1:] == ("send-keys", "-t", "%42", "-l", "continue safely")
     assert calls[-1][1:] == ("send-keys", "-t", "%42", "Enter")
+
+
+def _registry(tmp_path, monkeypatch, live=frozenset()):
+    calls = []
+
+    def fake_run(*args, check=True):
+        calls.append(args)
+        if args[1:3] == ("has-session", "-t"):
+            return completed(returncode=0 if args[3] in live else 1)
+        return completed()
+
+    monkeypatch.setattr(agk, "run", fake_run)
+    env = agk.Environment("agentik", tmp_path, tmp_path / "workspace" / "projects")
+    return agk.RuntimeRegistry(env), calls
+
+
+def test_claude_sessions_own_a_conversation_id_and_restart_resumes_it(tmp_path, monkeypatch):
+    registry, calls = _registry(tmp_path, monkeypatch)
+    command, native = agk.launch_command("claude")
+    assert command[-2:] == ["--session-id", native]
+    assert agk.uuid.UUID(native).version == 4
+    row = registry.create(
+        name="agentik-claude-dev", kind="claude", cwd=tmp_path,
+        command=command, native_session=native,
+    )
+    assert row["native_session"] == native
+
+    # Before the first saved turn the id is recreated, never resumed.
+    assert agk.resumable_command(tmp_path, row)[-2:] == ["--session-id", native]
+
+    transcript = tmp_path / ".claude/projects/-work" / f"{native}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("{}\n", encoding="utf-8")
+    resumed = agk.resumable_command(tmp_path, row)
+    assert resumed[-2:] == ["--resume", native]
+    assert "--session-id" not in resumed
+    assert resumed[: len(command) - 2] == command[:-2]
+
+    registry.restart_frontend(row)
+    create = [call for call in calls if call[1] == "new-session"][-1]
+    assert create[-2:] == ("--resume", native)
+
+
+def test_explicit_native_sessions_and_other_providers_keep_their_launch(tmp_path, monkeypatch):
+    command, native = agk.launch_command("claude", "11111111-1111-4111-8111-111111111111")
+    assert native == "11111111-1111-4111-8111-111111111111"
+    assert command[-2:] == ["--resume", native]
+    for kind in ("hermes", "codex", "opencode", "shell"):
+        command, native = agk.launch_command(kind)
+        assert native is None and "--session-id" not in command
+
+
+def test_hermes_terminals_are_linked_to_their_conversation_and_resume_it(tmp_path, monkeypatch):
+    registry, calls = _registry(tmp_path, monkeypatch)
+    row = registry.create(
+        name="agentik-hermes-main", kind="hermes", cwd=tmp_path, command=["hermes"],
+    )
+    other = registry.create(
+        name="agentik-hermes-other", kind="hermes", cwd=tmp_path / "elsewhere"
+        if (tmp_path / "elsewhere").mkdir() is None else tmp_path, command=["hermes"],
+    )
+    state = tmp_path / ".hermes/state.db"
+    state.parent.mkdir()
+    store = agk.sqlite3.connect(state)
+    store.execute("CREATE TABLE sessions (id TEXT, cwd TEXT, started_at REAL, billing_provider TEXT)")
+    store.executemany(
+        "INSERT INTO sessions VALUES (?,?,?,?)",
+        [
+            ("S-MAIN", str(tmp_path.resolve()), row["created_at"] + 3, "nous"),
+            ("S-OLD", str(tmp_path.resolve()), row["created_at"] - 900, "nous"),
+            ("S-FAR", "/somewhere/else", row["created_at"] + 1, "nous"),
+        ],
+    )
+    store.commit()
+    store.close()
+
+    assert registry.link_hermes_sessions() == 1
+    linked = registry.get(row["id"])
+    assert linked["native_session"] == "S-MAIN"
+    assert linked["hermes_session"] == "S-MAIN"
+    assert registry.get(other["id"])["native_session"] is None
+    # Idempotent, and a linked conversation is never handed to a second terminal.
+    assert registry.link_hermes_sessions() == 0
+
+    assert agk.resumable_command(tmp_path, linked) == ["hermes", "--resume", "S-MAIN"]
+    registry.restart_frontend(linked)
+    create = [call for call in calls if call[1] == "new-session"][-1]
+    assert create[-3:] == ("hermes", "--resume", "S-MAIN")
+
+
+def test_ambiguous_hermes_matches_stay_unlinked(tmp_path, monkeypatch):
+    registry, _ = _registry(tmp_path, monkeypatch)
+    row = registry.create(
+        name="agentik-hermes-twin", kind="hermes", cwd=tmp_path, command=["hermes"],
+    )
+    state = tmp_path / ".hermes/state.db"
+    state.parent.mkdir()
+    store = agk.sqlite3.connect(state)
+    store.execute("CREATE TABLE sessions (id TEXT, cwd TEXT, started_at REAL)")
+    store.executemany(
+        "INSERT INTO sessions VALUES (?,?,?)",
+        [
+            ("S-A", str(tmp_path.resolve()), row["created_at"] + 2.0),
+            ("S-B", str(tmp_path.resolve()), row["created_at"] + 2.4),
+        ],
+    )
+    store.commit()
+    store.close()
+    assert registry.link_hermes_sessions() == 0
+    assert registry.get(row["id"])["native_session"] is None
+
+
+def test_forked_claude_sessions_get_their_own_resumable_identity(tmp_path, monkeypatch):
+    registry, _ = _registry(tmp_path, monkeypatch)
+    parent = registry.create(
+        name="agentik-claude-parent", kind="claude", cwd=tmp_path,
+        command=["claude", "--session-id", "P"], native_session="P",
+    )
+    fork = registry.fork(parent, "agentik-claude-fork")
+    command = agk.json.loads(fork["command_json"])
+    # The fork keeps the launch wrapper and flags of a normal Claude session.
+    base = agk.default_command("claude")
+    assert command[:len(base)] == base
+    assert command[len(base):len(base) + 3] == ["--resume", "P", "--fork-session"]
+    assert fork["native_session"] not in {None, "P"}
+    assert command[-2:] == ["--session-id", fork["native_session"]]
+
+    # Until the fork is saved, a restart forks again from the parent.
+    assert agk.resumable_command(tmp_path, fork) == command
+    # Once saved it is resumed as itself: forking again would silently
+    # branch a new conversation on every restart.
+    transcript = tmp_path / ".claude/projects/-work" / f"{fork['native_session']}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("{}\n", encoding="utf-8")
+    assert agk.resumable_command(tmp_path, fork) == [*base, "--resume", fork["native_session"]]
+
+
+def test_new_hermes_sessions_are_named_so_the_launch_itself_resumes(tmp_path, monkeypatch):
+    registry, _ = _registry(tmp_path, monkeypatch)
+    monkeypatch.setattr(agk.shutil, "which", lambda name: f"/bin/{name}")
+    command, native = agk.launch_command("hermes", title="fix-copy")
+    assert native is None
+    assert command == ["/bin/hermes", "chat", "--continue", "fix-copy", "--create-if-missing"]
+    assert agk.launch_command("hermes", None, "research", "local-gpt", "night")[0] == [
+        "/bin/hermes", "--profile", "research", "chat", "--model", "local-gpt",
+        "--continue", "night", "--create-if-missing",
+    ]
+    assert agk.launch_command("openrouter", title="or-run")[0] == [
+        "/bin/hermes", "chat", "--provider", "openrouter", "--model", "stealth/ox-alpha",
+        "--continue", "or-run", "--create-if-missing",
+    ]
+    # An explicit conversation still wins over naming a new one.
+    assert agk.launch_command("hermes", "S-1", title="ignored")[0] == [
+        "/bin/hermes", "--resume", "S-1"]
+
+    row = registry.create(name="fix-copy", kind="hermes", cwd=tmp_path, command=command)
+    assert agk.resumable_command(tmp_path, row) == command
+
+    # Hermes records the conversation under that title at launch; the link
+    # does not depend on when the first message is sent or on its directory.
+    store = agk.sqlite3.connect(tmp_path / ".hermes/state.db") if (
+        (tmp_path / ".hermes").mkdir() or True) else None
+    store.execute("CREATE TABLE sessions(id TEXT, title TEXT, cwd TEXT, started_at REAL)")
+    store.execute("INSERT INTO sessions VALUES('H-1','fix-copy','',?)", (row["created_at"] + 900,))
+    store.execute("INSERT INTO sessions VALUES('H-2','other','',?)", (row["created_at"],))
+    store.commit(); store.close()
+    assert registry.link_hermes_sessions() == 1
+    linked = registry.get("fix-copy")
+    assert linked["native_session"] == linked["hermes_session"] == "H-1"
+    assert agk.resumable_command(tmp_path, linked) == command
+
+    # A reused name must not reopen the earlier conversation.
+    assert agk.hermes_session_title(tmp_path, None, "fix-copy") == "fix-copy-2"
+    assert agk.hermes_session_title(tmp_path, None, "brand-new") == "brand-new"
+    assert agk.hermes_session_title(tmp_path, "absent", "fix-copy") == "fix-copy"
+
+
+def test_codex_and_opencode_terminals_are_linked_from_the_cli_stores(tmp_path, monkeypatch):
+    registry, _ = _registry(tmp_path, monkeypatch)
+    monkeypatch.setattr(agk.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    work = tmp_path / "work"; work.mkdir()
+    other = tmp_path / "other"; other.mkdir()
+    codex = registry.create(name="codex-work", kind="codex", cwd=work, command=["/bin/codex"])
+    open_a = registry.create(name="open-a", kind="opencode", cwd=work, command=["/bin/opencode"])
+    twin_a = registry.create(name="twin-a", kind="codex", cwd=other, command=["/bin/codex"])
+    registry.create(name="twin-b", kind="codex", cwd=other, command=["/bin/codex"])
+    assert registry.link_store_sessions() == 0
+
+    started = int(codex["created_at"])
+    (tmp_path / ".codex").mkdir()
+    for version, rows in (("state_4", [("stale", str(work.resolve()), started + 1)]), ("state_5", [
+        ("before", str(work.resolve()), started - 600),
+        ("T-2", str(work.resolve()), started + 90),
+        ("T-1", str(work.resolve()), started + 30),
+        ("elsewhere", str(tmp_path), started + 5),
+        ("T-twin", str(other.resolve()), started + 5),
+    ])):
+        store = agk.sqlite3.connect(tmp_path / f".codex/{version}.sqlite")
+        store.execute("CREATE TABLE threads(id TEXT, cwd TEXT, created_at INTEGER, archived INTEGER DEFAULT 0)")
+        store.executemany("INSERT INTO threads(id,cwd,created_at) VALUES(?,?,?)", rows)
+        store.commit(); store.close()
+    data = tmp_path / ".local/share/opencode"; data.mkdir(parents=True)
+    store = agk.sqlite3.connect(data / "opencode.db")
+    store.execute("CREATE TABLE session(id TEXT, parent_id TEXT, directory TEXT, time_created INTEGER)")
+    store.executemany("INSERT INTO session VALUES(?,?,?,?)", [
+        ("sub", "O-1", str(work.resolve()), (started + 20) * 1000),
+        ("O-1", None, str(work.resolve()), (started + 40) * 1000),
+    ])
+    store.commit(); store.close()
+
+    # The first conversation started in the terminal's directory after the
+    # terminal was created; sub-agent sessions and other folders are ignored.
+    assert registry.link_store_sessions() == 2
+    assert registry.get("codex-work")["native_session"] == "T-1"
+    assert registry.get("open-a")["native_session"] == "O-1"
+    # Two unlinked terminals in one directory cannot be told apart.
+    assert registry.get("twin-a")["native_session"] is None
+    assert twin_a["native_session"] is None
+
+    assert agk.resumable_command(tmp_path, registry.get("codex-work")) == [
+        "/bin/codex", "resume", "T-1"]
+    assert agk.resumable_command(tmp_path, registry.get("open-a")) == [
+        "/bin/opencode", "--session", "O-1"]
+
+    # Forks branch once, then resume their own conversation.
+    fork = registry.fork(registry.get("open-a"), "open-fork")
+    assert agk.json.loads(fork["command_json"]) == ["/bin/opencode", "--session", "O-1", "--fork"]
+    assert fork["native_session"] is None
+    codex_fork = registry.fork(registry.get("codex-work"), "codex-fork")
+    assert agk.json.loads(codex_fork["command_json"]) == ["/bin/codex", "fork", "T-1"]
+    assert registry.link_store_sessions() == 1
+    assert registry.get("codex-fork")["native_session"] == "T-2"
+    assert agk.resumable_command(tmp_path, registry.get("codex-fork")) == [
+        "/bin/codex", "resume", "T-2"]
+
+
+def test_a_model_can_be_chosen_for_every_provider(monkeypatch):
+    monkeypatch.setattr(agk.shutil, "which", lambda name: f"/bin/{name}")
+    assert agk.default_command("hermes", model="local-assistant") == [
+        "/bin/hermes", "--model", "local-assistant"]
+    assert agk.default_command("codex", model="gpt-x")[-2:] == ["--model", "gpt-x"]
+    assert agk.default_command("opencode", model="anthropic/claude")[-2:] == [
+        "--model", "anthropic/claude"]
+    assert "--model" in agk.default_command("claude", model="opus")
+    assert agk.default_command("openrouter", model="vendor/model:free")[-2:] == [
+        "--model", "vendor/model:free"]
+    assert agk.default_command("shell", model="ignored") == agk.default_command("shell")
+    for unsafe in ("--yolo", "a b", "x;rm", ""):
+        try:
+            agk.default_command("hermes", model=unsafe)
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted unsafe model: {unsafe!r}")
+
+
+def test_projects_are_detected_from_the_folders_that_hold_them(tmp_path, monkeypatch):
+    home = tmp_path
+    root = home / "projects"
+    for path, text in (
+        ("alpha/.git/HEAD", "ref: refs/heads/feature/x\n"), ("alpha/Cargo.toml", ""),
+        ("alpha/package.json", "{}"), ("alpha/packages/inner/package.json", "{}"),
+        ("beta/pyproject.toml", ""), ("clients/gamma/go.mod", ""),
+        ("clients/loose/deep/package.json", "{}"), (".cache/.git/HEAD", "x"),
+        ("node_modules/pkg/package.json", "{}"), ("notes.txt", "file"),
+    ):
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    (root / "beta-link").symlink_to(root / "beta")
+
+    # Without configuration every conventional folder that exists is used.
+    assert agk.project_roots({}, home) == (root,)
+    found = agk.discover_projects(agk.project_roots({}, home))
+    assert [project["name"] for project in found] == ["alpha", "beta", "clients/gamma"]
+    assert found[0]["stack"] == ["Rust", "Node"] and found[0]["branch"] == "feature/x"
+    assert found[1]["branch"] is None and found[0]["status"] == "detected"
+
+    # Configured roots are authoritative; missing and repeated ones drop out.
+    (home / "lab").mkdir()
+    config = {"projects_root": "~/projects", "project_roots": ["~/lab", "~/missing", "~/projects"]}
+    assert agk.project_roots(config, home) == (root, home / "lab")
+
+    monkeypatch.setenv("USER", "public-user")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AGK_ENV_CONFIG", str(home / "absent.yaml"))
+    monkeypatch.delenv("AGK_ENVIRONMENT", raising=False)
+    env = agk.Environment.current()
+    assert env.roots == (root,)
+    assert [project["name"] for project in agk.all_projects(env)] == [
+        "alpha", "beta", "clients/gamma"]
+
+
+def test_hermes_skill_categories_are_not_listed_as_skills(tmp_path):
+    for path in (".hermes/skills/apple/DESCRIPTION.md", ".hermes/skills/apple/notes/SKILL.md",
+                 ".hermes/skills/legacy/DESCRIPTION.md", ".claude/skills/review/SKILL.md",
+                 ".agents/skills/browser/SKILL.md"):
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x", encoding="utf-8")
+    env = agk.Environment("agentik", tmp_path, tmp_path / "projects")
+    assert [(item["name"], item["source"]) for item in agk.skill_inventory(env)] == [
+        ("browser", "shared"), ("legacy", "hermes"), ("notes", "hermes"), ("review", "claude")]

@@ -10,4 +10,5 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/agk-terminal
+# Creates /var/lib/agk-terminal before the first run and keeps it writable.
+StateDirectory=agk-terminal

@@ -56,7 +56,8 @@ if [[ ! "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
 fi
 
 dry_run=false
-for argument in "${bootstrap_args[@]}"; do
+# macOS ships bash 3.2, where an empty array is "unbound" under `set -u`.
+for argument in ${bootstrap_args[@]+"${bootstrap_args[@]}"}; do
   if [ "$argument" = "--dry-run" ]; then
     dry_run=true
   fi
@@ -67,8 +68,9 @@ case "$platform" in
     bootstrap=bootstrap-vps.sh
     mode="fresh Debian/Ubuntu VPS"
     if [ "$dry_run" = false ] && [ "$(id -u)" -ne 0 ]; then
-      echo "AGK-TUI Linux installation needs root privileges." >&2
+      echo "The online Linux installation provisions a multi-user server and needs root." >&2
       echo "Run the curl command with: | sudo bash" >&2
+      echo "For a single existing user instead, clone the repository and run ./install.sh" >&2
       exit 1
     fi
     ;;
@@ -143,4 +145,4 @@ done
 chmod 0755 "$temporary" "$source_dir"
 chmod -R a+rX "$source_dir"
 
-bash "$source_dir/$bootstrap" "${bootstrap_args[@]}"
+bash "$source_dir/$bootstrap" ${bootstrap_args[@]+"${bootstrap_args[@]}"}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import hashlib
 import os
@@ -15,7 +16,7 @@ from hermes_cli.config import read_raw_config
 
 from .paths import (
     PathResolver, create_client_layout, create_mission_layout,
-    create_project_layout, normalize_slug,
+    create_project_layout, declared_environment, normalize_slug,
 )
 from .store import ControlObject, ControlStore
 from .operator import COMMANDS as OPERATOR_COMMANDS, OperatorCommandService
@@ -35,6 +36,38 @@ DESCRIPTIONS = {
     **OperatorCommandService.descriptions,
     **DOMAIN_DESCRIPTIONS,
 }
+
+
+# Where the running slash command was typed. Hermes passes this to the
+# handler as keywords; it is kept per call because gateway commands for
+# several chats can run at the same time.
+_INVOCATION: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "agentik_command_invocation", default={})
+
+
+def invocation_from(context: dict) -> dict:
+    """Reduce Hermes' handler keywords to the serializable facts AGK uses."""
+    platform = str(context.get("platform") or "").strip().lower()
+    if not platform or platform == "cli":
+        # The local terminal shares one context per environment.
+        session_id = str(context.get("session_id") or "")
+        return {"session_id": session_id} if session_id else {}
+    return {
+        "surface": platform,
+        "session_id": str(context.get("session_id") or ""),
+        "session_key": str(context.get("session_key") or ""),
+    }
+
+
+def configured_environment(config: dict | None, home: Path) -> str:
+    """The AGK environment of this Hermes home.
+
+    Multi-user installs record it in the Hermes config. A single-user
+    install declares it once in AGK's own environment file, which every
+    other AGK component already reads.
+    """
+    recorded = ((config or {}).get("runtime_identity") or {}).get("environment_id")
+    return str(recorded) if recorded else declared_environment(home) or "unknown"
 
 
 class AgentikCommandService:
@@ -61,36 +94,41 @@ class AgentikCommandService:
 
     @classmethod
     def from_runtime(cls) -> "AgentikCommandService":
-        cfg = read_raw_config() or {}
-        environment = str((cfg.get("runtime_identity") or {}).get("environment_id") or "unknown")
         home = Path.home()
+        environment = configured_environment(read_raw_config(), home)
         return cls(environment, ControlStore(home / ".agentik" / "control.db"),
                    PathResolver.current(environment))
 
     def description(self, name: str) -> str:
         return DESCRIPTIONS[name]
 
-    def handler(self, command: str) -> Callable[[str], str]:
-        return lambda raw_args="": self.dispatch(command, raw_args)
+    def handler(self, command: str) -> Callable[..., str]:
+        def handle(raw_args: str = "", **context) -> str:
+            token = _INVOCATION.set(invocation_from(context))
+            try:
+                return self.dispatch(command, raw_args)
+            finally:
+                _INVOCATION.reset(token)
+        return handle
 
     @property
     def context_key(self) -> str:
-        from hermes_cli.plugins import get_plugin_command_invocation_context
-
-        invocation = get_plugin_command_invocation_context()
-        if not invocation:
+        invocation = self.invocation()
+        surface = invocation.get("surface")
+        if not surface:
             return f"environment:{self.environment}:surface:local"
-        canonical = json.dumps(invocation, sort_keys=True, separators=(",", ":"))
+        # One context per chat or thread, stable across its sessions.
+        binding = invocation.get("session_key") or invocation.get("session_id") or ""
+        canonical = json.dumps({"surface": surface, "binding": binding},
+                               sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
-        surface = str(invocation.get("surface") or "unknown")
         return f"environment:{self.environment}:surface:{surface}:binding:{digest}"
 
     def context(self) -> dict:
         return self.store.context(self.context_key, self.data_environment)
 
     def invocation(self) -> dict:
-        from hermes_cli.plugins import get_plugin_command_invocation_context
-        return get_plugin_command_invocation_context() or {}
+        return _INVOCATION.get()
 
     def dispatch(self, command: str, raw_args: str) -> str:
         try:

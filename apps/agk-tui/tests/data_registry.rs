@@ -1446,3 +1446,296 @@ fn provider_readiness_requires_real_claude_and_codex_credentials() {
             .configured
     );
 }
+
+#[test]
+fn live_pane_facts_identify_unmanaged_sessions_and_replace_stale_status() {
+    use data::{PANE_FACTS_FORMAT, apply_pane_facts, infer_session_kind, parse_pane_facts};
+
+    assert_eq!(PANE_FACTS_FORMAT.split('\t').count(), 10);
+    let listing = concat!(
+        "work\t0\t1000\t900\t/srv/app\t2.1.3\t1\t1\t1\t\"/usr/bin/env X=1 /home/a/.local/bin/claude --flag\"\n",
+        "work\t0\t1090\t900\t/srv/app\tzsh\t0\t0\t0\t\"\"\n",
+        "scratch\t0\t500\t400\t/tmp\t-zsh\t0\t0\t0\t\"\"\n",
+        "gone\t1\t700\t600\t/tmp\t\t0\t0\t0\t\"hermes --provider openrouter\"\n",
+        "broken line\n",
+        "old\t0\t1\t1\t/tmp\tzsh\t\"seven fields only\"\n",
+    );
+    let facts = parse_pane_facts(listing);
+    assert_eq!(facts.len(), 3);
+    // Screen ownership comes from the primary pane, like identity.
+    assert!(facts["work"].alternate && facts["work"].mouse && facts["work"].mouse_sgr);
+    assert!(!facts["work"].runs_shell());
+    assert!(facts["scratch"].runs_shell() && !facts["scratch"].alternate);
+    assert_eq!(facts["work"].activity, 1090.0);
+    assert!(!facts["work"].dead && facts["gone"].dead);
+
+    let temp = TempDir::new().unwrap();
+    let client = RegistryClient::new(
+        "agentik",
+        RegistryPaths::for_home(
+            temp.path(),
+            temp.path().join("agents"),
+            temp.path().join("os"),
+        ),
+    );
+    let live = ["work", "scratch", "gone"].map(String::from);
+    let mut snapshot = client.load(&live);
+    assert!(
+        snapshot
+            .runtimes
+            .iter()
+            .all(|runtime| runtime.kind == "unmanaged")
+    );
+
+    apply_pane_facts(&mut snapshot, &facts, 1100.0);
+    let by_name = |name: &str| {
+        snapshot
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.name == name)
+            .unwrap()
+    };
+    assert_eq!(by_name("work").kind, "claude");
+    assert_eq!(by_name("work").status, "working");
+    assert_eq!(by_name("work").cwd, "/srv/app");
+    assert_eq!(by_name("scratch").kind, "shell");
+    assert_eq!(by_name("scratch").status, "idle");
+    assert_eq!(by_name("gone").kind, "openrouter");
+    assert_eq!(by_name("gone").status, "exited");
+    // Newest session first, and the order does not depend on output activity.
+    assert_eq!(snapshot.runtimes[0].name, "work");
+
+    assert_eq!(
+        infer_session_kind("/opt/bin/codex resume abc", "node"),
+        "codex"
+    );
+    assert_eq!(infer_session_kind("", "-zsh"), "shell");
+    assert_eq!(infer_session_kind("htop", "htop"), "htop");
+    assert_eq!(infer_session_kind("/x/run-thing", "2.1.3"), "terminal");
+}
+
+fn project_names(snapshot: &data::RegistrySnapshot) -> Vec<&str> {
+    let mut names = snapshot
+        .objects
+        .iter()
+        .map(|object| object.name.as_str())
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names
+}
+
+#[test]
+fn project_folders_are_detected_without_any_registration() {
+    use data::{DETECTED_STATUS, apply_pane_facts, parse_pane_facts, project_roots};
+
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+    let root = home.join("projects");
+    // A git repository with two stacks; its inner package is not a project.
+    write(root.join("alpha/.git/HEAD"), "ref: refs/heads/feature/x\n");
+    write(root.join("alpha/Cargo.toml"), "[package]\n");
+    write(root.join("alpha/package.json"), "{}");
+    write(root.join("alpha/packages/inner/package.json"), "{}");
+    write(root.join("beta/pyproject.toml"), "");
+    // A grouping folder: its children are checked once, no deeper.
+    write(root.join("clients/gamma/go.mod"), "");
+    write(root.join("clients/loose/deep/package.json"), "{}");
+    // Never projects: hidden folders, dependency folders, plain files.
+    write(root.join(".cache/.git/HEAD"), "ref: refs/heads/main\n");
+    write(root.join("node_modules/pkg/package.json"), "{}");
+    write(root.join("notes.txt"), "not a folder");
+    // A worktree points at its git directory through a `.git` file.
+    write(
+        root.join("alpha/.git/worktrees/wt/HEAD"),
+        "0123456789abcdef\n",
+    );
+    write(
+        root.join("wt/.git"),
+        &format!(
+            "gitdir: {}\n",
+            root.join("alpha/.git/worktrees/wt").display()
+        ),
+    );
+    std::os::unix::fs::symlink(root.join("beta"), root.join("beta-link")).unwrap();
+
+    assert_eq!(project_roots(None, home), vec![root.clone()]);
+    let mut paths = paths(&temp);
+    paths.project_roots = project_roots(None, home);
+    let client = RegistryClient::new("agentik", paths);
+    let live = ["in-alpha", "elsewhere"].map(String::from);
+    let mut snapshot = client.load(&live);
+
+    assert_eq!(
+        project_names(&snapshot),
+        ["alpha", "beta", "clients/gamma", "wt"]
+    );
+    let alpha = snapshot
+        .objects
+        .iter()
+        .find(|object| object.name == "alpha")
+        .unwrap();
+    assert_eq!(alpha.kind, "project");
+    assert_eq!(alpha.status, DETECTED_STATUS);
+    assert_eq!(alpha.metadata["stack"], serde_json::json!(["Rust", "Node"]));
+    assert_eq!(alpha.metadata["branch"], "feature/x");
+    assert_eq!(
+        alpha.path.as_deref(),
+        Some(root.join("alpha").to_str().unwrap())
+    );
+    let by_name = |name: &str| {
+        snapshot
+            .objects
+            .iter()
+            .find(|object| object.name == name)
+            .unwrap()
+            .metadata
+            .clone()
+    };
+    assert_eq!(by_name("wt")["branch"], "detached 0123456");
+    assert_eq!(by_name("beta")["git"], false);
+    assert_eq!(by_name("beta")["branch"], serde_json::Value::Null);
+
+    // Sessions join the deepest project that contains their directory.
+    let listing = format!(
+        "in-alpha\t0\t10\t5\t{}\tnode\t0\t0\t0\t\"claude\"\n\
+         elsewhere\t0\t10\t5\t{}\tzsh\t0\t0\t0\t\"\"\n",
+        root.join("alpha/packages/inner").display(),
+        home.display(),
+    );
+    apply_pane_facts(&mut snapshot, &parse_pane_facts(&listing), 20.0);
+    let project = |name: &str| {
+        snapshot
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.name == name)
+            .unwrap()
+            .project
+            .clone()
+    };
+    assert_eq!(project("in-alpha").as_deref(), Some("alpha"));
+    assert_eq!(project("elsewhere"), None);
+
+    // The scan is cached between refreshes and redone on demand.
+    write(root.join("delta/Gemfile"), "");
+    assert!(!project_names(&client.load(&[])).contains(&"delta"));
+    client.forget_detected_projects();
+    assert!(project_names(&client.load(&[])).contains(&"delta"));
+}
+
+#[test]
+fn configured_project_roots_replace_the_conventional_ones() {
+    use data::{merge_detected_projects, project_roots};
+
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+    for folder in ["projects", "work/clients", "lab", "elsewhere"] {
+        fs::create_dir_all(home.join(folder)).unwrap();
+    }
+    let config = format!(
+        "environment: agentik\nprojects_root: ~/work/clients\nproject_roots:\n  - ~/lab\n  - {}\n  - ~/missing\n  - ~/lab\n",
+        home.join("elsewhere").display()
+    );
+    assert_eq!(
+        project_roots(Some(&config), home),
+        [
+            home.join("work/clients"),
+            home.join("lab"),
+            home.join("elsewhere")
+        ]
+    );
+    // An unreadable config falls back to the conventional folders.
+    assert_eq!(
+        project_roots(Some(": not yaml ["), home),
+        vec![home.join("projects")]
+    );
+    assert!(project_roots(None, &home.join("nobody")).is_empty());
+
+    // A project registered in control.db is not listed a second time.
+    write(home.join("lab/kept/.git/HEAD"), "ref: refs/heads/main\n");
+    write(home.join("lab/fresh/.git/HEAD"), "ref: refs/heads/main\n");
+    let detected = data::discover_projects(&[home.join("lab")], "agentik");
+    assert_eq!(detected.len(), 2);
+    let mut registered = detected
+        .iter()
+        .find(|object| object.name == "kept")
+        .unwrap()
+        .clone();
+    registered.id = "project-1".into();
+    registered.status = "active".into();
+    registered.metadata = serde_json::json!({});
+    let mut objects = vec![registered];
+    merge_detected_projects(&mut objects, detected);
+    assert_eq!(
+        objects
+            .iter()
+            .map(|object| (object.name.as_str(), object.status.as_str()))
+            .collect::<Vec<_>>(),
+        [("kept", "active"), ("fresh", "detected")]
+    );
+}
+
+#[test]
+fn hermes_skill_categories_and_linked_skills_are_listed_as_skills() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(&temp);
+    // Hermes: category/skill/SKILL.md, with a description per category.
+    write(paths.hermes_skills.join("apple/DESCRIPTION.md"), "Apple");
+    write(paths.hermes_skills.join("apple/notes/SKILL.md"), "notes");
+    write(paths.hermes_skills.join("apple/mail/SKILL.md"), "mail");
+    write(paths.hermes_skills.join("devops/deploy/SKILL.md"), "deploy");
+    write(
+        paths.hermes_skills.join("legacy/DESCRIPTION.md"),
+        "flat skill",
+    );
+    // A skill shared between CLIs is usually a symlink.
+    write(temp.path().join("store/browser/SKILL.md"), "browser");
+    fs::create_dir_all(&paths.shared_skills).unwrap();
+    std::os::unix::fs::symlink(
+        temp.path().join("store/browser"),
+        paths.shared_skills.join("browser"),
+    )
+    .unwrap();
+
+    let snapshot = RegistryClient::new("agentik", paths).load(&[]);
+    let skills = snapshot
+        .skills
+        .iter()
+        .map(|skill| (skill.name.as_str(), skill.source.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        skills,
+        [
+            ("browser", "shared"),
+            ("deploy", "hermes"),
+            ("legacy", "hermes"),
+            ("mail", "hermes"),
+            ("notes", "hermes"),
+        ]
+    );
+}
+
+#[test]
+fn claude_code_signed_in_through_the_macos_keychain_is_ready() {
+    let temp = TempDir::new().unwrap();
+    let mut paths = paths(&temp);
+    let bin = temp.path().join("bin");
+    write(bin.join("claude"), "#!/bin/sh\n");
+    fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
+    paths.executable_paths = vec![bin];
+    let ready = |paths: &RegistryPaths| {
+        RegistryClient::new("agentik", paths.clone())
+            .load(&[])
+            .providers
+            .into_iter()
+            .find(|provider| provider.id == "claude")
+            .unwrap()
+            .configured
+    };
+    assert!(!ready(&paths));
+    // No credentials file on macOS: the signed-in account is the evidence.
+    write(
+        &paths.claude_config,
+        r#"{"oauthAccount":{"accountUuid":"0000"}}"#,
+    );
+    assert!(ready(&paths));
+}
