@@ -88,7 +88,16 @@ PY
 }
 
 check 'RMUX binary' rmux -V
-check 'RMUX daemon' rmux list-sessions
+rmux_ready() {
+  local output
+  output=$(rmux list-sessions 2>&1) && return 0
+  # No daemon yet is healthy: RMUX starts one with the first session.
+  case "$output" in
+    *"no server running on "*|*"error connecting to "*"(No such file or directory)"*) return 0 ;;
+  esac
+  return 1
+}
+check 'RMUX client and daemon' rmux_ready
 check 'AGK TUI' test -x "$install_root/bin/agk-tui"
 check 'AGK controller' test -x "$install_root/scripts/agk_control.py"
 check 'Global rules registry' test -r "$install_root/config/rules.yaml"

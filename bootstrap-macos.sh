@@ -132,9 +132,19 @@ run uv pip install --python "$install_root/venv/bin/python" \
   --disable-pip-version-check -r "$repo_root/requirements.txt"
 
 phase "Install the verified RMUX release"
+# The client is usable when it reaches its daemon, and also when no daemon
+# runs yet: that is the state of every Mac without a live session.
+rmux_ready() {
+  local output
+  output=$(rmux list-sessions 2>&1) && return 0
+  case "$output" in
+    *"no server running on "*|*"error connecting to "*"(No such file or directory)"*) return 0 ;;
+  esac
+  return 1
+}
 if command -v rmux >/dev/null 2>&1 \
   && [ "$(rmux -V 2>/dev/null || true)" = "rmux $rmux_version" ] \
-  && rmux list-sessions >/dev/null 2>&1
+  && rmux_ready
 then
   echo "  = preserve compatible RMUX: $(rmux -V 2>/dev/null || true)"
 elif [ "$dry_run" = true ]; then
