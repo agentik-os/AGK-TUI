@@ -124,7 +124,13 @@ echo "Hermes extensions synchronized in $hermes_home"
 # A gateway keeps the plugin code it started with, and slash commands typed
 # in a terminal are served by it too. How it is supervised (launchd, systemd,
 # by hand) is the owner's choice, so say what is needed instead of guessing.
-if [ "$plugins_before" != "$(plugins_fingerprint)" ] &&
-  hermes gateway status 2>/dev/null | grep -q 'is running'; then
-  echo "  ! AGK plugins changed: restart the Hermes gateway of $hermes_home to load them"
+if [ "$plugins_before" != "$(plugins_fingerprint)" ]; then
+  # Captured, not piped: under `pipefail` a `grep -q` that stops reading
+  # early makes the whole pipeline fail and the notice would never print.
+  gateway_status=$(hermes gateway status 2>/dev/null || true)
+  case "$gateway_status" in
+    *"is running"*)
+      echo "  ! AGK plugins changed: restart the Hermes gateway of $hermes_home to load them"
+      ;;
+  esac
 fi
