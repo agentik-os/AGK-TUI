@@ -36,3 +36,12 @@ def test_discord_model_picker_paginates_beyond_the_first_25_models():
     assert "self._model_page" in source
     assert 'custom_id="model_page_next"' in source
     assert "models[start:start + page_size]" in source
+
+
+def test_plugin_change_notice_is_not_defeated_by_pipefail():
+    source = (ROOT / "scripts" / "sync-hermes.sh").read_text(encoding="utf-8")
+
+    assert "set -euo pipefail" in source
+    # `hermes gateway status | grep -q` exits non-zero under pipefail.
+    assert "gateway status 2>/dev/null | grep" not in source
+    assert "gateway_status=$(hermes gateway status 2>/dev/null || true)" in source
