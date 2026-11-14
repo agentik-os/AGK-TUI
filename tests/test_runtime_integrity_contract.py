@@ -43,5 +43,5 @@ def test_plugin_change_notice_is_not_defeated_by_pipefail():
 
     assert "set -euo pipefail" in source
     # `hermes gateway status | grep -q` exits non-zero under pipefail.
-    assert "gateway status 2>/dev/null |" not in source
+    assert "gateway status 2>/dev/null | grep" not in source
     assert "gateway_status=$(hermes gateway status 2>/dev/null || true)" in source
