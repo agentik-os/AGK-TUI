@@ -93,13 +93,19 @@ expose_agk_launcher() {
 }
 
 rmux_works_for_target() {
-  local candidate=$1
+  local candidate=$1 output
   if [ "$(id -un)" = "$target_user" ]; then
-    env HOME="$target_home" "$candidate" list-sessions >/dev/null 2>&1
+    output=$(env HOME="$target_home" "$candidate" list-sessions 2>&1) && return 0
   else
-    sudo -u "$target_user" env HOME="$target_home" \
-      "$candidate" list-sessions >/dev/null 2>&1
+    output=$(sudo -u "$target_user" env HOME="$target_home" \
+      "$candidate" list-sessions 2>&1) && return 0
   fi
+  # No daemon yet is the state of every host without a live session; the
+  # client starts one on demand.
+  case "$output" in
+    *"no server running on "*|*"error connecting to "*"(No such file or directory)"*) return 0 ;;
+  esac
+  return 1
 }
 
 expose_working_rmux() {

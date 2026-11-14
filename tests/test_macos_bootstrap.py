@@ -125,3 +125,23 @@ def test_rmux_repair_does_not_mask_unrelated_failures(tmp_path):
     )
     assert result.returncode == 7
     assert "ordinary failure" in result.stderr
+
+
+def test_a_mac_without_any_rmux_session_needs_no_repair(tmp_path):
+    """No daemon is the normal state before the first session and after a reboot."""
+    for message in (
+        "no server running on /private/tmp/rmux-501/default",
+        "error connecting to /private/tmp/rmux-501/default (No such file or directory)",
+    ):
+        rmux = tmp_path / "rmux"
+        rmux.write_text(f"#!/bin/sh\necho '{message}' >&2\nexit 1\n", encoding="utf-8")
+        rmux.chmod(0o755)
+        result = subprocess.run(
+            ["bash", str(RMUX_REPAIR), str(rmux)], text=True, capture_output=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "starts with the first session" in result.stdout
+
+    for script in ("bootstrap-macos.sh", "install.sh", "scripts/doctor.sh"):
+        source = (ROOT / script).read_text(encoding="utf-8")
+        assert '"no server running on "' in source, script

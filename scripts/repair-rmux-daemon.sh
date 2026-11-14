@@ -13,6 +13,18 @@ if [ "$status" -eq 0 ]; then
   [ -z "$output" ] || printf '%s\n' "$output"
   exit 0
 fi
+# No daemon is the normal state of a Mac with no session yet (a first
+# installation, a reboot): RMUX starts one on demand, nothing to repair.
+no_daemon() {
+  case "$1" in
+    *"no server running on "*|*"error connecting to "*"(No such file or directory)"*) return 0 ;;
+  esac
+  return 1
+}
+if no_daemon "$output"; then
+  echo "  = no RMUX daemon is running; one starts with the first session"
+  exit 0
+fi
 case "$output" in
   *": protocol error: unsupported RMUX wire version "*) ;;
   *) printf '%s\n' "$output" >&2; exit "$status" ;;
@@ -87,7 +99,7 @@ if [ -S "$endpoint" ]; then
   echo "  = preserved obsolete socket as $backup"
 fi
 
-if ! output=$("$rmux_bin" list-sessions 2>&1); then
+if ! output=$("$rmux_bin" list-sessions 2>&1) && ! no_daemon "$output"; then
   printf '%s\n' "$output" >&2
   echo "The RMUX 0.10.0 daemon did not start after protocol recovery." >&2
   exit 1
